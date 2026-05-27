@@ -1,0 +1,11 @@
+required:
+  - evidence_priority
+  - sources
+  - claims
+properties:
+  claims:
+    item_required:
+      - claim
+      - evidence_id
+      - source_type
+      - confidence

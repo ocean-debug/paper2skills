@@ -1,0 +1,17 @@
+# Tutorial Trace
+
+{% for step in tutorial_trace.workflow_steps -%}
+## {{ step.id }}
+
+- Source: `{{ step.source }}`
+- Evidence: `{{ step.evidence_id }}`
+- Confidence: `{{ step.confidence }}`
+- Description: {{ step.description }}
+
+```text
+{{ step.command_or_code }}
+```
+
+{% else -%}
+No tutorial workflow steps were confirmed.
+{% endfor %}

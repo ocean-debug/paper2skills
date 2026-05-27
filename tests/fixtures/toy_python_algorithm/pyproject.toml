@@ -1,0 +1,4 @@
+[project]
+name = "toy-python-algorithm"
+version = "0.1.0"
+dependencies = []

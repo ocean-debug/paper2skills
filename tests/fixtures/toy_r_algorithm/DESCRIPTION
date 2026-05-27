@@ -1,0 +1,6 @@
+Package: toyRAlgorithm
+Type: Package
+Title: Toy R Algorithm
+Version: 0.1.0
+Imports:
+    stats

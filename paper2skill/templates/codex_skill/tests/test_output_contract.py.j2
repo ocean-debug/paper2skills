@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_run_and_validate_outputs():
+    run = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "run.py"), "--manifest", str(ROOT / "assets" / "demo_input_manifest.yaml"), "--out", str(ROOT / "result")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    validate = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "validate_outputs.py"), "--result", str(ROOT / "result")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert validate.returncode == 0, validate.stdout + validate.stderr
+    assert (ROOT / "result" / "result.json").exists()

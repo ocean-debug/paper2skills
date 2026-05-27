@@ -1,0 +1,12 @@
+required:
+  - tutorials
+  - workflow_steps
+properties:
+  workflow_steps:
+    item_required:
+      - id
+      - name
+      - source
+      - source_type
+      - evidence_id
+      - confidence

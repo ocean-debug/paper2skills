@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper2skill"
+version = "0.1.0"
+description = "Evidence-first Codex skill generator for algorithm papers, official repositories, and tutorials."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Jinja2>=3.1",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+paper2skill = "paper2skill.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["paper2skill*"]
+
+[tool.setuptools.package-data]
+paper2skill = [
+  "schemas/*.yaml",
+  "templates/codex_skill/**/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

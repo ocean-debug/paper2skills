@@ -1,0 +1,10 @@
+required:
+  - algorithm
+  - input_contract
+  - output_contract
+  - environment_contract
+properties:
+  algorithm:
+    required: [name, task, domain, language, execution_mode, maturity_level]
+  environment_contract:
+    required: [install_policy_default, preflight_required, auto_install_requires_confirmation]

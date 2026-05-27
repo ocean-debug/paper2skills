@@ -1,0 +1,103 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_json_yaml(path: Path) -> dict:
+    return env_manager.load_json_yaml(path)
+
+
+def public_cli_path(value: str) -> str:
+    return env_manager.public_path(value)
+
+
+def preflight_status(out: Path) -> str:
+    summary_path = out / "qc" / "qc_summary.json"
+    if summary_path.exists():
+        return load_json(summary_path).get("status", "fail")
+    return "fail"
+
+
+def summarize_csv(path: Path) -> dict:
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    values = []
+    for row in rows:
+        try:
+            values.append(float(row.get("value", 0)))
+        except ValueError:
+            pass
+    return {"rows": len(rows), "value_sum": sum(values), "value_mean": sum(values) / len(values) if values else None}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", default=str(ROOT / "assets" / "demo_input_manifest.yaml"))
+    parser.add_argument("--out", default=str(ROOT / "result"))
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    preflight = subprocess.run([sys.executable, str(ROOT / "scripts" / "preflight.py"), "--manifest", args.manifest, "--out", str(out)], text=True)
+    if preflight.returncode != 0:
+        write_json(out / "result.json", {"status": preflight_status(out), "skill_name": "{{ skill_name }}", "algorithm": "{{ algorithm_name }}"})
+        return preflight.returncode
+    subprocess.run([sys.executable, str(ROOT / "scripts" / "plan.py"), "--manifest", args.manifest, "--out", str(out)], check=True)
+    manifest = load_json_yaml(Path(args.manifest))
+    rel_input = manifest["inputs"]["primary_data"]["path"]
+    summary = summarize_csv(ROOT / rel_input)
+    write_json(out / "results" / "summary.json", summary)
+    write_json(out / "parameters" / "resolved_parameters.json", env_manager.public_data(manifest["inputs"]["algorithm"].get("parameters", {})))
+    write_json(out / "parameters" / "parameter_sources.json", {"source": "input_manifest"})
+    write_json(out / "workflow" / "executed_steps.json", {"status": "pass", "executed": [step.get("id") for step in load_json(out / "workflow" / "plan.json").get("steps", [])]})
+    repro = out / "reproducibility"
+    repro.mkdir(parents=True, exist_ok=True)
+    for name in ["source_manifest.json", "algorithm_contract.yaml", "bio_contract.yaml"]:
+        src = ROOT / "references" / name
+        if src.exists():
+            shutil.copyfile(src, repro / name)
+    shutil.copyfile(ROOT / "assets" / "environment_spec.yaml", repro / "environment_spec.yaml")
+    (repro / "command_history.sh").write_text("python scripts/run.py --manifest %s\n" % public_cli_path(args.manifest), encoding="utf-8")
+    (out / "logs").mkdir(parents=True, exist_ok=True)
+    (out / "logs" / "run.log").write_text("demo run completed\n", encoding="utf-8")
+    (out / "README.md").write_text("# Result\n\nDemo run completed.\n", encoding="utf-8")
+    (out / "report.md").write_text("# Report\n\nDemo summary: `%s`.\n" % summary, encoding="utf-8")
+    result = {
+        "status": "pass",
+        "skill_name": "{{ skill_name }}",
+        "algorithm": "{{ algorithm_name }}",
+        "maturity_level": "{{ maturity_level }}",
+        "input_validation": load_json(out / "qc" / "input_validation.json"),
+        "environment": load_json(out / "qc" / "environment_report.json"),
+        "parameter_resolution": load_json(out / "parameters" / "resolved_parameters.json"),
+        "workflow_summary": load_json(out / "workflow" / "plan.json"),
+        "outputs": ["results/summary.json"],
+        "caveats": ["demo run is not user-data biological validation"],
+        "evidence_used": load_json(out / "workflow" / "plan.json").get("evidence_used", []),
+    }
+    write_json(out / "result.json", result)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

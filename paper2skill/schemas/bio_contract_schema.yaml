@@ -1,0 +1,10 @@
+required:
+  - bio_contract
+properties:
+  bio_contract:
+    required:
+      - modality
+      - organism
+      - input_matrix_state
+      - metadata_requirements
+      - interpretation_boundary

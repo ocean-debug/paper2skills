@@ -1,0 +1,65 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+
+def load_json_yaml(path: Path) -> dict:
+    return env_manager.load_json_yaml(path)
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def validate_inputs(manifest: dict) -> dict:
+    errors = []
+    primary = ((manifest.get("inputs") or {}).get("primary_data") or {})
+    input_path = primary.get("path")
+    if not input_path:
+        errors.append("inputs.primary_data.path is required")
+    else:
+        candidate = ROOT / input_path
+        if primary.get("exists", True) and not candidate.exists():
+            errors.append("primary data does not exist: %s" % env_manager.public_path(str(input_path)))
+    algorithm = ((manifest.get("inputs") or {}).get("algorithm") or {})
+    if "mode" not in algorithm:
+        errors.append("inputs.algorithm.mode is required")
+    return {"status": "pass" if not errors else "blocked_input_invalid", "errors": errors}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", default=str(ROOT / "assets" / "demo_input_manifest.yaml"))
+    parser.add_argument("--out", default=str(ROOT / "result"))
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    manifest = load_json_yaml(Path(args.manifest))
+    input_validation = validate_inputs(manifest)
+    public_input_validation = env_manager.public_data(input_validation)
+    write_json(out / "qc" / "input_validation.json", public_input_validation)
+    spec = env_manager.load_json_yaml(ROOT / "assets" / "environment_spec.yaml")
+    report = env_manager.inspect_environment(spec)
+    plan = env_manager.build_install_plan(report, spec)
+    env_manager.write_outputs(report, plan, out)
+    public_report = env_manager.public_environment_report(report)
+    status = input_validation["status"] if input_validation["status"] != "pass" else report["status"]
+    write_json(out / "qc" / "qc_summary.json", {"status": status, "input": public_input_validation, "environment": public_report})
+    if status != "pass":
+        print(json.dumps({"status": status, "input": public_input_validation, "environment": public_report}, indent=2))
+        return 2
+    print(json.dumps({"status": "pass"}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

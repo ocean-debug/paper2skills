@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from paper2skill.collectors.path_sanitizer import public_local_path
+from paper2skill.miners.notebook_miner import mine_notebook
+from paper2skill.miners.script_miner import mine_script
+
+
+def mine_tutorials(paths: list[str | Path], base_dir: str | Path | None = None) -> dict[str, Any]:
+    base = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
+    traces = []
+    workflow_steps = []
+    for value in paths:
+        path = Path(value)
+        public_path = public_local_path(path, base)
+        if not path.exists():
+            traces.append({"path": public_path, "error": "missing"})
+            continue
+        if path.suffix.lower() == ".ipynb":
+            trace = mine_notebook(path)
+        else:
+            trace = mine_script(path)
+        trace = _public_tutorial_trace(trace, public_path)
+        traces.append(trace)
+        workflow_steps.extend(trace.get("workflow_steps", []))
+    return {"tutorials": traces, "workflow_steps": workflow_steps}
+
+
+def _public_tutorial_trace(trace: dict[str, Any], public_path: str | None) -> dict[str, Any]:
+    clean = dict(trace)
+    clean["path"] = public_path
+    clean_steps = []
+    for step in clean.get("workflow_steps", []):
+        clean_step = dict(step)
+        clean_step["source"] = public_path
+        clean_steps.append(clean_step)
+    clean["workflow_steps"] = clean_steps
+    return clean
