@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 
@@ -17,7 +18,7 @@ def build_install_plan(report: dict[str, Any], spec: dict[str, Any]) -> dict[str
         "manual": [],
     }
     if python_specs:
-        quoted = " ".join(python_specs)
+        quoted = " ".join(shlex.quote(spec) for spec in python_specs)
         commands["current_env"].append(f"python -m pip install {quoted}")
         commands["isolated_env"].extend(["python -m venv .venv", ". .venv/bin/activate", f"python -m pip install {quoted}"])
         commands["conda_env"].extend([f"conda create -y -n {env_name} python>=3.10 pip", f"conda run -n {env_name} python -m pip install {quoted}"])

@@ -51,6 +51,17 @@ def test_generated_dependency_assets_redact_local_file_urls(tmp_path: Path):
     assert "localpkg" in public_text
 
 
+def test_generated_environment_yml_uses_pip_section_for_python_specs(tmp_path: Path):
+    context = build_context(**example_inputs("toy_python"))
+    context["environment_spec"]["python"]["packages"] = [{"spec": "scikit-learn==1.4.0", "required": True}]
+    out = generate_skill(context, tmp_path / "toy-python-skill")
+    environment_yml = (out / "assets" / "environment.yml").read_text(encoding="utf-8")
+    requirements_txt = (out / "assets" / "requirements.txt").read_text(encoding="utf-8")
+    assert "- pip:" in environment_yml
+    assert "  - scikit-learn==1.4.0" in environment_yml
+    assert "scikit-learn==1.4.0" in requirements_txt
+
+
 def test_plan_outputs_do_not_include_absolute_paths(tmp_path: Path):
     context = build_context(**example_inputs("toy_python"))
     out = plan_outputs(context, tmp_path / "plan")

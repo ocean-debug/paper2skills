@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib.metadata
 import os
 import re
 import shutil
@@ -29,8 +30,17 @@ def forced_missing_packages() -> set[str]:
 def probe_python_package(spec: str, import_name: str | None = None, required: bool = True) -> dict[str, Any]:
     probe_name = import_name_from_spec(spec, import_name)
     forced = forced_missing_packages()
-    installed = probe_name not in forced and spec not in forced and importlib.util.find_spec(probe_name) is not None
+    installed = probe_name not in forced and spec not in forced and _distribution_or_import_available(probe_name)
     return {"name": spec, "import_name": probe_name, "installed": installed, "required": required}
+
+
+def _distribution_or_import_available(name: str) -> bool:
+    try:
+        importlib.metadata.version(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    return importlib.util.find_spec(name) is not None
 
 
 def probe_python(packages: list[dict[str, Any] | str] | None = None) -> dict[str, Any]:
