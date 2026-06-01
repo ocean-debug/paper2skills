@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -227,7 +229,7 @@ def probe_python(packages: list[dict]) -> dict:
     for item in packages:
         spec = item.get("spec") or item.get("name")
         import_name = import_name_from_spec(spec, item.get("import_name"))
-        installed = import_name not in forced and spec not in forced and importlib.util.find_spec(import_name) is not None
+        installed = import_name not in forced and spec not in forced and distribution_or_import_available(import_name)
         records.append({"name": spec, "import_name": import_name, "installed": installed, "required": item.get("required", True)})
     try:
         subprocess.run([sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -235,6 +237,15 @@ def probe_python(packages: list[dict]) -> dict:
     except Exception:
         pip_available = False
     return {"executable": sys.executable, "version": sys.version.split()[0], "pip_available": pip_available, "packages": records}
+
+
+def distribution_or_import_available(name: str) -> bool:
+    try:
+        importlib.metadata.version(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    return importlib.util.find_spec(name) is not None
 
 
 def probe_r(packages: list[dict], required: bool) -> dict:
@@ -300,7 +311,7 @@ def build_install_plan(report: dict, spec: dict | None = None) -> dict:
     missing_python = [pkg for pkg in report["python"]["packages"] if pkg["required"] and not pkg["installed"]]
     missing_r = [pkg for pkg in report["r"]["packages"] if pkg["required"] and not pkg["installed"]]
     missing_execs = [exe for exe in report["executables"] if exe["required"] and not exe["available"]]
-    py_specs = " ".join(pkg["name"] for pkg in missing_python)
+    py_specs = " ".join(shlex.quote(pkg["name"]) for pkg in missing_python)
     r_specs = ", ".join(repr(pkg["name"]) for pkg in missing_r)
     env_name = spec.get("environment_name") or spec.get("name") or "{{ skill_name }}-env"
     current = []
@@ -382,11 +393,19 @@ def install_r_packages(packages: list[str]) -> None:
     subprocess.run([rscript, "-e", expression], check=True)
 
 
+def conda_manager() -> str | None:
+    return shutil.which("mamba") or shutil.which("conda")
+
+
+def conda_env_name(spec: dict) -> str:
+    return spec.get("environment_name") or spec.get("name") or "{{ skill_name }}-env"
+
+
 def install_conda_env(python_specs: list[str], r_packages: list[str], spec: dict) -> None:
-    manager = shutil.which("mamba") or shutil.which("conda")
+    manager = conda_manager()
     if not manager:
         raise RuntimeError("conda_env strategy requires conda or mamba on PATH")
-    env_name = spec.get("environment_name") or spec.get("name") or "{{ skill_name }}-env"
+    env_name = conda_env_name(spec)
     create_args = [manager, "create", "-y", "-n", env_name, "python>=3.10", "pip"]
     if r_packages:
         create_args.append("r-base")
@@ -397,6 +416,28 @@ def install_conda_env(python_specs: list[str], r_packages: list[str], spec: dict
         package_vector = ", ".join(json.dumps(pkg) for pkg in r_packages)
         expression = "install.packages(c(%s), repos='https://cloud.r-project.org')" % package_vector
         subprocess.run([manager, "run", "-n", env_name, "Rscript", "-e", expression], check=True)
+
+
+def inspect_conda_env(args: argparse.Namespace, spec: dict) -> int:
+    manager = conda_manager()
+    if not manager:
+        print("conda_env strategy requires conda or mamba on PATH", file=sys.stderr)
+        return 2
+    command = [
+        manager,
+        "run",
+        "-n",
+        conda_env_name(spec),
+        "python",
+        str(Path(__file__).resolve()),
+        "inspect",
+        "--spec",
+        str(args.spec),
+        "--out",
+        str(args.out),
+    ]
+    result = subprocess.run(command, text=True, check=False)
+    return result.returncode
 
 
 def run_install_strategy(strategy: str, plan: dict, spec: dict) -> None:
@@ -475,6 +516,8 @@ def install_command(args: argparse.Namespace) -> int:
         print("Refusing to install because effective install policy is never", file=sys.stderr)
         return 2
     run_install_strategy(args.strategy, plan, spec)
+    if args.strategy == "conda_env":
+        return inspect_conda_env(args, spec)
     return inspect_command(args)
 
 

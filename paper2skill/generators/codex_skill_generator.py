@@ -287,7 +287,9 @@ def _demo_data_for_language(language: str) -> str:
 def _python_specs(environment_spec: dict[str, Any]) -> list[str]:
     specs = []
     for item in environment_spec.get("python", {}).get("packages", []):
-        specs.append(item["spec"] if isinstance(item, dict) else str(item))
+        required = item.get("required", True) if isinstance(item, dict) else True
+        if required:
+            specs.append(item["spec"] if isinstance(item, dict) else str(item))
     return specs
 
 
@@ -295,7 +297,9 @@ def _conda_environment(context: dict[str, Any]) -> str:
     deps = ["python>=3.10", "pip"]
     if context["environment_spec"].get("r", {}).get("required"):
         deps.append("r-base")
-    deps.extend(_python_specs(context["environment_spec"]))
+    python_specs = _python_specs(context["environment_spec"])
+    if python_specs:
+        deps.append({"pip": python_specs})
     return yaml.safe_dump({"name": f"{context['skill_name']}-env", "channels": ["conda-forge"], "dependencies": deps}, sort_keys=False)
 
 

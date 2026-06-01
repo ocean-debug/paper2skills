@@ -29,6 +29,12 @@ def test_python_direct_reference_uses_distribution_name_as_import_probe():
     assert record["import_name"] == "localpkg"
 
 
+def test_python_probe_uses_distribution_metadata_before_import_name():
+    record = probe_python_package("PyYAML")
+    assert record["import_name"] == "PyYAML"
+    assert record["installed"] is True
+
+
 def test_missing_r_package_blocks_when_rscript_available(monkeypatch):
     from paper2skill.runtime import env_manager
 

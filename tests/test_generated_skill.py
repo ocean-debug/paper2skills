@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import shutil
 import subprocess
 import sys
 import importlib.util
@@ -245,6 +246,23 @@ def test_generated_conda_env_includes_r_base_for_r_packages(tmp_path: Path):
     assert "r-base" in environment_yml
 
 
+def test_generated_toy_r_skill_tests_skip_when_rscript_missing(tmp_path: Path):
+    out = tmp_path / "toy-r-skill"
+    subprocess.run([sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_r", "--out", str(out)], check=True)
+    env = os.environ.copy()
+    env["PAPER2SKILL_FORCE_MISSING_EXECUTABLES"] = "Rscript"
+    result = subprocess.run(
+        [sys.executable, "-m", "paper2skill.cli", "test", "--skill", str(out), "--mode", "all"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert "skipped" in output
+
+
 def test_generated_env_manager_plan_redacts_absolute_environment_name(tmp_path: Path):
     out = tmp_path / "toy-python-skill"
     subprocess.run([sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_python", "--out", str(out)], check=True)
@@ -424,6 +442,43 @@ def test_generated_env_manager_never_policy_blocks_confirmed_install(tmp_path: P
     assert result.returncode == 2
     assert "effective install policy is never" in result.stderr
     assert (out / "never-install-result" / "qc" / "install_plan.json").exists()
+
+
+def test_generated_conda_env_install_gated(tmp_path: Path):
+    if os.environ.get("PAPER2SKILL_RUN_REMOTE_ENV_BUILD") != "1":
+        return
+    manager = shutil.which("mamba") or shutil.which("conda")
+    if not manager:
+        return
+    out = tmp_path / "toy-python-skill"
+    subprocess.run([sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_python", "--out", str(out)], check=True)
+    env_name = f"paper2skill-test-{os.getpid()}"
+    spec = out / "assets" / "environment_spec.yaml"
+    spec.write_text(
+        json.dumps(
+            {
+                "install_policy": "current_env",
+                "environment_name": env_name,
+                "python": {"packages": [{"spec": "colorama==0.4.6", "required": True}]},
+                "r": {"required": False, "packages": []},
+                "executables": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        install = subprocess.run(
+            [sys.executable, str(out / "scripts" / "env_manager.py"), "install", "--strategy", "conda_env", "--confirm", "yes", "--out", str(out / "conda-install-result")],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert install.returncode == 0, install.stdout + install.stderr
+        verify = subprocess.run([manager, "run", "-n", env_name, "python", "-c", "import colorama"], text=True, capture_output=True, check=False)
+        assert verify.returncode == 0, verify.stdout + verify.stderr
+    finally:
+        subprocess.run([manager, "remove", "-y", "-n", env_name, "--all"], text=True, capture_output=True, check=False)
 
 
 def test_generated_runtime_outputs_redact_absolute_paths(tmp_path: Path):

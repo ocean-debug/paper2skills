@@ -8,7 +8,7 @@ def test_dependency_miner_reads_python_and_r_files():
     r_deps = mine_dependencies("tests/fixtures/toy_r_algorithm", ["tests/fixtures/toy_r_algorithm/examples/demo.R"])
     assert "pyproject.toml" in " ".join(py_deps["dependency_files"])
     assert "DESCRIPTION" in " ".join(r_deps["dependency_files"])
-    assert "stats" in r_deps["r"]
+    assert "stats" not in r_deps["r"]
 
 
 def test_optional_pyproject_dependencies_are_recorded_not_required(tmp_path):
@@ -53,3 +53,79 @@ def test_requirements_direct_references_preserve_full_spec(tmp_path):
     assert direct_ref in deps["python"]
     assert 'scanpy[leiden]>=1.10; python_version >= "3.10"' in deps["python"]
     assert "-r other-requirements.txt" not in deps["python"]
+
+
+def test_requirements_records_required_optional_and_ignored_entries(tmp_path):
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text(
+        "\n".join(
+            [
+                'scikit-learn==1.4.0; python_version >= "3.10"',
+                "localpkg @ file:///tmp/private/localpkg",
+                "-c constraints.txt",
+                "-e .",
+                "./local_checkout",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    deps = mine_dependencies(tmp_path)
+    assert deps["python"] == ['localpkg @ file:///tmp/private/localpkg', 'scikit-learn==1.4.0; python_version >= "3.10"']
+    assert deps["python_records"][0]["required"] is True
+    assert deps["python_records"][0]["category"] == "runtime"
+    assert "constraints.txt" in " ".join(item["value"] for item in deps["ignored"])
+    assert "-e ." in " ".join(item["value"] for item in deps["ignored"])
+    assert "./local_checkout" in " ".join(item["value"] for item in deps["ignored"])
+
+
+def test_poetry_dev_groups_are_optional_not_required(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[tool.poetry.dependencies]
+python = "^3.10"
+scanpy = "^1.10"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+ruff = "^0.6"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    deps = mine_dependencies(tmp_path)
+    assert deps["python"] == ["scanpy"]
+    assert deps["optional"]["python"]["poetry:dev"] == ["pytest", "ruff"]
+
+
+def test_r_suggests_and_renv_lock_are_recorded_not_required(tmp_path):
+    (tmp_path / "DESCRIPTION").write_text(
+        """
+Package: demo
+Imports:
+    Seurat,
+    Matrix
+Suggests:
+    testthat,
+    knitr
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "renv.lock").write_text(
+        """
+{
+  "Packages": {
+    "dplyr": {"Version": "1.1.4"},
+    "ggplot2": {"Version": "3.5.1"}
+  }
+}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    deps = mine_dependencies(tmp_path)
+    assert deps["r"] == ["Matrix", "Seurat"]
+    assert deps["optional"]["r"]["DESCRIPTION:Suggests"] == ["knitr", "testthat"]
+    assert deps["optional"]["r"]["renv.lock"] == ["dplyr", "ggplot2"]

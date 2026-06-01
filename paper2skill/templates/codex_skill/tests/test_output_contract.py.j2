@@ -1,26 +1,49 @@
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
+RESULT = ROOT / "result"
+ENVIRONMENT_BLOCKED_STATUSES = {"blocked_runtime_missing", "blocked_dependencies_missing"}
+
+
+def _load_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _skip_if_environment_blocked() -> None:
+    result = _load_json(RESULT / "result.json")
+    status = result.get("status")
+    if status in ENVIRONMENT_BLOCKED_STATUSES:
+        assert (RESULT / "qc" / "environment_report.json").exists()
+        pytest.skip(f"demo environment unavailable: {status}")
 
 
 def test_run_and_validate_outputs():
+    shutil.rmtree(RESULT, ignore_errors=True)
     run = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "run.py"), "--manifest", str(ROOT / "assets" / "demo_input_manifest.yaml"), "--out", str(ROOT / "result")],
+        [sys.executable, str(ROOT / "scripts" / "run.py"), "--manifest", str(ROOT / "assets" / "demo_input_manifest.yaml"), "--out", str(RESULT)],
         text=True,
         capture_output=True,
         check=False,
     )
+    if run.returncode == 2:
+        _skip_if_environment_blocked()
     assert run.returncode == 0, run.stdout + run.stderr
     validate = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "validate_outputs.py"), "--result", str(ROOT / "result")],
+        [sys.executable, str(ROOT / "scripts" / "validate_outputs.py"), "--result", str(RESULT)],
         text=True,
         capture_output=True,
         check=False,
     )
     assert validate.returncode == 0, validate.stdout + validate.stderr
-    assert (ROOT / "result" / "result.json").exists()
+    assert (RESULT / "result.json").exists()
