@@ -49,6 +49,11 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--paper-url", default=None)
     parser.add_argument("--paper-title", default=None)
     parser.add_argument("--repo", default=None)
+    parser.add_argument("--repo-ref", default="main")
+    parser.add_argument("--skip-repo-clone", action="store_true")
+    parser.add_argument("--no-execute-tutorials", action="store_true")
+    parser.add_argument("--strict-evidence", action="store_true")
+    parser.add_argument("--tutorial-filter", default=None)
     parser.add_argument("--tutorial", action="append", default=[])
     parser.add_argument("--maturity-target", default=None)
 
@@ -62,6 +67,10 @@ def command_plan(args: argparse.Namespace) -> int:
         tutorials=args.tutorial,
         paper_url=args.paper_url,
         paper_title=args.paper_title,
+        repo_ref=args.repo_ref,
+        skip_repo_clone=args.skip_repo_clone,
+        no_execute_tutorials=args.no_execute_tutorials,
+        strict_evidence=args.strict_evidence,
         maturity_level=args.maturity_target or "L1",
     )
     out = plan_outputs(context, args.out)
@@ -83,8 +92,12 @@ def command_build(args: argparse.Namespace) -> int:
         "paper_url": args.paper_url,
         "paper_title": args.paper_title,
         "maturity_level": args.maturity_target,
+        "repo_ref": args.repo_ref,
+        "skip_repo_clone": args.skip_repo_clone,
+        "no_execute_tutorials": args.no_execute_tutorials,
+        "strict_evidence": args.strict_evidence,
     }.items():
-        if value is not None and value != "" and value != []:
+        if value is not None and value != "" and value != [] and value is not False:
             values[key] = value
     context = build_context(**values)
     out_dir = Path(args.out) if args.out else Path(".agents") / "skills" / context["skill_name"]

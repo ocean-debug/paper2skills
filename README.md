@@ -22,6 +22,18 @@ python -m paper2skill.cli validate --skill .agents/skills/toy-python-skill
 python -m paper2skill.cli test --skill .agents/skills/toy-python-skill --mode all
 ```
 
+Minimal end-to-end build from paper and repository inputs:
+
+```bash
+python -m paper2skill.cli build \
+  --paper examples/minimal_paper.md \
+  --repo examples/minimal_repo \
+  --out /tmp/paper2skill_minimal_skill \
+  --no-execute-tutorials
+
+python -m paper2skill.cli validate --skill /tmp/paper2skill_minimal_skill
+```
+
 ## Inputs
 
 The builder accepts paper, repository, and tutorial inputs directly from CLI
@@ -60,6 +72,22 @@ call an online LLM or article API.
 Generated scripts are self-contained. A child skill can run outside this
 builder repository as long as Python is available and the declared algorithm
 runtime dependencies are installed.
+
+Three-stage evidence builds also write the machine-readable collection and
+inference bundle:
+
+```text
+references/paper.md
+references/paper_sections.json
+references/paper_parser_report.json
+references/repo_manifest.json
+references/repo_index.json
+references/tutorial_candidates.json
+references/tutorial_scanner_report.json
+references/io_contract.yaml
+references/evidence_graph.json
+references/build_report.json
+```
 
 ## Environment Policy
 
