@@ -84,3 +84,42 @@ def mine_python_source(source: str) -> dict[str, Any]:
             if short_name in PLOT_NAMES:
                 result["plots"].append(record)
     return result
+
+
+def infer_object_flow(source: str) -> dict[str, list[str]]:
+    inputs: set[str] = set()
+    outputs: set[str] = set()
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {"input_objects": [], "output_objects": []}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                name = call_name(target)
+                if name:
+                    outputs.add(name.split(".", 1)[0])
+            for child in ast.walk(node.value):
+                if isinstance(child, ast.Name):
+                    inputs.add(child.id)
+        elif isinstance(node, ast.Call):
+            for arg in node.args:
+                if isinstance(arg, ast.Name):
+                    inputs.add(arg.id)
+    return {"input_objects": sorted(inputs - outputs), "output_objects": sorted(outputs)}
+
+
+def classify_bio_signals(text: str, calls: list[dict] | list[str]) -> list[str]:
+    haystack = text.lower() + " " + " ".join(call["name"] if isinstance(call, dict) else str(call) for call in calls).lower()
+    signals = []
+    rules = {
+        "single_cell": ["scanpy", "seurat", "anndata", "read_10x", "read10x", "h5ad"],
+        "normalization": ["normalize_total", "normalizedata", "normalize"],
+        "log_transform": ["log1p", "lognormalize"],
+        "raw_counts": ["read_10x_mtx", "read10x", "raw counts", "count matrix"],
+        "plot": ["plot", "scatter", "umap", "tsne", "savefig", "ggsave"],
+    }
+    for signal, words in rules.items():
+        if any(word in haystack for word in words):
+            signals.append(signal)
+    return signals

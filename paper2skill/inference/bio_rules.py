@@ -1,0 +1,33 @@
+from __future__ import annotations
+
+MODALITY_RULES = {
+    "scRNA-seq": ["single-cell RNA", "scRNA-seq", "AnnData", "Seurat", "scanpy", "h5ad", "10x"],
+    "spatial_transcriptomics": ["spatial transcriptomics", "Visium", "Slide-seq", "MERFISH", "spatial", "Squidpy"],
+    "bulk_RNA-seq": ["bulk RNA", "DESeq2", "edgeR", "limma", "counts matrix"],
+    "scATAC-seq": ["scATAC", "Signac", "ArchR", "peak matrix", "fragments.tsv"],
+    "multiome": ["multiome", "RNA + ATAC", "paired RNA and ATAC"],
+}
+
+MATRIX_STATE_RULES = {
+    "raw_counts_loaded": ["raw counts", "count matrix", "read_10x_mtx", "Read10X", "counts slot", "layers['counts']"],
+    "normalized": ["NormalizeData", "normalize_total", "CPM", "TPM", "size factor"],
+    "log1p_transformed": ["log1p", "log-normalized", "LogNormalize"],
+    "scaled": ["ScaleData", "scale", "z-score", "standardized"],
+}
+
+GENE_ID_RULES = {
+    "gene_symbol": ["gene symbol", "HGNC", "GeneSymbol", "symbol"],
+    "ensembl_id": ["Ensembl", "ENSG", "ENSMUSG"],
+    "entrez_id": ["Entrez", "NCBI gene id"],
+}
+
+SPECIES_RULES = {
+    "human": ["human", "Homo sapiens", "hg19", "hg38", "GRCh37", "GRCh38"],
+    "mouse": ["mouse", "Mus musculus", "mm10", "mm39", "GRCm38", "GRCm39"],
+    "macaque": ["macaque", "Macaca", "rheMac"],
+}
+
+
+def match_rules(text: str, rules: dict[str, list[str]]) -> list[str]:
+    lower = text.lower()
+    return [value for value, words in rules.items() if any(word.lower() in lower for word in words)]

@@ -8,17 +8,20 @@ import jinja2
 import yaml
 
 from paper2skill.collectors.path_sanitizer import REDACTED_LOCAL_PATH, public_data
+from paper2skill.collectors.paper_collector import collect_paper
+from paper2skill.collectors.repo_collector import collect_repo
 from paper2skill.collectors.source_manifest import build_source_manifest
 from paper2skill.common import PROJECT_ROOT, ensure_dir, slugify, write_json, write_text, write_yaml
+from paper2skill.evidence.evidence_graph import build_evidence_graph
 from paper2skill.inference.classify_algorithm import classify_algorithm
-from paper2skill.inference.infer_bio_contract import default_bio_contract
+from paper2skill.inference.infer_bio_contract import infer_bio_contract
 from paper2skill.inference.infer_environment import infer_environment_spec
 from paper2skill.inference.infer_io_contract import infer_io_contract
 from paper2skill.inference.infer_parameters import infer_parameters
 from paper2skill.inference.infer_workflow import infer_workflow
 from paper2skill.miners.api_miner import mine_api
 from paper2skill.miners.dependency_miner import mine_dependencies
-from paper2skill.miners.tutorial_miner import mine_tutorials
+from paper2skill.miners.tutorial_miner import mine_repo_tutorials, mine_tutorials
 from paper2skill.runtime.env_manager import inspect_environment
 from paper2skill.runtime.install_planner import build_install_plan, render_install_plan_markdown
 
@@ -67,12 +70,21 @@ def build_context(
     paper_title: str | None = None,
     maturity_level: str = "L1",
     language: str | None = None,
+    repo_ref: str = "main",
+    skip_repo_clone: bool = False,
+    no_execute_tutorials: bool = True,
+    strict_evidence: bool = False,
 ) -> dict[str, Any]:
     skill_name = slugify(skill_name or algorithm_name or "generated-skill")
     algorithm_name = algorithm_name or skill_name.replace("-", " ").title()
     tutorials = tutorials or []
-    source_manifest = build_source_manifest(paper, repo, tutorials, paper_url, paper_title)
-    tutorial_trace = mine_tutorials(tutorials)
+    source_manifest = build_source_manifest(paper, repo, tutorials, paper_url, paper_title, repo_ref=repo_ref)
+    if tutorials:
+        tutorial_trace = mine_tutorials(tutorials)
+    elif repo and Path(repo).exists():
+        tutorial_trace = mine_repo_tutorials(repo)
+    else:
+        tutorial_trace = {"tutorials": [], "workflow_steps": [], "steps": [], "tutorial_candidates": [], "tutorial_scanner_report": {"total": 0, "included": 0}}
     dependency_evidence = mine_dependencies(repo, tutorials)
     repo_evidence = mine_api(repo)
     classification = classify_algorithm(repo_evidence, tutorial_trace)
@@ -112,6 +124,15 @@ def build_context(
         "sources": source_manifest,
         "claims": _claims_from_context(algorithm_contract, workflow),
     }
+    paper_sections = (((source_manifest.get("paper") or {}).get("parsed_document") or {}).get("sections") or [])
+    bio_contract = infer_bio_contract(tutorial_trace, paper_sections, dependency_evidence)
+    evidence_graph = build_evidence_graph(
+        paper_evidence=source_manifest.get("paper"),
+        tutorial_trace=tutorial_trace,
+        dependency_evidence=dependency_evidence,
+        bio_contract=bio_contract,
+        algorithm_contract=algorithm_contract,
+    )
     return {
         "skill_name": skill_name,
         "algorithm_name": algorithm_name,
@@ -130,8 +151,17 @@ def build_context(
         "install_plan": install_plan,
         "install_plan_markdown": render_install_plan_markdown(install_plan),
         "algorithm_contract": algorithm_contract,
-        "bio_contract": default_bio_contract(),
+        "bio_contract": bio_contract,
+        "evidence_graph": evidence_graph,
         "evidence_report": evidence_report,
+        "input_sources": {
+            "paper": paper,
+            "repo": repo,
+            "repo_ref": repo_ref,
+            "skip_repo_clone": skip_repo_clone,
+            "no_execute_tutorials": no_execute_tutorials,
+            "strict_evidence": strict_evidence,
+        },
         "demo_data": _demo_data_for_language(classification["language"]),
     }
 
@@ -164,12 +194,18 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
         content = env.get_template(template_name).render(**public_context)
         write_text(root / rel_target, content)
     write_json(root / "references" / "tutorial_trace.json", public_context["tutorial_trace"])
+    write_json(root / "references" / "tutorial_candidates.json", public_context["tutorial_trace"].get("tutorial_candidates", []))
+    write_json(root / "references" / "tutorial_scanner_report.json", public_context["tutorial_trace"].get("tutorial_scanner_report", {}))
     write_json(root / "references" / "environment_report.json", _public_environment_report(context["environment_report"]))
     write_json(root / "references" / "source_manifest.json", public_context["source_manifest"])
     write_json(root / "references" / "paper_evidence.json", public_context["paper_evidence"])
     write_json(root / "references" / "repo_evidence.json", public_context["repo_evidence"])
     write_yaml(root / "references" / "algorithm_contract.yaml", public_context["algorithm_contract"])
     write_yaml(root / "references" / "bio_contract.yaml", public_context["bio_contract"])
+    write_yaml(root / "references" / "io_contract.yaml", {"input_contract": public_context["algorithm_contract"].get("input_contract"), "output_contract": public_context["algorithm_contract"].get("output_contract")})
+    write_json(root / "references" / "evidence_graph.json", public_context["evidence_graph"])
+    write_optional_collection_outputs(context, root)
+    write_json(root / "references" / "build_report.json", public_data(build_report(context), PROJECT_ROOT))
     write_text(root / "references" / "install_plan.md", public_context["install_plan_markdown"])
     write_text(root / "assets" / "environment_spec.yaml", json.dumps(public_context["environment_spec"], indent=2) + "\n")
     write_text(root / "assets" / "demo_input_manifest.yaml", json.dumps(public_data(_demo_manifest(context), PROJECT_ROOT), indent=2) + "\n")
@@ -178,6 +214,26 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_text(root / "assets" / "renv.lock.placeholder", "{}\n")
     write_text(root / "assets" / "demo_input.csv", context["demo_data"])
     return root
+
+
+def write_optional_collection_outputs(context: dict[str, Any], root: Path) -> None:
+    sources = context.get("input_sources", {})
+    if sources.get("paper"):
+        collect_paper(sources["paper"], out_dir=root)
+    if sources.get("repo"):
+        repo_result = collect_repo(sources["repo"], ref=sources.get("repo_ref"), work_dir=root, skip_clone=sources.get("skip_repo_clone", False))
+        write_json(root / "references" / "repo_manifest.json", public_data(repo_result.get("manifest"), root))
+        write_json(root / "references" / "repo_index.json", public_data(repo_result.get("index"), root))
+
+
+def build_report(context: dict[str, Any]) -> dict[str, Any]:
+    sources = context.get("input_sources", {})
+    missing = {}
+    if not sources.get("paper"):
+        missing["paper"] = "not provided"
+    if not sources.get("repo"):
+        missing["repo"] = "not provided"
+    return {"status": "built", "missing_inputs": missing, "options": sources}
 
 
 def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:

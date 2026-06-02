@@ -6,6 +6,7 @@ from typing import Any
 from paper2skill.collectors.path_sanitizer import public_local_path
 from paper2skill.miners.notebook_miner import mine_notebook
 from paper2skill.miners.script_miner import mine_script
+from paper2skill.miners.tutorial_scanner import scan_tutorial_candidates
 
 
 def mine_tutorials(paths: list[str | Path], base_dir: str | Path | None = None) -> dict[str, Any]:
@@ -25,7 +26,16 @@ def mine_tutorials(paths: list[str | Path], base_dir: str | Path | None = None) 
         trace = _public_tutorial_trace(trace, public_path)
         traces.append(trace)
         workflow_steps.extend(trace.get("workflow_steps", []))
-    return {"tutorials": traces, "workflow_steps": workflow_steps}
+    return {"tutorials": traces, "workflow_steps": workflow_steps, "steps": workflow_steps}
+
+
+def mine_repo_tutorials(repo_root: str | Path) -> dict[str, Any]:
+    scan = scan_tutorial_candidates(repo_root)
+    included = [Path(repo_root) / item.path for item in scan["candidates"] if item.include_in_tools]
+    trace = mine_tutorials(included, base_dir=repo_root)
+    trace["tutorial_candidates"] = [item.__dict__ for item in scan["candidates"]]
+    trace["tutorial_scanner_report"] = scan["report"]
+    return trace
 
 
 def _public_tutorial_trace(trace: dict[str, Any], public_path: str | None) -> dict[str, Any]:
@@ -37,4 +47,5 @@ def _public_tutorial_trace(trace: dict[str, Any], public_path: str | None) -> di
         clean_step["source"] = public_path
         clean_steps.append(clean_step)
     clean["workflow_steps"] = clean_steps
+    clean["steps"] = clean_steps
     return clean

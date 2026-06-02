@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from paper2skill.miners.python_ast import mine_python_source
+from paper2skill.miners.python_ast import classify_bio_signals, infer_object_flow, mine_python_source
 
 
 R_LIBRARY_RE = re.compile(r"\b(?:library|require)\s*\(\s*['\"]?([A-Za-z0-9_.]+)['\"]?\s*\)")
@@ -12,6 +12,7 @@ R_FUNCTION_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_.]*)\s*\(")
 R_ASSIGN_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_.]*)\s*(?:<-|=)\s*(.+?)\s*$")
 R_READ_RE = re.compile(r"\b(read\.[A-Za-z0-9_.]+|readRDS|read_h5ad)\s*\(\s*([A-Za-z][A-Za-z0-9_.]*|['\"][^'\"]+['\"])")
 R_WRITE_RE = re.compile(r"\b(write\.[A-Za-z0-9_.]+|saveRDS|ggsave)\s*\((?:[^,\n]+,\s*)?([A-Za-z][A-Za-z0-9_.]*|['\"][^'\"]+['\"])")
+R_FIGURE_RE = re.compile(r"\b(ggsave|pdf|png|jpeg|tiff|svg)\s*\(")
 
 
 def mine_r_source(source: str) -> dict[str, Any]:
@@ -40,6 +41,7 @@ def mine_r_source(source: str) -> dict[str, Any]:
         "parameters": parameters,
         "file_reads": [item for item in file_reads if item],
         "file_writes": [item for item in file_writes if item],
+        "figures": R_FIGURE_RE.findall(source),
     }
 
 
@@ -73,17 +75,38 @@ def mine_script(path: str | Path) -> dict[str, Any]:
         top_level_steps = []
     steps = []
     for index, step in enumerate(top_level_steps, start=1):
+        step_id = f"tutorial_001:line_{index:03d}"
+        if language == "python":
+            flow = infer_object_flow(step)
+            calls = mine_python_source(step).get("function_calls", [])
+            function_calls = [call["name"] for call in calls]
+            bio_signals = classify_bio_signals(step, calls)
+        else:
+            flow = {"input_objects": [], "output_objects": [name for name, _line, _value in []]}
+            function_calls = [call["name"] for call in mined.get("function_calls", []) if call.get("lineno") == index]
+            bio_signals = classify_bio_signals(step, function_calls)
         steps.append(
             {
-                "id": f"script-step-{index}",
+                "id": step_id,
+                "step_id": step_id,
                 "name": f"Script step {index}",
                 "description": step[:120],
-                "source": str(script_path),
+                "source": f"{script_path}:line:{index}",
                 "source_type": "tutorial_script",
-                "evidence_id": f"{script_path.name}:line:{index}",
+                "evidence_id": step_id,
+                "language": language,
+                "code_preview": step[:200],
+                "imports": mined.get("imports", []),
+                "function_calls": function_calls,
+                "read_files": mined.get("file_reads", []),
+                "write_files": mined.get("file_writes", []),
                 "inputs": mined.get("file_reads", []),
                 "outputs": mined.get("file_writes", []),
+                "input_objects": flow["input_objects"],
+                "output_objects": flow["output_objects"],
                 "parameters": mined.get("parameters", {}),
+                "figures": mined.get("figures", []),
+                "bio_signals": bio_signals,
                 "command_or_code": step,
                 "confidence": "medium",
             }
@@ -99,5 +122,6 @@ def mine_script(path: str | Path) -> dict[str, Any]:
         "parameters": mined.get("parameters", {}),
         "file_reads": mined.get("file_reads", []),
         "file_writes": mined.get("file_writes", []),
+        "steps": steps,
         "workflow_steps": steps,
     }
