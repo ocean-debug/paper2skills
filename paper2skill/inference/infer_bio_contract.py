@@ -53,13 +53,18 @@ def default_bio_contract() -> dict[str, Any]:
     }
 
 
-def infer_bio_contract(tutorial_trace: dict[str, Any], paper_sections: list[dict[str, Any]] | None = None, dependency_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+def infer_bio_contract(
+    tutorial_trace: dict[str, Any],
+    paper_sections: list[dict[str, Any]] | None = None,
+    dependency_evidence: dict[str, Any] | None = None,
+    strict_evidence: bool = False,
+) -> dict[str, Any]:
     text_items = evidence_texts(tutorial_trace, paper_sections or [])
     all_text = "\n".join(text for _eid, text, _source in text_items)
-    modality = first_with_evidence(text_items, MODALITY_RULES)
-    species = first_with_evidence(text_items, SPECIES_RULES)
-    gene_id = first_with_evidence(text_items, GENE_ID_RULES)
-    transformations = transformation_chain(text_items)
+    modality = first_with_evidence(text_items, MODALITY_RULES, strict_evidence)
+    species = first_with_evidence(text_items, SPECIES_RULES, strict_evidence)
+    gene_id = first_with_evidence(text_items, GENE_ID_RULES, strict_evidence)
+    transformations = transformation_chain(text_items, strict_evidence)
     celltype_key = metadata_key(all_text, "celltype_key", ["cell_type", "celltype", "celltypes"])
     base = default_bio_contract()["bio_contract"]
     base["modality"] = {
@@ -72,9 +77,9 @@ def infer_bio_contract(tutorial_trace: dict[str, Any], paper_sections: list[dict
         "gene_id_type": field_value(gene_id[0], gene_id[2], gene_id[1]) if gene_id else field_value(),
     }
     base["input_matrix_state"] = {
-        "raw_counts_required": field_value("raw_counts_loaded" in transformations, "high" if transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "raw_counts_loaded")),
-        "normalized_allowed": field_value("normalized" in transformations, "high" if "normalized" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "normalized")),
-        "log_transformed_allowed": field_value("log1p_transformed" in transformations, "high" if "log1p_transformed" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "log1p_transformed")),
+        "raw_counts_required": field_value("raw_counts_loaded" in transformations, "high" if "raw_counts_loaded" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "raw_counts_loaded", strict_evidence)),
+        "normalized_allowed": field_value("normalized" in transformations, "high" if "normalized" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "normalized", strict_evidence)),
+        "log_transformed_allowed": field_value("log1p_transformed" in transformations, "high" if "log1p_transformed" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "log1p_transformed", strict_evidence)),
         "matrix_orientation": field_value(),
         "matrix_transformations": transformations,
     }
@@ -94,30 +99,36 @@ def evidence_texts(tutorial_trace: dict[str, Any], paper_sections: list[dict[str
             text = "\n".join([step.get("code_preview", ""), step.get("command_or_code", ""), " ".join(step.get("function_calls", [])), " ".join(step.get("imports", []))])
             items.append((step.get("evidence_id") or step.get("step_id", "tutorial:unknown"), text, "tutorial"))
     for section in paper_sections:
-        items.append((section.get("section_id", "paper:unknown"), section.get("text", ""), "paper"))
+        role = section_role(section.get("section_id", ""), section.get("title", ""))
+        items.append((section.get("section_id", "paper:unknown"), section.get("text", ""), f"paper:{role}"))
     return items
 
 
-def first_with_evidence(items: list[tuple[str, str, str]], rules: dict[str, list[str]]) -> tuple[str, list[str], str] | None:
+def first_with_evidence(items: list[tuple[str, str, str]], rules: dict[str, list[str]], strict_evidence: bool = False) -> tuple[str, list[str], str] | None:
     for evidence_id, text, source in items:
         matches = match_rules(text, rules)
         if matches:
-            return matches[0], [evidence_id], "high" if source == "tutorial" else "medium"
+            confidence = confidence_for_source(source)
+            if strict_evidence and confidence == "low":
+                continue
+            return matches[0], [evidence_id], confidence
     return None
 
 
-def transformation_chain(items: list[tuple[str, str, str]]) -> list[str]:
+def transformation_chain(items: list[tuple[str, str, str]], strict_evidence: bool = False) -> list[str]:
     found = []
     for value in MATRIX_STATE_RULES:
-        if evidence_for_value(items, MATRIX_STATE_RULES, value):
+        if evidence_for_value(items, MATRIX_STATE_RULES, value, strict_evidence):
             found.append(value)
     return found
 
 
-def evidence_for_value(items: list[tuple[str, str, str]], rules: dict[str, list[str]], value: str) -> list[str]:
+def evidence_for_value(items: list[tuple[str, str, str]], rules: dict[str, list[str]], value: str, strict_evidence: bool = False) -> list[str]:
     words = rules[value]
     evidence = []
-    for evidence_id, text, _source in items:
+    for evidence_id, text, source in items:
+        if strict_evidence and confidence_for_source(source) == "low":
+            continue
         if any(word.lower() in text.lower() for word in words):
             evidence.append(evidence_id)
     return evidence
@@ -128,3 +139,22 @@ def metadata_key(text: str, _field: str, candidates: list[str]) -> str | None:
         if re.search(rf"['\"]{re.escape(candidate)}['\"]", text) or candidate in text:
             return candidate
     return None
+
+
+def section_role(section_id: str, title: str) -> str:
+    text = f"{section_id} {title}".lower()
+    if any(word in text for word in ["methods", "method", "data", "code", "software"]):
+        return "methods"
+    if any(word in text for word in ["results", "benchmark", "evaluation"]):
+        return "results"
+    if any(word in text for word in ["discussion", "limitation", "abstract", "introduction", "background"]):
+        return "background"
+    return "unknown"
+
+
+def confidence_for_source(source: str) -> str:
+    if source == "tutorial" or source.startswith("docs") or source.startswith("api"):
+        return "high"
+    if source in {"paper:methods", "paper:data", "paper:code"}:
+        return "medium"
+    return "low"

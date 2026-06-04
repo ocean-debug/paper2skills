@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from paper2skill.common import slugify
 from paper2skill.generators.codex_skill_generator import build_context, example_inputs, generate_skill, plan_outputs
 from paper2skill.runtime.env_manager import inspect_environment, load_environment_spec, public_environment_report
 from paper2skill.validators.skill_validator import validate_skill
@@ -71,6 +72,8 @@ def command_plan(args: argparse.Namespace) -> int:
         skip_repo_clone=args.skip_repo_clone,
         no_execute_tutorials=args.no_execute_tutorials,
         strict_evidence=args.strict_evidence,
+        tutorial_filter=args.tutorial_filter,
+        collection_dir=Path(args.out) / ".paper2skill_collection",
         maturity_level=args.maturity_target or "L1",
     )
     out = plan_outputs(context, args.out)
@@ -96,11 +99,17 @@ def command_build(args: argparse.Namespace) -> int:
         "skip_repo_clone": args.skip_repo_clone,
         "no_execute_tutorials": args.no_execute_tutorials,
         "strict_evidence": args.strict_evidence,
+        "tutorial_filter": args.tutorial_filter,
     }.items():
         if value is not None and value != "" and value != [] and value is not False:
             values[key] = value
+    if args.out:
+        out_dir = Path(args.out)
+    else:
+        inferred_name = values.get("skill_name") or values.get("algorithm_name") or "generated-skill"
+        out_dir = Path(".agents") / "skills" / slugify(str(inferred_name))
+    values["collection_dir"] = out_dir.parent / ".paper2skill_collection" / out_dir.name
     context = build_context(**values)
-    out_dir = Path(args.out) if args.out else Path(".agents") / "skills" / context["skill_name"]
     generate_skill(context, out_dir)
     print(f"Generated skill at {out_dir}")
     return 0

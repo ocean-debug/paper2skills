@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ import yaml
 from paper2skill.collectors.path_sanitizer import REDACTED_LOCAL_PATH, public_data
 from paper2skill.collectors.paper_collector import collect_paper
 from paper2skill.collectors.repo_collector import collect_repo
-from paper2skill.collectors.source_manifest import build_source_manifest
+from paper2skill.collectors.tutorial_collector import collect_tutorials
 from paper2skill.common import PROJECT_ROOT, ensure_dir, slugify, write_json, write_text, write_yaml
 from paper2skill.evidence.evidence_graph import build_evidence_graph
 from paper2skill.inference.classify_algorithm import classify_algorithm
@@ -27,6 +28,17 @@ from paper2skill.runtime.install_planner import build_install_plan, render_insta
 
 
 TEMPLATE_ROOT = PROJECT_ROOT / "paper2skill" / "templates" / "codex_skill"
+
+
+@dataclass
+class ResolvedInputs:
+    paper_result: dict[str, Any] | None
+    repo_result: dict[str, Any] | None
+    repo_path: Path | None
+    explicit_tutorials: list[Path]
+    selected_tutorials: list[Path]
+    source_manifest: dict[str, Any]
+    warnings: list[str]
 
 
 def example_inputs(example: str) -> dict[str, Any]:
@@ -58,6 +70,83 @@ def example_inputs(example: str) -> dict[str, Any]:
     raise ValueError(f"unknown example: {example}")
 
 
+def resolve_inputs(
+    *,
+    paper: str | None,
+    repo: str | None,
+    tutorials: list[str],
+    paper_url: str | None,
+    paper_title: str | None,
+    repo_ref: str,
+    skip_repo_clone: bool,
+    tutorial_filter: str | None,
+    collection_dir: str | Path | None,
+    skill_name: str,
+) -> ResolvedInputs:
+    base = Path.cwd().resolve()
+    work_dir = Path(collection_dir).resolve() if collection_dir else (base / ".paper2skill-resolve" / skill_name)
+    warnings: list[str] = []
+    paper_result = collect_paper(paper, paper_url, paper_title, base)
+    repo_result = collect_repo(repo, repo_ref, base, work_dir=work_dir, skip_clone=skip_repo_clone) if repo else None
+    if repo_result and (repo_result.get("manifest") or {}).get("clone_status") == "skipped":
+        warnings.append("remote repo clone was skipped; repo-dependent mining was not executed")
+    repo_path = Path(repo_result["resolved_path"]) if repo_result and repo_result.get("resolved_path") and Path(repo_result["resolved_path"]).exists() else None
+    explicit_tutorials = resolve_tutorial_paths(tutorials, repo_path)
+    selected_tutorials = explicit_tutorials
+    tutorial_result = collect_tutorials([str(path) for path in explicit_tutorials], base_dir=repo_path or base)
+    source_manifest = {
+        "base_dir": REDACTED_LOCAL_PATH,
+        "paper": paper_result,
+        "repo": repo_result or {"url": None, "local_path": None, "resolved_path": None, "ref": repo_ref, "exists": False, "manifest": None, "index": {"files": []}},
+        "tutorial": tutorial_result,
+        "options": {
+            "target": "codex_skill",
+            "allow_network": False,
+            "install_policy": "ask",
+            "maturity_target": "L1",
+            "repo_ref": repo_ref,
+            "skip_repo_clone": skip_repo_clone,
+            "tutorial_filter": tutorial_filter,
+        },
+    }
+    return ResolvedInputs(paper_result, repo_result, repo_path, explicit_tutorials, selected_tutorials, source_manifest, warnings)
+
+
+def resolve_tutorial_paths(tutorials: list[str], repo_path: Path | None) -> list[Path]:
+    resolved = []
+    for value in tutorials:
+        path = Path(value)
+        if path.exists():
+            resolved.append(path.resolve())
+            continue
+        if repo_path and (repo_path / value).exists():
+            resolved.append((repo_path / value).resolve())
+            continue
+        resolved.append(path)
+    return resolved
+
+
+def public_resolved_inputs(resolved: ResolvedInputs) -> dict[str, Any]:
+    data = asdict(resolved)
+    data["repo_path"] = str(resolved.repo_path) if resolved.repo_path else None
+    data["explicit_tutorials"] = [str(path) for path in resolved.explicit_tutorials]
+    data["selected_tutorials"] = [str(path) for path in resolved.selected_tutorials]
+    return public_data(data, PROJECT_ROOT)
+
+
+def infer_adapter_type(repo_evidence: dict[str, Any], tutorial_trace: dict[str, Any], classification: dict[str, str]) -> str:
+    if repo_evidence.get("entrypoints") or repo_evidence.get("cli_commands"):
+        return "cli"
+    if repo_evidence.get("workflow_engines"):
+        return "workflow_engine"
+    if repo_evidence.get("package_type") == "r_package" or classification.get("language") == "r":
+        return "r_script"
+    tutorials = tutorial_trace.get("tutorials", [])
+    if tutorials and all(trace.get("language") == "python" for trace in tutorials) and not repo_evidence.get("api_functions"):
+        return "notebook"
+    return "demo_only"
+
+
 def build_context(
     *,
     skill_name: str | None = None,
@@ -74,23 +163,47 @@ def build_context(
     skip_repo_clone: bool = False,
     no_execute_tutorials: bool = True,
     strict_evidence: bool = False,
+    tutorial_filter: str | None = None,
+    collection_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     skill_name = slugify(skill_name or algorithm_name or "generated-skill")
     algorithm_name = algorithm_name or skill_name.replace("-", " ").title()
     tutorials = tutorials or []
-    source_manifest = build_source_manifest(paper, repo, tutorials, paper_url, paper_title, repo_ref=repo_ref)
-    if tutorials:
-        tutorial_trace = mine_tutorials(tutorials)
-    elif repo and Path(repo).exists():
-        tutorial_trace = mine_repo_tutorials(repo)
+    resolved = resolve_inputs(
+        paper=paper,
+        repo=repo,
+        tutorials=tutorials,
+        paper_url=paper_url,
+        paper_title=paper_title,
+        repo_ref=repo_ref,
+        skip_repo_clone=skip_repo_clone,
+        tutorial_filter=tutorial_filter,
+        collection_dir=collection_dir,
+        skill_name=skill_name,
+    )
+    source_manifest = resolved.source_manifest
+    tutorial_paths = [str(path) for path in resolved.selected_tutorials]
+    if tutorial_paths:
+        tutorial_trace = mine_tutorials(tutorial_paths, base_dir=resolved.repo_path if resolved.repo_path else None)
+        if resolved.repo_path and not tutorials:
+            repo_tutorial_trace = mine_repo_tutorials(resolved.repo_path, tutorial_filter=tutorial_filter)
+            tutorial_trace["tutorial_candidates"] = repo_tutorial_trace.get("tutorial_candidates", [])
+            tutorial_trace["tutorial_scanner_report"] = repo_tutorial_trace.get("tutorial_scanner_report", {})
+        else:
+            tutorial_trace["tutorial_candidates"] = []
+            tutorial_trace["tutorial_scanner_report"] = {"total": len(tutorial_paths), "included": len(tutorial_paths), "filter": tutorial_filter}
+    elif resolved.repo_path:
+        tutorial_trace = mine_repo_tutorials(resolved.repo_path, tutorial_filter=tutorial_filter)
     else:
-        tutorial_trace = {"tutorials": [], "workflow_steps": [], "steps": [], "tutorial_candidates": [], "tutorial_scanner_report": {"total": 0, "included": 0}}
-    dependency_evidence = mine_dependencies(repo, tutorials)
-    repo_evidence = mine_api(repo)
+        tutorial_trace = {"tutorials": [], "workflow_steps": [], "steps": [], "tutorial_candidates": [], "tutorial_scanner_report": {"total": 0, "included": 0, "filter": tutorial_filter}}
+    tutorial_trace["tutorial_execution_status"] = "not_executed_by_policy" if no_execute_tutorials else "not_executed"
+    dependency_evidence = mine_dependencies(resolved.repo_path, tutorial_paths)
+    repo_evidence = mine_api(resolved.repo_path)
     classification = classify_algorithm(repo_evidence, tutorial_trace)
     if language:
         classification["language"] = language
         classification["execution_mode"] = "python_api" if language == "python" else "r_script"
+    adapter_type = infer_adapter_type(repo_evidence, tutorial_trace, classification)
     environment_spec = infer_environment_spec(dependency_evidence, classification["language"])
     if classification["language"] == "python" and not environment_spec["python"]["packages"]:
         environment_spec["python"]["packages"] = []
@@ -98,9 +211,11 @@ def build_context(
         environment_spec["r"]["required"] = True
     environment_report = inspect_environment(environment_spec)
     install_plan = build_install_plan(environment_report, environment_spec)
-    io_contract = infer_io_contract(tutorial_trace)
     parameters = infer_parameters(tutorial_trace)
     workflow = infer_workflow(tutorial_trace)
+    paper_sections = (((source_manifest.get("paper") or {}).get("parsed_document") or {}).get("sections") or [])
+    bio_contract = infer_bio_contract(tutorial_trace, paper_sections, dependency_evidence, strict_evidence=strict_evidence)
+    io_contract = infer_io_contract(tutorial_trace, bio_contract)
     algorithm_contract = {
         "algorithm": {
             "name": algorithm_name,
@@ -109,6 +224,7 @@ def build_context(
             "modality": "not_confirmed",
             "language": classification["language"],
             "execution_mode": classification["execution_mode"],
+            "adapter_type": adapter_type,
             "maturity_level": maturity_level,
         },
         **io_contract,
@@ -124,8 +240,6 @@ def build_context(
         "sources": source_manifest,
         "claims": _claims_from_context(algorithm_contract, workflow),
     }
-    paper_sections = (((source_manifest.get("paper") or {}).get("parsed_document") or {}).get("sections") or [])
-    bio_contract = infer_bio_contract(tutorial_trace, paper_sections, dependency_evidence)
     evidence_graph = build_evidence_graph(
         paper_evidence=source_manifest.get("paper"),
         tutorial_trace=tutorial_trace,
@@ -140,6 +254,7 @@ def build_context(
         "language": classification["language"],
         "maturity_level": maturity_level,
         "source_manifest": source_manifest,
+        "resolved_inputs": public_resolved_inputs(resolved),
         "paper_evidence": _paper_evidence(source_manifest),
         "repo_evidence": repo_evidence,
         "dependency_evidence": dependency_evidence,
@@ -161,7 +276,9 @@ def build_context(
             "skip_repo_clone": skip_repo_clone,
             "no_execute_tutorials": no_execute_tutorials,
             "strict_evidence": strict_evidence,
+            "tutorial_filter": tutorial_filter,
         },
+        "warnings": resolved.warnings,
         "demo_data": _demo_data_for_language(classification["language"]),
     }
 
@@ -177,6 +294,11 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
         "scripts/plan.py.j2": "scripts/plan.py",
         "scripts/run.py.j2": "scripts/run.py",
         "scripts/validate_outputs.py.j2": "scripts/validate_outputs.py",
+        "scripts/adapters/__init__.py.j2": "scripts/adapters/__init__.py",
+        "scripts/adapters/python_api_adapter.py.j2": "scripts/adapters/python_api_adapter.py",
+        "scripts/adapters/cli_adapter.py.j2": "scripts/adapters/cli_adapter.py",
+        "scripts/adapters/notebook_adapter.py.j2": "scripts/adapters/notebook_adapter.py",
+        "scripts/adapters/r_script_adapter.R.j2": "scripts/adapters/r_script_adapter.R",
         "references/evidence_report.md.j2": "references/evidence_report.md",
         "references/paper_summary.md.j2": "references/paper_summary.md",
         "references/repo_summary.md.j2": "references/repo_summary.md",
@@ -194,6 +316,7 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
         content = env.get_template(template_name).render(**public_context)
         write_text(root / rel_target, content)
     write_json(root / "references" / "tutorial_trace.json", public_context["tutorial_trace"])
+    write_json(root / "references" / "workflow_dag.json", public_context["workflow"].get("workflow_dag", {"nodes": [], "edges": []}))
     write_json(root / "references" / "tutorial_candidates.json", public_context["tutorial_trace"].get("tutorial_candidates", []))
     write_json(root / "references" / "tutorial_scanner_report.json", public_context["tutorial_trace"].get("tutorial_scanner_report", {}))
     write_json(root / "references" / "environment_report.json", _public_environment_report(context["environment_report"]))
@@ -204,7 +327,7 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_yaml(root / "references" / "bio_contract.yaml", public_context["bio_contract"])
     write_yaml(root / "references" / "io_contract.yaml", {"input_contract": public_context["algorithm_contract"].get("input_contract"), "output_contract": public_context["algorithm_contract"].get("output_contract")})
     write_json(root / "references" / "evidence_graph.json", public_context["evidence_graph"])
-    write_optional_collection_outputs(context, root)
+    write_optional_collection_outputs(public_context, root)
     write_json(root / "references" / "build_report.json", public_data(build_report(context), PROJECT_ROOT))
     write_text(root / "references" / "install_plan.md", public_context["install_plan_markdown"])
     write_text(root / "assets" / "environment_spec.yaml", json.dumps(public_context["environment_spec"], indent=2) + "\n")
@@ -216,24 +339,69 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     return root
 
 
-def write_optional_collection_outputs(context: dict[str, Any], root: Path) -> None:
-    sources = context.get("input_sources", {})
-    if sources.get("paper"):
-        collect_paper(sources["paper"], out_dir=root)
-    if sources.get("repo"):
-        repo_result = collect_repo(sources["repo"], ref=sources.get("repo_ref"), work_dir=root, skip_clone=sources.get("skip_repo_clone", False))
-        write_json(root / "references" / "repo_manifest.json", public_data(repo_result.get("manifest"), root))
-        write_json(root / "references" / "repo_index.json", public_data(repo_result.get("index"), root))
+def write_optional_collection_outputs(public_context: dict[str, Any], root: Path) -> None:
+    paper = (public_context.get("source_manifest") or {}).get("paper") or {}
+    parsed = paper.get("parsed_document") or {}
+    if parsed:
+        write_text(root / "references" / "paper.md", parsed.get("markdown", ""))
+        write_json(
+            root / "references" / "paper_sections.json",
+            {
+                "source_path": parsed.get("source_path"),
+                "parser_name": parsed.get("parser_name"),
+                "sections": [
+                    {
+                        "section_id": section.get("section_id"),
+                        "title": section.get("title"),
+                        "level": section.get("level"),
+                        "start_line": section.get("start_line"),
+                        "end_line": section.get("end_line"),
+                        "char_count": len(section.get("text", "")),
+                    }
+                    for section in parsed.get("sections", [])
+                ],
+                "warnings": parsed.get("warnings", []),
+            },
+        )
+        write_json(
+            root / "references" / "paper_parser_report.json",
+            {
+                "source_path": parsed.get("source_path"),
+                "source_type": parsed.get("source_type"),
+                "parser_name": parsed.get("parser_name"),
+                "warnings": parsed.get("warnings", []),
+            },
+        )
+    repo = (public_context.get("source_manifest") or {}).get("repo") or {}
+    write_json(root / "references" / "repo_manifest.json", repo.get("manifest"))
+    write_json(root / "references" / "repo_index.json", repo.get("index", {"files": []}))
 
 
 def build_report(context: dict[str, Any]) -> dict[str, Any]:
     sources = context.get("input_sources", {})
     missing = {}
+    warnings = list(context.get("warnings", []))
     if not sources.get("paper"):
         missing["paper"] = "not provided"
     if not sources.get("repo"):
         missing["repo"] = "not provided"
-    return {"status": "built", "missing_inputs": missing, "options": sources}
+    if sources.get("no_execute_tutorials", True):
+        warnings.append("tutorial_execution_status=not_executed_by_policy")
+    unresolved = [
+        decision
+        for decision in (context.get("evidence_graph") or {}).get("decisions", [])
+        if (decision.get("decision") or {}).get("status") == "unresolved"
+    ]
+    if unresolved:
+        warnings.append("unresolved evidence conflicts present")
+    return {
+        "status": "built_with_warnings" if warnings else "built",
+        "missing_inputs": missing,
+        "options": sources,
+        "warnings": sorted(dict.fromkeys(warnings)),
+        "tutorial_execution_status": (context.get("tutorial_trace") or {}).get("tutorial_execution_status", "not_executed_by_policy"),
+        "unresolved_conflicts": unresolved,
+    }
 
 
 def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:
@@ -243,6 +411,7 @@ def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_json(root / "paper_evidence.json", public_context["paper_evidence"])
     write_json(root / "repo_evidence.json", public_context["repo_evidence"])
     write_json(root / "tutorial_trace.json", public_context["tutorial_trace"])
+    write_json(root / "workflow_dag.json", public_context["workflow"].get("workflow_dag", {"nodes": [], "edges": []}))
     write_yaml(root / "algorithm_contract.preview.yaml", public_context["algorithm_contract"])
     write_json(root / "environment_report.json", _public_environment_report(context["environment_report"]))
     write_text(root / "build_plan.md", _build_plan_markdown(public_context))

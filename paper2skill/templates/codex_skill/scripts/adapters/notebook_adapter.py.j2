@@ -1,0 +1,11 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+
+def run(manifest: dict, out: Path) -> dict:
+    return {
+        "status": "not_implemented",
+        "adapter_type": "notebook",
+        "message": "Notebook execution is intentionally gated and not run automatically.",
+    }

@@ -12,12 +12,17 @@ dependencies = [
   "Jinja2>=3.1",
   "packaging>=23",
   "PyYAML>=6.0",
-  "pytest>=8.0",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+]
+paper = [
+  "markitdown[pdf,docx,pptx,xlsx]>=0.1",
+]
+html = [
+  "beautifulsoup4>=4.12",
 ]
 
 [project.scripts]

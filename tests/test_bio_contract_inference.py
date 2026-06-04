@@ -32,3 +32,16 @@ def test_bio_contract_infers_single_cell_transform_chain_and_metadata_key():
     assert bio["modality"]["primary"]["value"] == "scRNA-seq"
     assert bio["input_matrix_state"]["matrix_transformations"] == ["raw_counts_loaded", "normalized", "log1p_transformed"]
     assert bio["metadata_requirements"]["celltype_key"]["value"] == "cell_type"
+
+
+def test_strict_bio_contract_does_not_promote_background_species_keyword():
+    sections = [
+        {
+            "section_id": "paper:introduction",
+            "title": "Introduction",
+            "text": "Human disease studies often motivate computational methods.",
+        }
+    ]
+    contract = infer_bio_contract({"tutorials": [], "workflow_steps": []}, paper_sections=sections, strict_evidence=True)
+    species = contract["bio_contract"]["organism"]["species_supported"]
+    assert species["value"] == "not_confirmed"

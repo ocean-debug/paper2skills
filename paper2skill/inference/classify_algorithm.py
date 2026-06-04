@@ -11,8 +11,18 @@ def classify_algorithm(repo_evidence: dict[str, Any], tutorial_trace: dict[str, 
             language = "python"
         elif "r" in languages:
             language = "r"
+    if repo_evidence.get("workflow_engines"):
+        execution_mode = "workflow_engine"
+    elif repo_evidence.get("entrypoints") or repo_evidence.get("cli_commands"):
+        execution_mode = "cli"
+    elif language == "python":
+        execution_mode = "python_api"
+    elif language == "r":
+        execution_mode = "r_script"
+    else:
+        execution_mode = "unknown"
     return {
         "domain": "bioinformatics",
         "language": language or "unknown",
-        "execution_mode": "python_api" if language == "python" else ("r_script" if language == "r" else "unknown"),
+        "execution_mode": execution_mode,
     }
