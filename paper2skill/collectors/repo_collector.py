@@ -23,15 +23,29 @@ def collect_repo(
     skip_clone: bool = False,
 ) -> dict[str, Any]:
     if not repo:
-        return {"url": None, "local_path": None, "ref": ref, "exists": False, "manifest": None, "index": {"files": []}}
+        return {
+            "url": None,
+            "local_path": None,
+            "resolved_path": None,
+            "ref": ref,
+            "exists": False,
+            "manifest": None,
+            "index": {"files": []},
+        }
     base = Path(base_dir).resolve() if base_dir else Path.cwd().resolve()
     is_remote = is_remote_repo(repo)
-    if is_remote and not skip_clone and work_dir:
+    clone_status = "local"
+    if is_remote and skip_clone:
+        path: Path | None = None
+        clone_status = "skipped"
+    elif is_remote and work_dir:
         path = clone_repo(repo, Path(work_dir), ref)
+        clone_status = "cloned"
     else:
         path = local_repo_path(repo)
-    exists = path.exists()
-    manifest = build_repo_manifest(repo, path, ref, is_remote)
+        clone_status = "remote_unresolved" if is_remote else "local"
+    exists = bool(path and path.exists())
+    manifest = build_repo_manifest(repo, path, ref, is_remote, clone_status)
     index = index_repo(path) if exists else {"files": []}
     if work_dir:
         references = Path(work_dir) / "references"
@@ -39,7 +53,8 @@ def collect_repo(
         write_json(references / "repo_index.json", index)
     return {
         "url": repo if is_remote else None,
-        "local_path": public_local_path(path, base),
+        "local_path": public_local_path(path, base) if path else None,
+        "resolved_path": str(path) if path else None,
         "ref": ref,
         "exists": exists,
         "manifest": manifest,
@@ -89,13 +104,15 @@ def repo_name_from_url(repo: str) -> str:
     return value or "repo"
 
 
-def build_repo_manifest(repo: str, path: Path, ref: str | None, is_remote: bool) -> dict[str, Any]:
+def build_repo_manifest(repo: str, path: Path | None, ref: str | None, is_remote: bool, clone_status: str = "local") -> dict[str, Any]:
     return {
         "repo_url": repo if is_remote else None,
-        "repo_name": path.name,
-        "local_path": str(path),
-        "commit_sha": git_rev_parse(path),
+        "repo_name": path.name if path else repo_name_from_url(repo),
+        "local_path": str(path) if path else None,
+        "commit_sha": git_rev_parse(path) if path else None,
         "ref": ref,
+        "requested_ref": ref,
+        "clone_status": clone_status,
         "collected_at": datetime.now(timezone.utc).isoformat(),
         "is_remote": is_remote,
     }

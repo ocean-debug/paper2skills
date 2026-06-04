@@ -1,4 +1,5 @@
 # Local tooling state
+.agents/
 .understand-anything/
 .vscode/
 .idea/
@@ -7,6 +8,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -31,8 +33,16 @@ paper2skill_plan/
 .paper2skill-smoke-leaks.txt
 .paper2skill_desensitize_smoke.sh
 .paper2skills-sync.tar
-.agents/skills/toy-*-skill/
-.agents/skills/smoke-*-skill/
+.paper2skill-resolve/
+.paper2skill_collection/
+
+# Local planning / product notes, not release artifacts
+prd.md
+PRD.md
+next.md
+CODEX_*.md
+*_PLAN.md
+*_plan.md
 
 # Logs, temp files, and OS metadata
 *.log

@@ -129,3 +129,45 @@ Suggests:
     assert deps["r"] == ["Matrix", "Seurat"]
     assert deps["optional"]["r"]["DESCRIPTION:Suggests"] == ["knitr", "testthat"]
     assert deps["optional"]["r"]["renv.lock"] == ["dplyr", "ggplot2"]
+
+
+def test_environment_yml_setup_cfg_and_description_system_requirements(tmp_path):
+    (tmp_path / "environment.yml").write_text(
+        """
+name: demo
+dependencies:
+  - python=3.11
+  - numpy
+  - pip:
+      - scanpy>=1.10
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "setup.cfg").write_text(
+        """
+[options]
+install_requires =
+    anndata>=0.10
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "DESCRIPTION").write_text(
+        """
+Package: demo
+Imports:
+    DESeq2
+SystemRequirements: libxml2, hdf5
+Remotes: user/custompkg
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    deps = mine_dependencies(tmp_path)
+    assert "scanpy>=1.10" in deps["python"]
+    assert "anndata>=0.10" in deps["python"]
+    assert deps["conda_records"][0]["name"] == "numpy"
+    assert deps["r_records"][0]["source"] == "Bioconductor_or_unknown"
+    assert {"value": "libxml2", "source": "DESCRIPTION", "required": True, "install": "plan_only"} in deps["system_requirements"]
+    assert deps["external_resources"][0]["name"] == "user/custompkg"

@@ -16,6 +16,11 @@ def infer_environment_spec(dependencies: dict[str, Any], language: str = "unknow
             "packages": r_packages,
         },
         "executables": dependencies.get("executables", []),
+        "conda": {
+            "packages": dependencies.get("conda_records", []),
+        },
+        "system_requirements": dependencies.get("system_requirements", []),
+        "external_resources": dependencies.get("external_resources", []),
         "optional_dependencies": dependencies.get("optional", {"python": {}, "r": {}}),
         "ignored_dependencies": dependencies.get("ignored", []),
         "optional": {

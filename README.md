@@ -10,7 +10,14 @@ and output validation.
 ## Install
 
 ```bash
+python -m pip install -e .
 python -m pip install -e ".[dev]"
+```
+
+Optional document parsing extras:
+
+```bash
+python -m pip install -e ".[paper,html]"
 ```
 
 ## Quick Start
@@ -63,6 +70,7 @@ call an online LLM or article API.
     plan.py
     run.py
     validate_outputs.py
+    adapters/
   references/
   assets/
   tests/
@@ -82,6 +90,7 @@ references/paper_sections.json
 references/paper_parser_report.json
 references/repo_manifest.json
 references/repo_index.json
+references/workflow_dag.json
 references/tutorial_candidates.json
 references/tutorial_scanner_report.json
 references/io_contract.yaml
@@ -96,6 +105,32 @@ dependencies block execution, produce environment and install reports, and never
 trigger installation unless the user explicitly runs install with
 `--confirm yes`. In CI or non-interactive shells, `ask` behaves as `never`.
 
+## Current Support Matrix
+
+Supported now:
+
+- Local repository builds and basic `file://` remote clone/index flows.
+- Markdown, plain text, HTML, and optional MarkItDown document parsing.
+- Python and R toy skill generation.
+- Tutorial scanning, dependency mining, workflow DAG inference, and basic bio IO contracts.
+- Environment preflight, install planning, and gated disposable conda environment creation.
+
+Experimental:
+
+- Full remote repository inference from cloned sources.
+- Evidence graph conflict decisions.
+- Source-aware bio contract inference.
+- Adapter-based execution scaffolding.
+
+Not yet:
+
+- Robust large benchmark coverage.
+- Complete Bioconductor metadata resolution.
+- CUDA/system library automatic configuration.
+- Large dataset download automation.
+- Arbitrary install script execution.
+- Fully automatic real algorithm execution for unknown repositories.
+
 ## Maturity Levels
 
 The builder records maturity explicitly. The MVP targets stable L1 generation:
@@ -105,6 +140,7 @@ toy Python and toy R examples are intended as L2 demo-executable examples.
 ## Roadmap
 
 - MVP: Codex Skill generation for Python and R algorithm repositories.
+- Next: benchmark suite for Scanpy, Seurat, and DESeq2-style workflows.
 - Later: optional MCP export.
 - Later: optional Codex plugin packaging.
 - Out of scope for MVP: GPU/CUDA auto-configuration, large dataset download,

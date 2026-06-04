@@ -57,7 +57,7 @@ Run:
 python scripts/plan.py --manifest input_manifest.yaml
 ```
 
-The planner reads `references/tutorial_trace.json` and writes `workflow/plan.json` and `workflow/plan.md`.
+The planner reads `references/tutorial_trace.json` and `references/workflow_dag.json`, then writes `workflow/plan.json` and `workflow/plan.md`.
 
 ## Execution workflow
 
@@ -67,7 +67,7 @@ Run:
 python scripts/run.py --manifest input_manifest.yaml
 ```
 
-`run.py` calls preflight first and stops if preflight fails. Demo execution only proves the tutorial path, not biological validity on user data.
+`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Demo execution only proves the tutorial path, not biological validity on user data, and must not be treated as real algorithm execution unless the adapter report explicitly passes.
 
 ## Output contract
 
@@ -96,6 +96,7 @@ Dry-run results are not biological results. Demo runs only prove that the tutori
 
 - `references/evidence_report.md`
 - `references/tutorial_trace.md`
+- `references/workflow_dag.json`
 - `references/api_reference.md`
 - `references/paper_summary.md`
 - `references/repo_summary.md`

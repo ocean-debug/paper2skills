@@ -29,12 +29,27 @@ def mine_tutorials(paths: list[str | Path], base_dir: str | Path | None = None) 
     return {"tutorials": traces, "workflow_steps": workflow_steps, "steps": workflow_steps}
 
 
-def mine_repo_tutorials(repo_root: str | Path) -> dict[str, Any]:
+def mine_repo_tutorials(repo_root: str | Path, tutorial_filter: str | None = None) -> dict[str, Any]:
     scan = scan_tutorial_candidates(repo_root)
-    included = [Path(repo_root) / item.path for item in scan["candidates"] if item.include_in_tools]
+    candidates = scan["candidates"]
+    if tutorial_filter:
+        needle = tutorial_filter.lower()
+        filtered = []
+        for item in candidates:
+            title = item.title or ""
+            if needle in item.path.lower() or needle in title.lower():
+                filtered.append(item)
+            else:
+                item.include_in_tools = False
+                item.reason = "excluded_by_filter"
+        candidates = filtered
+    included = [Path(repo_root) / item.path for item in candidates if item.include_in_tools]
     trace = mine_tutorials(included, base_dir=repo_root)
-    trace["tutorial_candidates"] = [item.__dict__ for item in scan["candidates"]]
-    trace["tutorial_scanner_report"] = scan["report"]
+    trace["tutorial_candidates"] = [item.__dict__ for item in candidates]
+    report = dict(scan["report"])
+    report["filter"] = tutorial_filter
+    report["included_after_filter"] = sum(1 for item in candidates if item.include_in_tools)
+    trace["tutorial_scanner_report"] = report
     return trace
 
 

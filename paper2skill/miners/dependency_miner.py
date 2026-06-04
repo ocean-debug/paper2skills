@@ -4,15 +4,18 @@ import json
 import re
 import tomllib
 import sys
+import configparser
 from pathlib import Path
 from typing import Any
 
+import yaml
 from packaging.requirements import InvalidRequirement, Requirement
 
 from paper2skill.collectors.path_sanitizer import public_local_path
 from paper2skill.miners.script_miner import R_LIBRARY_RE
 
 R_BASE_PACKAGES = {"base", "compiler", "datasets", "graphics", "grDevices", "grid", "methods", "parallel", "splines", "stats", "tools", "utils"}
+BIOCONDUCTOR_HINTS = {"DESeq2", "edgeR", "limma", "clusterProfiler", "SingleCellExperiment", "SummarizedExperiment", "AnnotationDbi", "BiocGenerics", "scran", "scater", "ComplexHeatmap"}
 
 
 def parse_requirements(path: Path) -> list[str]:
@@ -159,6 +162,64 @@ def parse_description_fields(path: Path) -> tuple[list[str], dict[str, list[str]
     return required, {key: value for key, value in optional.items() if value}
 
 
+def parse_description_metadata(path: Path) -> dict[str, list[str]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    fields: dict[str, list[str]] = {"SystemRequirements": [], "Remotes": []}
+    capture: str | None = None
+    for line in text.splitlines():
+        match = re.match(r"^(SystemRequirements|Remotes):", line)
+        if match:
+            capture = match.group(1)
+            line = line.split(":", 1)[1]
+        elif capture and line and not line.startswith((" ", "\t")):
+            capture = None
+        if capture:
+            fields[capture].extend([item.strip() for item in line.split(",") if item.strip()])
+    return {key: value for key, value in fields.items() if value}
+
+
+def parse_environment_yml(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except yaml.YAMLError:
+        return [], []
+    python_records = []
+    conda_records = []
+    for dep in data.get("dependencies", []) or []:
+        if isinstance(dep, str):
+            name = dep.split("=", 1)[0].strip()
+            if name and name not in {"python", "pip", "r-base"}:
+                conda_records.append({"package": dep, "name": name, "source": path.name, "required": True, "category": "runtime"})
+        elif isinstance(dep, dict):
+            for key, values in dep.items():
+                if key == "pip":
+                    for spec in values or []:
+                        record = _python_record(str(spec), path.name, "dependencies.pip")
+                        if record:
+                            python_records.append(record)
+                else:
+                    conda_records.append({"package": key, "source": path.name, "required": True, "category": "runtime"})
+    return python_records, conda_records
+
+
+def parse_setup_cfg(path: Path) -> list[dict[str, Any]]:
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8")
+    specs = []
+    if parser.has_option("options", "install_requires"):
+        specs = [line.strip() for line in parser.get("options", "install_requires").splitlines() if line.strip()]
+    return [record for spec in specs if (record := _python_record(spec, "setup.cfg", "options.install_requires"))]
+
+
+def parse_setup_py(path: Path) -> list[dict[str, Any]]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"install_requires\s*=\s*\[([^\]]*)\]", text, re.S)
+    if not match:
+        return []
+    specs = re.findall(r"['\"]([^'\"]+)['\"]", match.group(1))
+    return [record for spec in specs if (record := _python_record(spec, "setup.py", "install_requires"))]
+
+
 def parse_renv_lock(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -173,18 +234,32 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
     r_packages: list[str] = []
     r_records: list[dict[str, Any]] = []
     dependency_files = []
+    conda_records: list[dict[str, Any]] = []
+    system_requirements: list[dict[str, Any]] = []
+    external_resources: list[dict[str, Any]] = []
     optional: dict[str, dict[str, list[str]]] = {"python": {}, "r": {}}
     ignored: list[dict[str, str]] = []
     root = Path(repo_path).resolve() if repo_path else None
     if root and root.exists():
-        for file_name in ["requirements.txt"]:
-            path = root / file_name
-            if path.exists():
+        requirement_paths = [root / "requirements.txt"]
+        requirements_dir = root / "requirements"
+        if requirements_dir.exists():
+            requirement_paths.extend(sorted(requirements_dir.glob("*.txt")))
+        for path in requirement_paths:
+            if path.exists() and path.is_file():
                 dependency_files.append(public_local_path(path, root))
                 records, skipped = parse_requirements_records(path)
                 python_records.extend(records)
                 python_packages.extend(item["spec"] for item in records)
                 ignored.extend(skipped)
+        for file_name in ["environment.yml", "environment.yaml", "conda.yml"]:
+            path = root / file_name
+            if path.exists():
+                dependency_files.append(public_local_path(path, root))
+                records, conda = parse_environment_yml(path)
+                python_records.extend(records)
+                python_packages.extend(item["spec"] for item in records)
+                conda_records.extend(conda)
         pyproject = root / "pyproject.toml"
         if pyproject.exists():
             dependency_files.append(public_local_path(pyproject, root))
@@ -193,13 +268,28 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
             python_packages.extend(item["spec"] for item in records)
             optional["python"].update(optional_python)
             ignored.extend(skipped)
+        setup_cfg = root / "setup.cfg"
+        if setup_cfg.exists():
+            dependency_files.append(public_local_path(setup_cfg, root))
+            records = parse_setup_cfg(setup_cfg)
+            python_records.extend(records)
+            python_packages.extend(item["spec"] for item in records)
+        setup_py = root / "setup.py"
+        if setup_py.exists():
+            dependency_files.append(public_local_path(setup_py, root))
+            records = parse_setup_py(setup_py)
+            python_records.extend(records)
+            python_packages.extend(item["spec"] for item in records)
         description = root / "DESCRIPTION"
         if description.exists():
             dependency_files.append(public_local_path(description, root))
             required_r, optional_r = parse_description_fields(description)
             r_packages.extend(required_r)
-            r_records.extend({"name": name, "source": "DESCRIPTION", "evidence": "Imports/Depends", "required": True, "category": "runtime"} for name in required_r)
+            r_records.extend({"name": name, "source": "Bioconductor_or_unknown" if name in BIOCONDUCTOR_HINTS else "DESCRIPTION", "evidence": "Imports/Depends", "required": True, "category": "runtime"} for name in required_r)
             optional["r"].update(optional_r)
+            metadata = parse_description_metadata(description)
+            system_requirements.extend({"value": item, "source": "DESCRIPTION", "required": True, "install": "plan_only"} for item in metadata.get("SystemRequirements", []))
+            external_resources.extend({"name": item, "type": "r_remote", "source": "DESCRIPTION:Remotes", "required": False, "downloadable": False} for item in metadata.get("Remotes", []))
         renv = root / "renv.lock"
         if renv.exists():
             dependency_files.append(public_local_path(renv, root))
@@ -224,6 +314,9 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
         "r_records": sorted(r_records, key=lambda item: item["name"]),
         "optional": optional,
         "ignored": ignored,
+        "conda_records": sorted(conda_records, key=lambda item: item.get("package", item.get("name", ""))),
+        "system_requirements": system_requirements,
+        "external_resources": external_resources,
         "executables": [],
     }
 

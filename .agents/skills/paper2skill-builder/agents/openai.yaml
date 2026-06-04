@@ -1,4 +1,0 @@
-name: paper2skill-builder
-description: Generate evidence-first Codex skills from paper, repository, and tutorial inputs.
-entrypoints:
-  build: scripts/build_skill.py
