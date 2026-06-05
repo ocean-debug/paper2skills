@@ -5,7 +5,7 @@ from pathlib import Path
 
 def run(manifest: dict, out: Path) -> dict:
     return {
-        "status": "not_implemented",
+        "status": "blocked",
         "adapter_type": "notebook",
-        "message": "Notebook execution is intentionally gated and not run automatically.",
+        "message": "Notebook adapter is candidate-only and is not run automatically.",
     }

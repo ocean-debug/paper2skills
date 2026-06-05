@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from paper2skill.common import PROJECT_ROOT
 from paper2skill.generators.codex_skill_generator import build_context, example_inputs, generate_skill, plan_outputs
@@ -18,6 +19,7 @@ def test_generator_creates_complete_toy_python_skill(tmp_path: Path):
     result = validate_skill(out)
     assert result["status"] == "pass", result
     assert (out / "references" / "algorithm_contract.yaml").exists()
+    assert (out / "references" / "adapter_spec.yaml").exists()
     assert (out / "references" / "bio_contract.yaml").exists()
     assert (out / "references" / "workflow_dag.json").exists()
     assert (out / "scripts" / "adapters" / "python_api_adapter.py").exists()
@@ -73,6 +75,60 @@ def test_plan_outputs_do_not_include_absolute_paths(tmp_path: Path):
     context = build_context(**example_inputs("toy_python"))
     out = plan_outputs(context, tmp_path / "plan")
     assert_no_absolute_path_markers(out)
+
+
+def test_validate_skill_rejects_missing_or_invalid_adapter_spec(tmp_path: Path):
+    context = build_context(**example_inputs("toy_python"))
+    out = generate_skill(context, tmp_path / "toy-python-skill")
+    adapter_spec = out / "references" / "adapter_spec.yaml"
+    adapter_spec.unlink()
+
+    missing = validate_skill(out)
+    assert missing["status"] == "fail"
+    assert any("adapter_spec.yaml" in error for error in missing["errors"])
+
+    out = generate_skill(context, tmp_path / "toy-python-skill-invalid")
+    adapter_spec = out / "references" / "adapter_spec.yaml"
+    adapter_spec.write_text(
+        """
+adapter_type: python_api
+status: unsafe
+entrypoint: null
+command: null
+module: toy_algorithm
+function: summarize
+evidence: []
+caveats: []
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    invalid = validate_skill(out)
+    assert invalid["status"] == "fail"
+    assert any("adapter_spec.status" in error for error in invalid["errors"])
+
+
+def test_validate_skill_rejects_invalid_workflow_dag_and_environment_records(tmp_path: Path):
+    context = build_context(**example_inputs("toy_python"))
+    out = generate_skill(context, tmp_path / "toy-python-skill")
+    dag_path = out / "references" / "workflow_dag.json"
+    dag = json.loads(dag_path.read_text(encoding="utf-8"))
+    dag["nodes"][0].pop("step_id")
+    dag_path.write_text(json.dumps(dag, indent=2) + "\n", encoding="utf-8")
+
+    invalid_dag = validate_skill(out)
+    assert invalid_dag["status"] == "fail"
+    assert any("workflow_dag.nodes[0]" in error and "step_id" in error for error in invalid_dag["errors"])
+
+    out = generate_skill(context, tmp_path / "toy-python-skill-invalid-env")
+    env_path = out / "assets" / "environment_spec.yaml"
+    env = yaml.safe_load(env_path.read_text(encoding="utf-8"))
+    env["python"]["packages"] = [{"name": "missing-spec"}]
+    env_path.write_text(yaml.safe_dump(env, sort_keys=False), encoding="utf-8")
+
+    invalid_env = validate_skill(out)
+    assert invalid_env["status"] == "fail"
+    assert any("environment_spec.python.packages[0]" in error and "spec" in error for error in invalid_env["errors"])
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is required for file:// remote build")

@@ -8,6 +8,8 @@ import sys
 import importlib.util
 from pathlib import Path
 
+import yaml
+
 
 def test_generated_toy_python_skill_smoke(tmp_path: Path):
     out = tmp_path / "toy-python-skill"
@@ -68,6 +70,174 @@ environment:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (out / "yaml-result" / "result.json").exists()
+
+
+def test_generated_candidate_adapter_blocks_non_demo_run(tmp_path: Path):
+    repo = tmp_path / "cli-repo"
+    package = repo / "demo_cli"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "cli.py").write_text(
+        "def main():\n    print('candidate only')\n",
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname='demo-cli'\nversion='0.1.0'\ndependencies=[]\n[project.scripts]\ndemo-cli='demo_cli.cli:main'\n",
+        encoding="utf-8",
+    )
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nDemo CLI method.\n", encoding="utf-8")
+    out = tmp_path / "candidate-cli-skill"
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "paper2skill.cli",
+            "build",
+            "--paper",
+            str(paper),
+            "--repo",
+            str(repo),
+            "--out",
+            str(out),
+            "--no-execute-tutorials",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    adapter_spec = yaml.safe_load((out / "references" / "adapter_spec.yaml").read_text(encoding="utf-8"))
+    assert adapter_spec["adapter_type"] == "cli"
+    assert adapter_spec["status"] == "candidate"
+    manifest = out / "run_manifest.yaml"
+    manifest.write_text(
+        """
+inputs:
+  primary_data:
+    path: assets/demo_input.csv
+    format: csv
+    exists: true
+  algorithm:
+    mode: run
+environment:
+  install_policy: ask
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    result_dir = out / "candidate-result"
+
+    result = subprocess.run(
+        [sys.executable, str(out / "scripts" / "run.py"), "--manifest", str(manifest), "--out", str(result_dir)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    result_json = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
+    adapter_report = json.loads((result_dir / "workflow" / "adapter_report.json").read_text(encoding="utf-8"))
+    assert result_json["status"] == "blocked_adapter_not_ready"
+    assert adapter_report["status"] == "blocked"
+    assert not (result_dir / "results" / "summary.json").exists()
+
+
+def test_generated_arbitrary_l2_python_api_summarize_stays_candidate(tmp_path: Path):
+    repo = tmp_path / "api-repo"
+    package = repo / "arbitrary_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .core import summarize\n", encoding="utf-8")
+    (package / "core.py").write_text(
+        "def summarize(path):\n    raise RuntimeError('should not be executed without review')\n",
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname='arbitrary-pkg'\nversion='0.1.0'\ndependencies=[]\n",
+        encoding="utf-8",
+    )
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nArbitrary Python API method.\n", encoding="utf-8")
+    out = tmp_path / "candidate-api-skill"
+
+    build = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "paper2skill.cli",
+            "build",
+            "--paper",
+            str(paper),
+            "--repo",
+            str(repo),
+            "--out",
+            str(out),
+            "--maturity-target",
+            "L2",
+            "--no-execute-tutorials",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert build.returncode == 0, build.stdout + build.stderr
+    adapter_spec = yaml.safe_load((out / "references" / "adapter_spec.yaml").read_text(encoding="utf-8"))
+    assert adapter_spec["adapter_type"] == "python_api"
+    assert adapter_spec["status"] == "candidate"
+    assert adapter_spec["module"] == "arbitrary_pkg"
+    assert adapter_spec["function"] == "summarize"
+    assert not (out / "sources" / "repo").exists()
+
+
+def test_generated_ready_python_adapter_runs_without_demo_summary_fallback(tmp_path: Path):
+    out = tmp_path / "toy-python-skill"
+    build = subprocess.run(
+        [sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_python", "--out", str(out)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    adapter_spec = yaml.safe_load((out / "references" / "adapter_spec.yaml").read_text(encoding="utf-8"))
+    assert adapter_spec["adapter_type"] == "python_api"
+    assert adapter_spec["status"] == "ready"
+    assert adapter_spec["module"] == "toy_algorithm"
+    assert adapter_spec["function"] == "summarize"
+    manifest = out / "run_manifest.yaml"
+    manifest.write_text(
+        """
+inputs:
+  primary_data:
+    path: assets/demo_input.csv
+    format: csv
+    exists: true
+  algorithm:
+    mode: run
+environment:
+  install_policy: ask
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    result_dir = out / "adapter-result"
+
+    result = subprocess.run(
+        [sys.executable, str(out / "scripts" / "run.py"), "--manifest", str(manifest), "--out", str(result_dir)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    result_json = json.loads((result_dir / "result.json").read_text(encoding="utf-8"))
+    adapter_report = json.loads((result_dir / "workflow" / "adapter_report.json").read_text(encoding="utf-8"))
+    summary = json.loads((result_dir / "results" / "summary.json").read_text(encoding="utf-8"))
+    assert result_json["status"] == "pass"
+    assert adapter_report["status"] == "pass"
+    assert adapter_report["adapter_type"] == "python_api"
+    assert adapter_report.get("fallback") is None
+    assert summary == {"rows": 3, "value_mean": 2.0}
 
 
 def test_generated_plan_accepts_regular_yaml_manifest(tmp_path: Path):

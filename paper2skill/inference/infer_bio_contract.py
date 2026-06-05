@@ -60,7 +60,7 @@ def infer_bio_contract(
     strict_evidence: bool = False,
 ) -> dict[str, Any]:
     text_items = evidence_texts(tutorial_trace, paper_sections or [])
-    all_text = "\n".join(text for _eid, text, _source in text_items)
+    all_text = "\n".join(item["text"] for item in text_items)
     modality = first_with_evidence(text_items, MODALITY_RULES, strict_evidence)
     species = first_with_evidence(text_items, SPECIES_RULES, strict_evidence)
     gene_id = first_with_evidence(text_items, GENE_ID_RULES, strict_evidence)
@@ -92,30 +92,36 @@ def infer_bio_contract(
     return {"bio_contract": base}
 
 
-def evidence_texts(tutorial_trace: dict[str, Any], paper_sections: list[dict[str, Any]]) -> list[tuple[str, str, str]]:
+def evidence_texts(tutorial_trace: dict[str, Any], paper_sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items = []
     for tutorial in tutorial_trace.get("tutorials", []):
         for step in tutorial.get("steps", tutorial.get("workflow_steps", [])):
             text = "\n".join([step.get("code_preview", ""), step.get("command_or_code", ""), " ".join(step.get("function_calls", [])), " ".join(step.get("imports", []))])
-            items.append((step.get("evidence_id") or step.get("step_id", "tutorial:unknown"), text, "tutorial"))
+            source = "tutorial"
+            items.append({"evidence_id": step.get("evidence_id") or step.get("step_id", "tutorial:unknown"), "text": text, "source_type": source, "section_role": "code", "weight": source_weight(source)})
     for section in paper_sections:
         role = section_role(section.get("section_id", ""), section.get("title", ""))
-        items.append((section.get("section_id", "paper:unknown"), section.get("text", ""), f"paper:{role}"))
+        source = f"paper:{role}"
+        items.append({"evidence_id": section.get("section_id", "paper:unknown"), "text": section.get("text", ""), "source_type": source, "section_role": role, "weight": source_weight(source)})
     return items
 
 
-def first_with_evidence(items: list[tuple[str, str, str]], rules: dict[str, list[str]], strict_evidence: bool = False) -> tuple[str, list[str], str] | None:
-    for evidence_id, text, source in items:
-        matches = match_rules(text, rules)
+def first_with_evidence(items: list[dict[str, Any]], rules: dict[str, list[str]], strict_evidence: bool = False) -> tuple[str, list[str], str] | None:
+    candidates = []
+    for item in items:
+        matches = match_rules(item["text"], rules)
         if matches:
-            confidence = confidence_for_source(source)
+            confidence = confidence_for_source(item["source_type"])
             if strict_evidence and confidence == "low":
                 continue
-            return matches[0], [evidence_id], confidence
-    return None
+            candidates.append((item["weight"], confidence_rank(confidence), matches[0], [item["evidence_id"]], confidence))
+    if not candidates:
+        return None
+    _weight, _rank, value, evidence, confidence = sorted(candidates, reverse=True)[0]
+    return value, evidence, confidence
 
 
-def transformation_chain(items: list[tuple[str, str, str]], strict_evidence: bool = False) -> list[str]:
+def transformation_chain(items: list[dict[str, Any]], strict_evidence: bool = False) -> list[str]:
     found = []
     for value in MATRIX_STATE_RULES:
         if evidence_for_value(items, MATRIX_STATE_RULES, value, strict_evidence):
@@ -123,15 +129,15 @@ def transformation_chain(items: list[tuple[str, str, str]], strict_evidence: boo
     return found
 
 
-def evidence_for_value(items: list[tuple[str, str, str]], rules: dict[str, list[str]], value: str, strict_evidence: bool = False) -> list[str]:
+def evidence_for_value(items: list[dict[str, Any]], rules: dict[str, list[str]], value: str, strict_evidence: bool = False) -> list[str]:
     words = rules[value]
-    evidence = []
-    for evidence_id, text, source in items:
-        if strict_evidence and confidence_for_source(source) == "low":
+    matches = []
+    for item in items:
+        if strict_evidence and confidence_for_source(item["source_type"]) == "low":
             continue
-        if any(word.lower() in text.lower() for word in words):
-            evidence.append(evidence_id)
-    return evidence
+        if any(word.lower() in item["text"].lower() for word in words):
+            matches.append(item)
+    return [item["evidence_id"] for item in sorted(matches, key=lambda value: value["weight"], reverse=True)]
 
 
 def metadata_key(text: str, _field: str, candidates: list[str]) -> str | None:
@@ -158,3 +164,19 @@ def confidence_for_source(source: str) -> str:
     if source in {"paper:methods", "paper:data", "paper:code"}:
         return "medium"
     return "low"
+
+
+def source_weight(source: str) -> float:
+    if source == "tutorial":
+        return 1.0
+    if source.startswith("api") or source.startswith("docs"):
+        return 0.9
+    if source in {"paper:methods", "paper:data", "paper:code"}:
+        return 0.6
+    if source.startswith("paper:"):
+        return 0.2
+    return 0.0
+
+
+def confidence_rank(confidence: str) -> int:
+    return {"low": 0, "medium": 1, "high": 2}.get(confidence, 0)

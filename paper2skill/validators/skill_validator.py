@@ -35,6 +35,7 @@ REQUIRED_FILES = [
     "references/source_manifest.json",
     "references/paper_evidence.json",
     "references/repo_evidence.json",
+    "references/adapter_spec.yaml",
     "references/paper.md",
     "references/paper_sections.json",
     "references/paper_parser_report.json",
@@ -93,7 +94,13 @@ def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
         if "Do not install anything unless the user explicitly approves" not in text:
             errors.append("SKILL.md missing explicit install confirmation policy")
     _validate_yaml_contract(root / "references/algorithm_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/algorithm_skill_schema.yaml", "algorithm_contract", errors)
+    _validate_yaml_contract(root / "references/adapter_spec.yaml", PROJECT_ROOT / "paper2skill/schemas/adapter_spec_schema.yaml", "adapter_spec", errors)
     _validate_yaml_contract(root / "references/bio_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/bio_contract_schema.yaml", "bio_contract", errors)
+    _validate_yaml_contract(root / "references/io_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/algorithm_skill_schema.yaml", "io_contract", errors, required_only=("input_contract", "output_contract"))
+    _validate_yaml_contract(root / "assets/environment_spec.yaml", PROJECT_ROOT / "paper2skill/schemas/environment_schema.yaml", "environment_spec", errors)
+    _validate_environment_spec(root / "assets/environment_spec.yaml", errors)
+    _validate_workflow_dag(root / "references/workflow_dag.json", errors)
+    _validate_adapter_spec(root / "references/adapter_spec.yaml", errors)
     trace_path = root / "references/tutorial_trace.json"
     if trace_path.exists():
         try:
@@ -105,7 +112,7 @@ def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
     return {"status": "pass" if not errors else "fail", "errors": errors, "warnings": warnings}
 
 
-def _validate_yaml_contract(contract_path: Path, schema_path: Path, label: str, errors: list[str]) -> None:
+def _validate_yaml_contract(contract_path: Path, schema_path: Path, label: str, errors: list[str], required_only: tuple[str, ...] | None = None) -> None:
     if not contract_path.exists() or not schema_path.exists():
         return
     try:
@@ -114,4 +121,85 @@ def _validate_yaml_contract(contract_path: Path, schema_path: Path, label: str, 
     except yaml.YAMLError as exc:
         errors.append(f"{label}: invalid YAML: {exc}")
         return
+    if required_only is not None:
+        for key in required_only:
+            if key not in data:
+                errors.append(f"{label}: missing required key '{key}'")
+        return
     errors.extend(validate_simple_schema(data, schema, label))
+
+
+def _validate_workflow_dag(path: Path, errors: list[str]) -> None:
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        errors.append(f"workflow_dag: invalid JSON: {exc}")
+        return
+    if not isinstance(data.get("nodes"), list):
+        errors.append("workflow_dag.nodes: expected list")
+        return
+    node_ids = set()
+    for index, node in enumerate(data["nodes"]):
+        if not isinstance(node, dict):
+            errors.append(f"workflow_dag.nodes[{index}]: expected object")
+            continue
+        if not node.get("step_id"):
+            errors.append(f"workflow_dag.nodes[{index}]: missing required key 'step_id'")
+        if not node.get("type"):
+            errors.append(f"workflow_dag.nodes[{index}]: missing required key 'type'")
+        if node.get("step_id"):
+            node_ids.add(node["step_id"])
+    for index, edge in enumerate(data.get("edges", []) or []):
+        if edge.get("from") not in node_ids:
+            errors.append(f"workflow_dag.edges[{index}]: unknown from node {edge.get('from')!r}")
+        if edge.get("to") not in node_ids:
+            errors.append(f"workflow_dag.edges[{index}]: unknown to node {edge.get('to')!r}")
+
+
+def _validate_adapter_spec(path: Path, errors: list[str]) -> None:
+    if not path.exists():
+        return
+    try:
+        spec = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        errors.append(f"adapter_spec: invalid YAML: {exc}")
+        return
+    status = spec.get("status")
+    adapter_type = spec.get("adapter_type")
+    if status == "ready" and adapter_type == "python_api":
+        if not spec.get("module"):
+            errors.append("adapter_spec.module: required when python_api status is ready")
+        if not spec.get("function"):
+            errors.append("adapter_spec.function: required when python_api status is ready")
+    if status == "demo_only" and adapter_type != "demo_only":
+        errors.append("adapter_spec.status: demo_only status requires demo_only adapter_type")
+
+
+def _validate_environment_spec(path: Path, errors: list[str]) -> None:
+    if not path.exists():
+        return
+    try:
+        spec = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        errors.append(f"environment_spec: invalid YAML: {exc}")
+        return
+    python_packages = ((spec.get("python") or {}).get("packages") or [])
+    for index, item in enumerate(python_packages):
+        if not isinstance(item, dict):
+            errors.append(f"environment_spec.python.packages[{index}]: expected object")
+            continue
+        if not item.get("spec"):
+            errors.append(f"environment_spec.python.packages[{index}]: missing required key 'spec'")
+        if item.get("required") is not None and not isinstance(item.get("required"), bool):
+            errors.append(f"environment_spec.python.packages[{index}].required: expected boolean")
+    r_packages = ((spec.get("r") or {}).get("packages") or [])
+    for index, item in enumerate(r_packages):
+        if not isinstance(item, dict):
+            errors.append(f"environment_spec.r.packages[{index}]: expected object")
+            continue
+        if not item.get("name"):
+            errors.append(f"environment_spec.r.packages[{index}]: missing required key 'name'")
+        if item.get("required") is not None and not isinstance(item.get("required"), bool):
+            errors.append(f"environment_spec.r.packages[{index}].required: expected boolean")

@@ -28,6 +28,10 @@ def mine_api(repo_path: str | Path | None) -> dict[str, Any]:
         for item in mined.get("functions", []):
             item = dict(item)
             item["path"] = public_local_path(path, root)
+            item["module"] = python_module_name(path, root)
+            public_module = public_python_module_name(path, root, item["name"])
+            if public_module:
+                item["public_module"] = public_module
             api_functions.append(item)
         for item in mined.get("classes", []):
             item = dict(item)
@@ -111,6 +115,26 @@ def python_cli_commands(source: str, path: Path, root: Path) -> list[dict[str, A
     if "fire.Fire" in source:
         commands.append({"framework": "fire", "path": public_path, "name": path.stem})
     return commands
+
+
+def python_module_name(path: Path, root: Path) -> str:
+    rel = path.relative_to(root).with_suffix("")
+    parts = list(rel.parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def public_python_module_name(path: Path, root: Path, function_name: str) -> str | None:
+    if path.name == "__init__.py":
+        return python_module_name(path, root)
+    package_init = path.parent / "__init__.py"
+    if not package_init.exists():
+        return None
+    text = package_init.read_text(encoding="utf-8", errors="replace")
+    if re.search(rf"\b{re.escape(function_name)}\b", text):
+        return python_module_name(package_init, root)
+    return None
 
 
 def r_namespace_exports(root: Path) -> list[dict[str, Any]]:

@@ -52,8 +52,29 @@ def summarize_csv(path: Path) -> dict:
 
 
 def adapter_type() -> str:
+    return adapter_spec().get("adapter_type", "demo_only")
+
+
+def adapter_spec() -> dict:
+    spec_path = ROOT / "references" / "adapter_spec.yaml"
+    if spec_path.exists():
+        return load_json_yaml(spec_path)
     contract = load_json_yaml(ROOT / "references" / "algorithm_contract.yaml")
-    return contract.get("algorithm", {}).get("adapter_type", "demo_only")
+    return {
+        "adapter_type": contract.get("algorithm", {}).get("adapter_type", "demo_only"),
+        "status": "demo_only",
+        "entrypoint": None,
+        "command": None,
+        "module": None,
+        "function": None,
+        "evidence": [],
+        "caveats": ["adapter_spec.yaml was not generated"],
+    }
+
+
+def is_demo_run(manifest: dict, spec: dict) -> bool:
+    mode = (((manifest.get("inputs") or {}).get("algorithm") or {}).get("mode"))
+    return mode == "demo" or spec.get("adapter_type") == "demo_only"
 
 
 def run_adapter(kind: str, manifest: dict, out: Path) -> dict:
@@ -69,7 +90,28 @@ def run_adapter(kind: str, manifest: dict, out: Path) -> dict:
         from adapters import notebook_adapter
 
         return notebook_adapter.run(manifest, out)
-    return {"status": "not_implemented", "adapter_type": kind, "message": "No executable adapter is configured."}
+    return {"status": "blocked", "adapter_type": kind, "message": "No executable adapter is configured."}
+
+
+def write_blocked_result(out: Path, selected_adapter: str, adapter_report: dict, manifest: dict) -> dict:
+    result = {
+        "status": "blocked_adapter_not_ready",
+        "skill_name": "{{ skill_name }}",
+        "algorithm": "{{ algorithm_name }}",
+        "maturity_level": "{{ maturity_level }}",
+        "input_validation": load_json(out / "qc" / "input_validation.json"),
+        "environment": load_json(out / "qc" / "environment_report.json"),
+        "parameter_resolution": env_manager.public_data(((manifest.get("inputs") or {}).get("algorithm") or {}).get("parameters", {})),
+        "workflow_summary": load_json(out / "workflow" / "plan.json"),
+        "adapter": adapter_report,
+        "outputs": [],
+        "caveats": ["adapter is not ready; demo fallback is disabled for non-demo runs"],
+        "evidence_used": load_json(out / "workflow" / "plan.json").get("evidence_used", []),
+    }
+    write_json(out / "result.json", env_manager.public_data(result))
+    (out / "logs").mkdir(parents=True, exist_ok=True)
+    (out / "logs" / "run.log").write_text("blocked; adapter_type=%s; adapter_status=%s\n" % (selected_adapter, adapter_report.get("status")), encoding="utf-8")
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,31 +126,44 @@ def main(argv: list[str] | None = None) -> int:
         return preflight.returncode
     subprocess.run([sys.executable, str(ROOT / "scripts" / "plan.py"), "--manifest", args.manifest, "--out", str(out)], check=True)
     manifest = load_json_yaml(Path(args.manifest))
-    selected_adapter = adapter_type()
+    spec = adapter_spec()
+    selected_adapter = spec.get("adapter_type", adapter_type())
     adapter_report = {"status": "demo_only", "adapter_type": selected_adapter, "message": "Demo summary runner was used."}
-    if selected_adapter != "demo_only":
+    demo_run = is_demo_run(manifest, spec)
+    if not demo_run:
         adapter_report = run_adapter(selected_adapter, manifest, out)
         if adapter_report.get("status") != "pass":
-            adapter_report["fallback"] = "demo_summary_runner"
+            if adapter_report.get("status") in {"not_implemented", "candidate"}:
+                adapter_report["status"] = "blocked"
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
     write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
-    rel_input = manifest["inputs"]["primary_data"]["path"]
-    summary = summarize_csv(ROOT / rel_input)
-    write_json(out / "results" / "summary.json", summary)
+    outputs = adapter_report.get("outputs", [])
+    if demo_run:
+        rel_input = manifest["inputs"]["primary_data"]["path"]
+        summary = summarize_csv(ROOT / rel_input)
+        write_json(out / "results" / "summary.json", summary)
+        outputs = ["results/summary.json"]
     write_json(out / "parameters" / "resolved_parameters.json", env_manager.public_data(manifest["inputs"]["algorithm"].get("parameters", {})))
     write_json(out / "parameters" / "parameter_sources.json", {"source": "input_manifest"})
     write_json(out / "workflow" / "executed_steps.json", {"status": "pass", "executed": [step.get("id") for step in load_json(out / "workflow" / "plan.json").get("steps", [])]})
     repro = out / "reproducibility"
     repro.mkdir(parents=True, exist_ok=True)
-    for name in ["source_manifest.json", "algorithm_contract.yaml", "bio_contract.yaml"]:
+    for name in ["source_manifest.json", "algorithm_contract.yaml", "adapter_spec.yaml", "bio_contract.yaml"]:
         src = ROOT / "references" / name
         if src.exists():
             shutil.copyfile(src, repro / name)
     shutil.copyfile(ROOT / "assets" / "environment_spec.yaml", repro / "environment_spec.yaml")
     (repro / "command_history.sh").write_text("python scripts/run.py --manifest %s\n" % public_cli_path(args.manifest), encoding="utf-8")
     (out / "logs").mkdir(parents=True, exist_ok=True)
-    (out / "logs" / "run.log").write_text("demo run completed; adapter_type=%s\n" % selected_adapter, encoding="utf-8")
-    (out / "README.md").write_text("# Result\n\nDemo run completed.\n", encoding="utf-8")
-    (out / "report.md").write_text("# Report\n\nDemo summary: `%s`.\n" % summary, encoding="utf-8")
+    (out / "logs" / "run.log").write_text("run completed; adapter_type=%s; adapter_status=%s\n" % (selected_adapter, adapter_report.get("status")), encoding="utf-8")
+    (out / "README.md").write_text("# Result\n\nRun completed with adapter status `%s`.\n" % adapter_report.get("status"), encoding="utf-8")
+    if demo_run:
+        (out / "report.md").write_text("# Report\n\nDemo summary: `%s`.\n" % summary, encoding="utf-8")
+    else:
+        (out / "report.md").write_text("# Report\n\nAdapter execution completed with status `%s`.\n" % adapter_report.get("status"), encoding="utf-8")
     result = {
         "status": "pass",
         "skill_name": "{{ skill_name }}",
@@ -119,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         "parameter_resolution": load_json(out / "parameters" / "resolved_parameters.json"),
         "workflow_summary": load_json(out / "workflow" / "plan.json"),
         "adapter": load_json(out / "workflow" / "adapter_report.json"),
-        "outputs": ["results/summary.json"],
+        "outputs": outputs,
         "caveats": ["demo run is not user-data biological validation", "demo summary output is not a real algorithm execution unless adapter.status is pass"],
         "evidence_used": load_json(out / "workflow" / "plan.json").get("evidence_used", []),
     }
