@@ -8,11 +8,14 @@ from paper2skill.miners.python_ast import classify_bio_signals, infer_object_flo
 
 
 R_LIBRARY_RE = re.compile(r"\b(?:library|require)\s*\(\s*['\"]?([A-Za-z0-9_.]+)['\"]?\s*\)")
-R_FUNCTION_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_.]*)\s*\(")
+R_FUNCTION_RE = re.compile(r"\b(?:(?P<package>[A-Za-z][A-Za-z0-9_.]*):::{0,1})?(?P<function>[A-Za-z][A-Za-z0-9_.]*)\s*\(")
 R_ASSIGN_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_.]*)\s*(?:<-|=)\s*(.+?)\s*$")
 R_READ_RE = re.compile(r"\b(read\.[A-Za-z0-9_.]+|readRDS|read_h5ad)\s*\(\s*([A-Za-z][A-Za-z0-9_.]*|['\"][^'\"]+['\"])")
 R_WRITE_RE = re.compile(r"\b(write\.[A-Za-z0-9_.]+|saveRDS|ggsave)\s*\((?:[^,\n]+,\s*)?([A-Za-z][A-Za-z0-9_.]*|['\"][^'\"]+['\"])")
 R_FIGURE_RE = re.compile(r"\b(ggsave|pdf|png|jpeg|tiff|svg)\s*\(")
+R_SOURCE_RE = re.compile(r"\bsource\s*\(\s*([^)]+)\)")
+R_READ_NAMES = {"read.csv", "read.table", "read.delim", "readRDS", "read_h5ad", "Read10X"}
+R_WRITE_NAMES = {"write.csv", "write.table", "saveRDS", "ggsave"}
 
 
 def mine_r_source(source: str) -> dict[str, Any]:
@@ -21,17 +24,27 @@ def mine_r_source(source: str) -> dict[str, Any]:
     assignments = []
     parameters: dict[str, Any] = {}
     for lineno, line in enumerate(source.splitlines(), start=1):
-        for call in R_FUNCTION_RE.findall(line):
-            if call not in {"if", "for", "while", "function"}:
-                calls.append({"name": call, "lineno": lineno})
+        for match in R_FUNCTION_RE.finditer(line):
+            package = match.group("package")
+            function = match.group("function")
+            if function not in {"if", "for", "while", "function"}:
+                record = {"name": f"{package}::{function}" if package else function, "lineno": lineno, "function": function, "package": package}
+                if package:
+                    record["package"] = package
+                    if package not in imports:
+                        imports.append(package)
+                calls.append(record)
         match = R_ASSIGN_RE.match(line)
         if match:
             name, value = match.groups()
-            clean_value = value.strip().strip("'\"")
+            clean_value = _resolve_r_value(value, parameters)
             assignments.append({"name": name, "lineno": lineno, "value": clean_value})
             parameters[name] = clean_value
-    file_reads = [_resolve_r_arg(match[1], parameters) for match in R_READ_RE.findall(source)]
-    file_writes = [_resolve_r_arg(match[1], parameters) for match in R_WRITE_RE.findall(source)]
+    file_reads = _r_call_paths(source, R_READ_NAMES, parameters, mode="read")
+    file_reads.extend(_resolve_r_arg(match[1], parameters) for match in R_READ_RE.findall(source))
+    file_writes = _r_call_paths(source, R_WRITE_NAMES, parameters, mode="write")
+    file_writes.extend(_resolve_r_arg(match[1], parameters) for match in R_WRITE_RE.findall(source))
+    source_files = [_resolve_r_value(match, parameters) for match in R_SOURCE_RE.findall(source)]
     return {
         "imports": imports,
         "functions": [],
@@ -39,17 +52,107 @@ def mine_r_source(source: str) -> dict[str, Any]:
         "function_calls": calls,
         "assignments": assignments,
         "parameters": parameters,
-        "file_reads": [item for item in file_reads if item],
-        "file_writes": [item for item in file_writes if item],
+        "file_reads": sorted(dict.fromkeys(item for item in file_reads if item)),
+        "file_writes": sorted(dict.fromkeys(item for item in file_writes if item)),
+        "source_files": [item for item in source_files if isinstance(item, str)],
         "figures": R_FIGURE_RE.findall(source),
     }
 
 
 def _resolve_r_arg(value: str, parameters: dict[str, Any]) -> str | None:
-    value = value.strip().strip("'\"")
-    resolved = parameters.get(value, value)
+    resolved = _resolve_r_value(value, parameters)
     if isinstance(resolved, str):
         return resolved.strip().strip("'\"")
+    return None
+
+
+def _resolve_r_value(value: str, parameters: dict[str, Any]) -> Any:
+    value = value.strip()
+    if value.startswith("file.path(") and value.endswith(")"):
+        inner = value[len("file.path(") : -1]
+        parts = [_resolve_r_value(part, parameters) for part in _split_r_args(inner)]
+        return "/".join(str(part).strip("/").strip("'\"") for part in parts if part is not None)
+    if (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"')):
+        return value[1:-1]
+    return parameters.get(value, value.strip("'\""))
+
+
+def _split_r_args(value: str) -> list[str]:
+    args = []
+    current = []
+    quote: str | None = None
+    depth = 0
+    for char in value:
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            current.append(char)
+        elif char == "(":
+            depth += 1
+            current.append(char)
+        elif char == ")":
+            depth -= 1
+            current.append(char)
+        elif char == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    if current:
+        args.append("".join(current).strip())
+    return args
+
+
+def _r_call_paths(source: str, names: set[str], parameters: dict[str, Any], mode: str) -> list[str]:
+    paths = []
+    for match in R_FUNCTION_RE.finditer(source):
+        package = match.group("package")
+        function = match.group("function")
+        if function not in names:
+            continue
+        start = match.end()
+        args_text = _balanced_call_args(source, start)
+        if args_text is None:
+            continue
+        args = _split_r_args(args_text)
+        if not args:
+            continue
+        index = 0
+        if mode == "write" and function == "saveRDS" and len(args) > 1:
+            index = 1
+        target = _resolve_r_value(args[index], parameters)
+        if isinstance(target, str):
+            paths.append(target.strip("'\""))
+    return paths
+
+
+def _balanced_call_args(source: str, start: int) -> str | None:
+    depth = 1
+    quote: str | None = None
+    chars = []
+    for char in source[start:]:
+        if quote:
+            chars.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            chars.append(char)
+        elif char == "(":
+            depth += 1
+            chars.append(char)
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return "".join(chars)
+            chars.append(char)
+        else:
+            chars.append(char)
     return None
 
 
@@ -120,6 +223,7 @@ def mine_script(path: str | Path) -> dict[str, Any]:
         "function_calls": mined.get("function_calls", []),
         "assignments": mined.get("assignments", []),
         "parameters": mined.get("parameters", {}),
+        "source_files": mined.get("source_files", []),
         "file_reads": mined.get("file_reads", []),
         "file_writes": mined.get("file_writes", []),
         "steps": steps,

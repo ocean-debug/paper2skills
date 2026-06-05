@@ -171,3 +171,37 @@ Remotes: user/custompkg
     assert deps["r_records"][0]["source"] == "Bioconductor_or_unknown"
     assert {"value": "libxml2", "source": "DESCRIPTION", "required": True, "install": "plan_only"} in deps["system_requirements"]
     assert deps["external_resources"][0]["name"] == "user/custompkg"
+
+
+def test_description_bioconductor_metadata_multiline_fields_and_versions(tmp_path):
+    (tmp_path / "DESCRIPTION").write_text(
+        """
+Package: demo
+Imports:
+    DESeq2 (>= 1.40),
+    SummarizedExperiment,
+    ggplot2
+LinkingTo:
+    Rcpp
+biocViews:
+    RNASeq,
+    DifferentialExpression
+SystemRequirements:
+    libxml2,
+    hdf5
+Enhances:
+    BiocStyle
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    deps = mine_dependencies(tmp_path)
+
+    assert deps["r"] == ["DESeq2", "Rcpp", "SummarizedExperiment", "ggplot2"]
+    assert deps["optional"]["r"]["DESCRIPTION:Enhances"] == ["BiocStyle"]
+    deseq = next(record for record in deps["r_records"] if record["name"] == "DESeq2")
+    assert deseq["version_spec"] == ">= 1.40"
+    assert deseq["source"] == "Bioconductor_or_unknown"
+    assert "RNASeq" in deps["bioconductor"]["biocViews"]
+    assert {"value": "hdf5", "source": "DESCRIPTION", "required": True, "install": "plan_only"} in deps["system_requirements"]

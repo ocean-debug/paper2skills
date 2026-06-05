@@ -10,6 +10,8 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 import env_manager
 
+EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+
 
 def write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,12 +28,12 @@ def input_path(manifest: dict) -> Path:
 
 def run(manifest: dict, out: Path) -> dict:
     spec = env_manager.load_json_yaml(ROOT / "references" / "adapter_spec.yaml")
-    if spec.get("status") != "ready":
+    if spec.get("status") not in EXECUTABLE_ADAPTER_STATUSES:
         return {
             "status": "blocked",
             "adapter_type": "python_api",
             "entrypoint": spec.get("entrypoint"),
-            "message": "Python API adapter is not ready; user-reviewed wiring is required.",
+            "message": "Python API adapter is not executable; reviewed, ready, or verified status is required.",
             "caveats": spec.get("caveats", []),
         }
     source_root = ROOT / "sources" / "repo"

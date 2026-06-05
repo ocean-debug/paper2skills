@@ -240,6 +240,48 @@ environment:
     assert summary == {"rows": 3, "value_mean": 2.0}
 
 
+def test_generated_reviewed_python_adapter_is_executable(tmp_path: Path):
+    out = tmp_path / "toy-python-skill"
+    build = subprocess.run(
+        [sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_python", "--out", str(out)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    adapter_spec_path = out / "references" / "adapter_spec.yaml"
+    adapter_spec = yaml.safe_load(adapter_spec_path.read_text(encoding="utf-8"))
+    adapter_spec["status"] = "reviewed"
+    adapter_spec_path.write_text(yaml.safe_dump(adapter_spec, sort_keys=False), encoding="utf-8")
+    manifest = out / "run_manifest.yaml"
+    manifest.write_text(
+        """
+inputs:
+  primary_data:
+    path: assets/demo_input.csv
+    format: csv
+    exists: true
+  algorithm:
+    mode: run
+environment:
+  install_policy: ask
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(out / "scripts" / "run.py"), "--manifest", str(manifest), "--out", str(out / "reviewed-result")],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    adapter_report = json.loads((out / "reviewed-result" / "workflow" / "adapter_report.json").read_text(encoding="utf-8"))
+    assert adapter_report["status"] == "pass"
+
+
 def test_generated_plan_accepts_regular_yaml_manifest(tmp_path: Path):
     out = tmp_path / "toy-python-skill"
     subprocess.run([sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_python", "--out", str(out)], check=True)

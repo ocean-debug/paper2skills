@@ -36,6 +36,8 @@ REQUIRED_FILES = [
     "references/paper_evidence.json",
     "references/repo_evidence.json",
     "references/adapter_spec.yaml",
+    "references/adapter_review.yaml",
+    "references/notebook_execution_policy.json",
     "references/paper.md",
     "references/paper_sections.json",
     "references/paper_parser_report.json",
@@ -77,6 +79,10 @@ REQUIRED_SKILL_SECTIONS = [
     "## Evidence sources",
 ]
 
+ADAPTER_STATUSES = {"demo_only", "candidate", "blocked", "ready", "reviewed", "verified"}
+EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+READY_DRY_RUN_STATUSES = {"pass", "trusted_fixture"}
+
 
 def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
     root = Path(skill_dir)
@@ -101,6 +107,7 @@ def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
     _validate_environment_spec(root / "assets/environment_spec.yaml", errors)
     _validate_workflow_dag(root / "references/workflow_dag.json", errors)
     _validate_adapter_spec(root / "references/adapter_spec.yaml", errors)
+    _validate_adapter_review(root / "references/adapter_review.yaml", errors)
     trace_path = root / "references/tutorial_trace.json"
     if trace_path.exists():
         try:
@@ -168,13 +175,91 @@ def _validate_adapter_spec(path: Path, errors: list[str]) -> None:
         return
     status = spec.get("status")
     adapter_type = spec.get("adapter_type")
-    if status == "ready" and adapter_type == "python_api":
+    if status in {"ready", "reviewed", "verified"} and adapter_type == "python_api":
         if not spec.get("module"):
-            errors.append("adapter_spec.module: required when python_api status is ready")
+            errors.append("adapter_spec.module: required when python_api status is executable")
         if not spec.get("function"):
-            errors.append("adapter_spec.function: required when python_api status is ready")
+            errors.append("adapter_spec.function: required when python_api status is executable")
     if status == "demo_only" and adapter_type != "demo_only":
         errors.append("adapter_spec.status: demo_only status requires demo_only adapter_type")
+
+
+def _validate_adapter_review(path: Path, errors: list[str]) -> None:
+    if not path.exists():
+        return
+    try:
+        review = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        errors.append(f"adapter_review: invalid YAML: {exc}")
+        return
+    for key in ["adapter_type", "status", "entrypoint", "command", "module", "function", "human_approved", "dry_run", "expected_outputs", "evidence", "caveats"]:
+        if key not in review:
+            errors.append(f"adapter_review: missing required key '{key}'")
+    status = review.get("status")
+    if status not in ADAPTER_STATUSES:
+        errors.append("adapter_review.status: invalid adapter status")
+    if review.get("human_approved") is not None and not isinstance(review.get("human_approved"), bool):
+        errors.append("adapter_review.human_approved: expected boolean")
+    if "dry_run" in review and not isinstance(review.get("dry_run"), dict):
+        errors.append("adapter_review.dry_run: expected mapping")
+    for key in ["expected_outputs", "evidence", "caveats"]:
+        if key in review and not isinstance(review.get(key), list):
+            errors.append(f"adapter_review.{key}: expected list")
+    command = review.get("command")
+    if isinstance(command, str) and ("\n" in command or "\r" in command):
+        errors.append("adapter_review.command: must not contain newlines")
+    adapter_spec = _load_adapter_spec_for_review(path)
+    if adapter_spec:
+        if status and adapter_spec.get("status") != status:
+            errors.append("adapter_review.status: must match adapter_spec.status")
+        if review.get("adapter_type") and adapter_spec.get("adapter_type") != review.get("adapter_type"):
+            errors.append("adapter_review.adapter_type: must match adapter_spec.adapter_type")
+        for key in ["entrypoint", "command", "module", "function"]:
+            expected = adapter_spec.get(key)
+            approved = review.get(key)
+            if expected and approved and expected != approved:
+                errors.append(f"adapter_review.{key}: must match adapter_spec.{key}")
+    if status in EXECUTABLE_ADAPTER_STATUSES:
+        for key in _required_adapter_review_mapping_keys(review.get("adapter_type")):
+            if _missing_adapter_review_mapping_value(review.get(key)):
+                errors.append(f"adapter_review.{key}: required when adapter status is executable")
+    if status == "reviewed" and review.get("human_approved") is not True:
+        errors.append("adapter_review.human_approved: required when adapter status is reviewed")
+    if status in {"ready", "verified"}:
+        dry_run = review.get("dry_run") or {}
+        if not isinstance(dry_run, dict) or dry_run.get("status") not in READY_DRY_RUN_STATUSES:
+            errors.append("adapter_review.dry_run.status: ready or verified status requires pass or trusted_fixture")
+    if status == "verified":
+        output_validation = review.get("output_validation") or {}
+        if not isinstance(output_validation, dict) or output_validation.get("status") != "pass":
+            errors.append("adapter_review.output_validation.status: verified status requires pass")
+        if not review.get("expected_outputs"):
+            errors.append("adapter_review.expected_outputs: verified status requires at least one expected output")
+
+
+def _load_adapter_spec_for_review(review_path: Path) -> dict[str, Any]:
+    spec_path = review_path.with_name("adapter_spec.yaml")
+    if not spec_path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(spec_path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _required_adapter_review_mapping_keys(adapter_type: str | None) -> list[str]:
+    if adapter_type == "python_api":
+        return ["adapter_type", "entrypoint", "module", "function"]
+    if adapter_type in {"cli", "workflow_engine"}:
+        return ["adapter_type", "entrypoint", "command"]
+    if adapter_type in {"notebook", "r_script"}:
+        return ["adapter_type", "entrypoint"]
+    return ["adapter_type"]
+
+
+def _missing_adapter_review_mapping_value(value: Any) -> bool:
+    return not isinstance(value, str) or value == ""
 
 
 def _validate_environment_spec(path: Path, errors: list[str]) -> None:

@@ -11,4 +11,4 @@ properties:
   adapter_type:
     enum: [demo_only, python_api, cli, notebook, r_script, workflow_engine]
   status:
-    enum: [demo_only, candidate, ready, blocked]
+    enum: [demo_only, candidate, blocked, ready, reviewed, verified]

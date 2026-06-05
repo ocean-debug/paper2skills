@@ -113,10 +113,11 @@ Supported now:
 - Local repository builds and basic `file://` remote clone/index flows.
 - Markdown, plain text, HTML, and optional MarkItDown document parsing.
 - Python and R toy skill generation.
-- Tutorial scanning, dependency mining, workflow DAG inference, and basic bio IO contracts.
+- Tutorial scanning, dependency mining, workflow DAG inference, and modality-aware bio IO contracts.
 - Environment preflight, install planning, and gated disposable conda environment creation.
-- Adapter readiness tracking via `references/adapter_spec.yaml`.
-- Demo-only execution and blocked non-demo runs when adapters are not ready.
+- Adapter lifecycle tracking via `references/adapter_spec.yaml` and `references/adapter_review.yaml`.
+- Static notebook execution policy reports via `references/notebook_execution_policy.json`.
+- Demo-only execution and blocked non-demo runs when adapters are not `ready`, `reviewed`, or `verified`.
 
 Experimental:
 
@@ -124,16 +125,18 @@ Experimental:
 - Evidence graph conflict decisions.
 - Source-aware bio contract inference.
 - Adapter-based execution scaffolding.
+- R/Bioconductor metadata hints from DESCRIPTION, NAMESPACE, and R source.
+- IPython notebook shell/cell magic, parameter, path, and risk detection.
 - Mini offline bioinformatics benchmark coverage for Scanpy, Seurat, DESeq2-like, CLI, and workflow-engine repository shapes.
 
 Not yet:
 
 - Robust large benchmark coverage.
-- Complete Bioconductor metadata resolution.
+- Complete online Bioconductor metadata resolution.
 - CUDA/system library automatic configuration.
 - Large dataset download automation.
 - Arbitrary install script execution.
-- Fully automatic real algorithm execution for unknown repositories. Unknown adapters stay `candidate` or `blocked` and do not run as successful demo fallbacks.
+- Fully automatic real algorithm execution for unknown repositories. Unknown adapters stay `candidate` or `blocked`; only `ready`, `reviewed`, or `verified` adapters execute.
 
 ## Maturity Levels
 

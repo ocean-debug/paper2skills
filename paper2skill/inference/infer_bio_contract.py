@@ -68,7 +68,7 @@ def infer_bio_contract(
     celltype_key = metadata_key(all_text, "celltype_key", ["cell_type", "celltype", "celltypes"])
     base = default_bio_contract()["bio_contract"]
     base["modality"] = {
-        "primary": field_value(modality[0], modality[2], modality[1]) if modality else field_value(),
+        "primary": field_value(normalize_modality(modality[0]), modality[2], modality[1]) if modality else field_value(),
         "secondary": field_value(),
     }
     base["organism"] = {
@@ -89,21 +89,41 @@ def infer_bio_contract(
         "batch_key": field_value(metadata_key(all_text, "batch_key", ["batch"]), "medium", ["tutorial_metadata_key"]) if metadata_key(all_text, "batch_key", ["batch"]) else field_value(),
         "condition_key": field_value(metadata_key(all_text, "condition_key", ["condition"]), "medium", ["tutorial_metadata_key"]) if metadata_key(all_text, "condition_key", ["condition"]) else field_value(),
     }
+    base["modality_contracts"] = modality_contracts(base, all_text)
     return {"bio_contract": base}
 
 
 def evidence_texts(tutorial_trace: dict[str, Any], paper_sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
     items = []
+    seen_steps: set[str] = set()
     for tutorial in tutorial_trace.get("tutorials", []):
         for step in tutorial.get("steps", tutorial.get("workflow_steps", [])):
-            text = "\n".join([step.get("code_preview", ""), step.get("command_or_code", ""), " ".join(step.get("function_calls", [])), " ".join(step.get("imports", []))])
+            seen_steps.add(step.get("step_id", step.get("evidence_id", "")))
+            text = step_text(step)
             source = "tutorial"
             items.append({"evidence_id": step.get("evidence_id") or step.get("step_id", "tutorial:unknown"), "text": text, "source_type": source, "section_role": "code", "weight": source_weight(source)})
+    for step in tutorial_trace.get("workflow_steps", []):
+        step_id = step.get("step_id", step.get("evidence_id", ""))
+        if step_id in seen_steps:
+            continue
+        source = "tutorial"
+        items.append({"evidence_id": step.get("evidence_id") or step.get("step_id", "tutorial:unknown"), "text": step_text(step), "source_type": source, "section_role": "code", "weight": source_weight(source)})
     for section in paper_sections:
         role = section_role(section.get("section_id", ""), section.get("title", ""))
         source = f"paper:{role}"
         items.append({"evidence_id": section.get("section_id", "paper:unknown"), "text": section.get("text", ""), "source_type": source, "section_role": role, "weight": source_weight(source)})
     return items
+
+
+def step_text(step: dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            step.get("code_preview", ""),
+            step.get("command_or_code", ""),
+            " ".join(str(call) for call in step.get("function_calls", [])),
+            " ".join(step.get("imports", [])),
+        ]
+    )
 
 
 def first_with_evidence(items: list[dict[str, Any]], rules: dict[str, list[str]], strict_evidence: bool = False) -> tuple[str, list[str], str] | None:
@@ -145,6 +165,85 @@ def metadata_key(text: str, _field: str, candidates: list[str]) -> str | None:
         if re.search(rf"['\"]{re.escape(candidate)}['\"]", text) or candidate in text:
             return candidate
     return None
+
+
+def normalize_modality(value: str) -> str:
+    return {
+        "bulk_RNA-seq": "bulk RNA-seq",
+        "spatial_transcriptomics": "spatial",
+    }.get(value, value)
+
+
+def matrix_state_value(base: dict[str, Any]) -> dict[str, Any]:
+    matrix = base.get("input_matrix_state", {})
+    transformations = matrix.get("matrix_transformations", []) or []
+    if "log1p_transformed" in transformations:
+        return field_value("log1p", "high", matrix.get("log_transformed_allowed", {}).get("evidence", []))
+    if "normalized" in transformations:
+        return field_value("normalized", "high", matrix.get("normalized_allowed", {}).get("evidence", []))
+    if "raw_counts_loaded" in transformations or matrix.get("raw_counts_required", {}).get("value") is True:
+        return field_value("raw_counts", "high", matrix.get("raw_counts_required", {}).get("evidence", []))
+    return field_value()
+
+
+def modality_contracts(base: dict[str, Any], all_text: str) -> dict[str, Any]:
+    modality = ((base.get("modality") or {}).get("primary") or {}).get("value")
+    metadata = base.get("metadata_requirements", {})
+    contracts = {
+        "scrna_seq": {
+            "input_state": {"matrix_state": field_value(), "formats": ["10x_mtx", "h5ad", "rds"]},
+            "metadata": {"celltype_key": field_value(), "sample_key": field_value(), "batch_key": field_value(), "condition_key": field_value()},
+            "reference_resources": base.get("reference_resources", {}),
+            "outputs": {"required": []},
+        },
+        "bulk_rna_seq": {
+            "input_state": {"matrix_state": field_value(), "formats": ["count_matrix", "csv", "tsv"]},
+            "metadata": {"sample_key": field_value(), "condition_key": field_value(), "batch_key": field_value()},
+            "statistical": {"design_formula": field_value(), "replicates": field_value()},
+            "reference_resources": base.get("reference_resources", {}),
+            "outputs": {"required": []},
+        },
+        "spatial": {
+            "input_state": {"matrix_state": field_value(), "formats": ["h5ad", "rds", "spatial_directory"]},
+            "metadata": {"spatial_coordinates": field_value(), "image": field_value()},
+            "reference_resources": base.get("reference_resources", {}),
+            "outputs": {"required": []},
+        },
+        "proteomics": {
+            "input_state": {"matrix_state": field_value(), "formats": ["csv", "tsv"]},
+            "metadata": {},
+            "reference_resources": {},
+            "outputs": {"required": []},
+        },
+        "general": {
+            "input_state": {"matrix_state": matrix_state_value(base), "formats": []},
+            "metadata": metadata,
+            "reference_resources": base.get("reference_resources", {}),
+            "outputs": {"required": []},
+        },
+    }
+    if modality == "scRNA-seq":
+        contracts["scrna_seq"]["input_state"]["matrix_state"] = matrix_state_value(base)
+        contracts["scrna_seq"]["metadata"] = {
+            key: metadata.get(key, field_value())
+            for key in ["celltype_key", "sample_key", "batch_key", "condition_key"]
+        }
+    if modality == "bulk RNA-seq":
+        contracts["bulk_rna_seq"]["input_state"]["matrix_state"] = matrix_state_value(base)
+        contracts["bulk_rna_seq"]["metadata"]["condition_key"] = metadata.get("condition_key", field_value())
+        formula = design_formula(all_text)
+        if formula:
+            contracts["bulk_rna_seq"]["statistical"]["design_formula"] = field_value(formula, "high", ["tutorial_design_formula"])
+    if modality == "spatial":
+        contracts["spatial"]["input_state"]["matrix_state"] = matrix_state_value(base)
+    return contracts
+
+
+def design_formula(text: str) -> str | None:
+    match = re.search(r"design\s*=\s*(~\s*[A-Za-z0-9_+. ]+)", text)
+    if not match:
+        return None
+    return match.group(1).strip()
 
 
 def section_role(section_id: str, title: str) -> str:

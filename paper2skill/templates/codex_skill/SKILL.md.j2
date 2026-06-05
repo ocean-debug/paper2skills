@@ -67,7 +67,16 @@ Run:
 python scripts/run.py --manifest input_manifest.yaml
 ```
 
-`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared in `references/adapter_spec.yaml`. Non-demo runs do not fall back to the demo summary runner: if the adapter is not ready, the run is blocked. Demo execution only proves the tutorial path, not biological validity on user data, and must not be treated as real algorithm execution unless the adapter report explicitly passes.
+`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared in `references/adapter_spec.yaml` and review evidence is recorded in `references/adapter_review.yaml`. Non-demo runs only execute adapters with status `ready`, `reviewed`, or `verified`; `candidate` and `blocked` adapters stop with `blocked_adapter_not_ready`. Demo execution only proves the tutorial path, not biological validity on user data, and must not be treated as real algorithm execution unless the adapter report explicitly passes.
+
+Adapter lifecycle:
+
+- `demo_only`: demo mode only.
+- `candidate`: inferred but not reviewed; non-demo run is blocked.
+- `blocked`: missing or unsafe wiring; non-demo run is blocked.
+- `reviewed`: human-approved mapping passed static checks.
+- `ready`: trusted fixture or minimal dry-run evidence passed.
+- `verified`: executable adapter plus expected output contract validation.
 
 ## Output contract
 
@@ -99,6 +108,8 @@ Dry-run results are not biological results. Demo runs only prove that the tutori
 - `references/tutorial_trace.md`
 - `references/workflow_dag.json`
 - `references/adapter_spec.yaml`
+- `references/adapter_review.yaml`
+- `references/notebook_execution_policy.json`
 - `references/api_reference.md`
 - `references/paper_summary.md`
 - `references/repo_summary.md`

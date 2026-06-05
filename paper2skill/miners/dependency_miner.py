@@ -15,7 +15,20 @@ from paper2skill.collectors.path_sanitizer import public_local_path
 from paper2skill.miners.script_miner import R_LIBRARY_RE
 
 R_BASE_PACKAGES = {"base", "compiler", "datasets", "graphics", "grDevices", "grid", "methods", "parallel", "splines", "stats", "tools", "utils"}
-BIOCONDUCTOR_HINTS = {"DESeq2", "edgeR", "limma", "clusterProfiler", "SingleCellExperiment", "SummarizedExperiment", "AnnotationDbi", "BiocGenerics", "scran", "scater", "ComplexHeatmap"}
+BIOCONDUCTOR_HINTS = {
+    "DESeq2",
+    "edgeR",
+    "limma",
+    "clusterProfiler",
+    "SingleCellExperiment",
+    "SummarizedExperiment",
+    "AnnotationDbi",
+    "BiocGenerics",
+    "BiocStyle",
+    "scran",
+    "scater",
+    "ComplexHeatmap",
+}
 
 
 def parse_requirements(path: Path) -> list[str]:
@@ -139,11 +152,22 @@ def parse_description(path: Path) -> list[str]:
 
 
 def parse_description_fields(path: Path) -> tuple[list[str], dict[str, list[str]]]:
+    records, optional_records = parse_description_field_records(path)
+    required = sorted(dict.fromkeys(record["name"] for record in records))
+    optional = {
+        key: sorted(dict.fromkeys(record["name"] for record in value))
+        for key, value in optional_records.items()
+        if value
+    }
+    return required, optional
+
+
+def parse_description_field_records(path: Path) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    fields: dict[str, list[str]] = {"Imports": [], "Depends": [], "Suggests": [], "Enhances": []}
+    fields: dict[str, list[dict[str, Any]]] = {"Imports": [], "Depends": [], "LinkingTo": [], "Suggests": [], "Enhances": []}
     capture: str | None = None
     for line in text.splitlines():
-        match = re.match(r"^(Imports|Depends|Suggests|Enhances):", line)
+        match = re.match(r"^(Imports|Depends|LinkingTo|Suggests|Enhances):", line)
         if match:
             capture = match.group(1)
             line = line.split(":", 1)[1]
@@ -151,23 +175,39 @@ def parse_description_fields(path: Path) -> tuple[list[str], dict[str, list[str]
             capture = None
         if capture:
             for item in line.split(","):
-                name = re.sub(r"\(.+?\)", "", item).strip()
-                if name and name not in {"R"} and name not in R_BASE_PACKAGES:
-                    fields[capture].append(name)
-    required = sorted(dict.fromkeys(fields["Imports"] + fields["Depends"]))
+                record = _parse_r_package_item(item, capture)
+                if record:
+                    fields[capture].append(record)
+    required = _dedupe_records(fields["Imports"] + fields["Depends"] + fields["LinkingTo"], "name")
     optional = {
-        "DESCRIPTION:Suggests": sorted(dict.fromkeys(fields["Suggests"])),
-        "DESCRIPTION:Enhances": sorted(dict.fromkeys(fields["Enhances"])),
+        "DESCRIPTION:Suggests": _dedupe_records(fields["Suggests"], "name"),
+        "DESCRIPTION:Enhances": _dedupe_records(fields["Enhances"], "name"),
     }
     return required, {key: value for key, value in optional.items() if value}
 
 
+def _parse_r_package_item(item: str, field: str) -> dict[str, Any] | None:
+    item = item.strip()
+    if not item:
+        return None
+    match = re.match(r"^([A-Za-z][A-Za-z0-9_.]*)(?:\s*\(([^)]+)\))?$", item)
+    if not match:
+        return None
+    name, version = match.groups()
+    if name in {"R"} or name in R_BASE_PACKAGES:
+        return None
+    record = {"name": name, "field": field}
+    if version:
+        record["version_spec"] = version.strip()
+    return record
+
+
 def parse_description_metadata(path: Path) -> dict[str, list[str]]:
     text = path.read_text(encoding="utf-8", errors="replace")
-    fields: dict[str, list[str]] = {"SystemRequirements": [], "Remotes": []}
+    fields: dict[str, list[str]] = {"SystemRequirements": [], "Remotes": [], "biocViews": []}
     capture: str | None = None
     for line in text.splitlines():
-        match = re.match(r"^(SystemRequirements|Remotes):", line)
+        match = re.match(r"^(SystemRequirements|Remotes|biocViews):", line)
         if match:
             capture = match.group(1)
             line = line.split(":", 1)[1]
@@ -283,13 +323,25 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
         description = root / "DESCRIPTION"
         if description.exists():
             dependency_files.append(public_local_path(description, root))
-            required_r, optional_r = parse_description_fields(description)
+            required_r_records, optional_r_records = parse_description_field_records(description)
+            required_r = [record["name"] for record in required_r_records]
             r_packages.extend(required_r)
-            r_records.extend({"name": name, "source": "Bioconductor_or_unknown" if name in BIOCONDUCTOR_HINTS else "DESCRIPTION", "evidence": "Imports/Depends", "required": True, "category": "runtime"} for name in required_r)
-            optional["r"].update(optional_r)
+            for record in required_r_records:
+                item = {
+                    "name": record["name"],
+                    "source": "Bioconductor_or_unknown" if record["name"] in BIOCONDUCTOR_HINTS else "DESCRIPTION",
+                    "evidence": f"DESCRIPTION:{record['field']}",
+                    "required": True,
+                    "category": "runtime",
+                }
+                if "version_spec" in record:
+                    item["version_spec"] = record["version_spec"]
+                r_records.append(item)
+            optional["r"].update({key: sorted(record["name"] for record in value) for key, value in optional_r_records.items()})
             metadata = parse_description_metadata(description)
             system_requirements.extend({"value": item, "source": "DESCRIPTION", "required": True, "install": "plan_only"} for item in metadata.get("SystemRequirements", []))
             external_resources.extend({"name": item, "type": "r_remote", "source": "DESCRIPTION:Remotes", "required": False, "downloadable": False} for item in metadata.get("Remotes", []))
+            bioconductor = {"biocViews": metadata.get("biocViews", []), "hinted_packages": sorted(name for name in required_r if name in BIOCONDUCTOR_HINTS)}
         renv = root / "renv.lock"
         if renv.exists():
             dependency_files.append(public_local_path(renv, root))
@@ -317,6 +369,7 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
         "conda_records": sorted(conda_records, key=lambda item: item.get("package", item.get("name", ""))),
         "system_requirements": system_requirements,
         "external_resources": external_resources,
+        "bioconductor": bioconductor if "bioconductor" in locals() else {"biocViews": [], "hinted_packages": []},
         "executables": [],
     }
 

@@ -7,4 +7,5 @@ properties:
       - organism
       - input_matrix_state
       - metadata_requirements
+      - modality_contracts
       - interpretation_boundary
