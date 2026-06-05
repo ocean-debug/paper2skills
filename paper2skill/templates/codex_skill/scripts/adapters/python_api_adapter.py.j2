@@ -1,11 +1,61 @@
 from __future__ import annotations
 
+import importlib
+import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def input_path(manifest: dict) -> Path:
+    value = ((manifest.get("inputs") or {}).get("primary_data") or {}).get("path")
+    if not value:
+        raise ValueError("inputs.primary_data.path is required")
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
 
 
 def run(manifest: dict, out: Path) -> dict:
+    spec = env_manager.load_json_yaml(ROOT / "references" / "adapter_spec.yaml")
+    if spec.get("status") != "ready":
+        return {
+            "status": "blocked",
+            "adapter_type": "python_api",
+            "entrypoint": spec.get("entrypoint"),
+            "message": "Python API adapter is not ready; user-reviewed wiring is required.",
+            "caveats": spec.get("caveats", []),
+        }
+    source_root = ROOT / "sources" / "repo"
+    if source_root.exists():
+        sys.path.insert(0, str(source_root))
+    module_name = spec.get("module")
+    function_name = spec.get("function")
+    if not module_name or not function_name:
+        return {
+            "status": "blocked",
+            "adapter_type": "python_api",
+            "entrypoint": spec.get("entrypoint"),
+            "message": "Python API adapter is missing module/function wiring.",
+            "caveats": spec.get("caveats", []),
+        }
+    module = importlib.import_module(module_name)
+    function = getattr(module, function_name)
+    result = function(input_path(manifest))
+    output_path = out / "results" / "summary.json"
+    write_json(output_path, env_manager.public_data(result))
     return {
-        "status": "not_implemented",
+        "status": "pass",
         "adapter_type": "python_api",
-        "message": "Python API execution requires user-reviewed adapter wiring.",
+        "entrypoint": spec.get("entrypoint"),
+        "outputs": ["results/summary.json"],
+        "message": "Python API adapter executed.",
     }

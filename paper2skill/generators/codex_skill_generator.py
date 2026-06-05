@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import shutil
 from typing import Any
 
 import jinja2
@@ -141,10 +142,115 @@ def infer_adapter_type(repo_evidence: dict[str, Any], tutorial_trace: dict[str, 
         return "workflow_engine"
     if repo_evidence.get("package_type") == "r_package" or classification.get("language") == "r":
         return "r_script"
+    if classification.get("language") == "python" and repo_evidence.get("api_functions"):
+        return "python_api"
     tutorials = tutorial_trace.get("tutorials", [])
     if tutorials and all(trace.get("language") == "python" for trace in tutorials) and not repo_evidence.get("api_functions"):
         return "notebook"
     return "demo_only"
+
+
+TRUSTED_READY_PYTHON_FIXTURES = {
+    (PROJECT_ROOT / "tests" / "fixtures" / "toy_python_algorithm").resolve(),
+}
+
+
+def allow_ready_python_adapter(repo_path: Path | None) -> bool:
+    if repo_path is None:
+        return False
+    try:
+        resolved = repo_path.resolve()
+    except OSError:
+        return False
+    return resolved in TRUSTED_READY_PYTHON_FIXTURES
+
+
+def build_adapter_spec(
+    adapter_type: str,
+    repo_evidence: dict[str, Any],
+    maturity_level: str,
+    *,
+    allow_ready_adapter: bool = False,
+) -> dict[str, Any]:
+    spec = {
+        "adapter_type": adapter_type,
+        "status": "candidate",
+        "entrypoint": None,
+        "command": None,
+        "module": None,
+        "function": None,
+        "evidence": [],
+        "caveats": [],
+    }
+    if adapter_type == "demo_only":
+        spec["status"] = "demo_only"
+        spec["caveats"] = ["demo summary runner only; no real algorithm adapter was inferred"]
+        return spec
+    if adapter_type == "python_api":
+        candidate = select_python_api_candidate(repo_evidence)
+        if candidate:
+            module = candidate.get("public_module") or candidate.get("module")
+            function = candidate.get("name")
+            spec.update(
+                {
+                    "entrypoint": f"{module}:{function}",
+                    "module": module,
+                    "function": function,
+                    "evidence": [candidate.get("path", "api_miner")],
+                    "caveats": ["Python API adapter remains candidate-only until the entrypoint is explicitly reviewed"],
+                }
+            )
+            if allow_ready_adapter and maturity_level == "L2" and function == "summarize":
+                spec["status"] = "ready"
+                spec["caveats"] = ["Ready adapter uses a generated source snapshot under sources/repo"]
+            return spec
+        spec["status"] = "blocked"
+        spec["caveats"] = ["No importable Python API function was inferred"]
+        return spec
+    if adapter_type == "cli":
+        entrypoint = first_item(repo_evidence.get("entrypoints", []))
+        command = entrypoint.get("name") if entrypoint else None
+        spec.update(
+            {
+                "entrypoint": entrypoint.get("target") if entrypoint else None,
+                "command": command,
+                "evidence": [entrypoint.get("source")] if entrypoint else [],
+                "caveats": ["CLI command is a candidate and must be user-reviewed before execution"],
+            }
+        )
+        return spec
+    if adapter_type == "workflow_engine":
+        engine = first_item(repo_evidence.get("workflow_engines", []))
+        spec.update(
+            {
+                "entrypoint": engine.get("engine") if engine else None,
+                "command": engine.get("engine") if engine else None,
+                "evidence": engine.get("files", []) if engine else [],
+                "caveats": ["Workflow engine execution is candidate-only and is not run automatically"],
+            }
+        )
+        return spec
+    if adapter_type == "r_script":
+        spec["caveats"] = ["R script adapter requires user-reviewed function or script wiring"]
+        return spec
+    if adapter_type == "notebook":
+        spec["caveats"] = ["Notebook adapter requires user-reviewed execution wiring"]
+        return spec
+    spec["status"] = "blocked"
+    spec["caveats"] = ["Unsupported adapter type"]
+    return spec
+
+
+def select_python_api_candidate(repo_evidence: dict[str, Any]) -> dict[str, Any] | None:
+    functions = [item for item in repo_evidence.get("api_functions", []) if item.get("module") and item.get("name")]
+    for item in functions:
+        if item.get("name") == "summarize":
+            return item
+    return first_item(functions)
+
+
+def first_item(values: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    return values[0] if values else None
 
 
 def build_context(
@@ -204,6 +310,12 @@ def build_context(
         classification["language"] = language
         classification["execution_mode"] = "python_api" if language == "python" else "r_script"
     adapter_type = infer_adapter_type(repo_evidence, tutorial_trace, classification)
+    adapter_spec = build_adapter_spec(
+        adapter_type,
+        repo_evidence,
+        maturity_level,
+        allow_ready_adapter=allow_ready_python_adapter(resolved.repo_path),
+    )
     environment_spec = infer_environment_spec(dependency_evidence, classification["language"])
     if classification["language"] == "python" and not environment_spec["python"]["packages"]:
         environment_spec["python"]["packages"] = []
@@ -225,6 +337,7 @@ def build_context(
             "language": classification["language"],
             "execution_mode": classification["execution_mode"],
             "adapter_type": adapter_type,
+            "adapter_status": adapter_spec["status"],
             "maturity_level": maturity_level,
         },
         **io_contract,
@@ -265,6 +378,7 @@ def build_context(
         "environment_report": environment_report,
         "install_plan": install_plan,
         "install_plan_markdown": render_install_plan_markdown(install_plan),
+        "adapter_spec": adapter_spec,
         "algorithm_contract": algorithm_contract,
         "bio_contract": bio_contract,
         "evidence_graph": evidence_graph,
@@ -324,6 +438,7 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_json(root / "references" / "paper_evidence.json", public_context["paper_evidence"])
     write_json(root / "references" / "repo_evidence.json", public_context["repo_evidence"])
     write_yaml(root / "references" / "algorithm_contract.yaml", public_context["algorithm_contract"])
+    write_yaml(root / "references" / "adapter_spec.yaml", public_context["adapter_spec"])
     write_yaml(root / "references" / "bio_contract.yaml", public_context["bio_contract"])
     write_yaml(root / "references" / "io_contract.yaml", {"input_contract": public_context["algorithm_contract"].get("input_contract"), "output_contract": public_context["algorithm_contract"].get("output_contract")})
     write_json(root / "references" / "evidence_graph.json", public_context["evidence_graph"])
@@ -336,7 +451,32 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_text(root / "assets" / "environment.yml", _conda_environment(public_context))
     write_text(root / "assets" / "renv.lock.placeholder", "{}\n")
     write_text(root / "assets" / "demo_input.csv", context["demo_data"])
+    write_source_snapshot(context, root)
     return root
+
+
+def write_source_snapshot(context: dict[str, Any], root: Path) -> None:
+    adapter_spec = context.get("adapter_spec") or {}
+    if adapter_spec.get("adapter_type") != "python_api" or adapter_spec.get("status") != "ready":
+        return
+    repo_path = (((context.get("source_manifest") or {}).get("repo") or {}).get("resolved_path"))
+    if not repo_path:
+        return
+    source_root = Path(repo_path)
+    if not source_root.exists():
+        return
+    dest = root / "sources" / "repo"
+    if dest.exists():
+        shutil.rmtree(dest)
+    ensure_dir(dest)
+    for item in source_root.iterdir():
+        if item.name.startswith(".") or item.name in {"__pycache__", ".pytest_cache", "tests", "docs", "examples", "data"}:
+            continue
+        target = dest / item.name
+        if item.is_dir() and (item / "__init__.py").exists():
+            shutil.copytree(item, target, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        elif item.is_file() and (item.suffix == ".py" or item.name in {"pyproject.toml", "setup.py", "setup.cfg"}):
+            shutil.copyfile(item, target)
 
 
 def write_optional_collection_outputs(public_context: dict[str, Any], root: Path) -> None:
@@ -412,6 +552,7 @@ def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_json(root / "repo_evidence.json", public_context["repo_evidence"])
     write_json(root / "tutorial_trace.json", public_context["tutorial_trace"])
     write_json(root / "workflow_dag.json", public_context["workflow"].get("workflow_dag", {"nodes": [], "edges": []}))
+    write_yaml(root / "adapter_spec.preview.yaml", public_context["adapter_spec"])
     write_yaml(root / "algorithm_contract.preview.yaml", public_context["algorithm_contract"])
     write_json(root / "environment_report.json", _public_environment_report(context["environment_report"]))
     write_text(root / "build_plan.md", _build_plan_markdown(public_context))

@@ -45,3 +45,36 @@ def test_strict_bio_contract_does_not_promote_background_species_keyword():
     contract = infer_bio_contract({"tutorials": [], "workflow_steps": []}, paper_sections=sections, strict_evidence=True)
     species = contract["bio_contract"]["organism"]["species_supported"]
     assert species["value"] == "not_confirmed"
+
+
+def test_bio_contract_prefers_tutorial_evidence_over_paper_background_conflict():
+    trace = {
+        "tutorials": [
+            {
+                "path": "docs/tutorial.ipynb",
+                "steps": [
+                    {
+                        "step_id": "tutorial_001:cell_001",
+                        "evidence_id": "tutorial.ipynb:cell:1",
+                        "code_preview": "adata.uns['species'] = 'human'",
+                        "command_or_code": "adata.uns['species'] = 'human'",
+                        "function_calls": [],
+                    }
+                ],
+            }
+        ]
+    }
+    sections = [
+        {
+            "section_id": "paper:introduction",
+            "title": "Introduction",
+            "text": "Mouse examples are often used as background motivation.",
+        }
+    ]
+
+    contract = infer_bio_contract(trace, paper_sections=sections)
+
+    species = contract["bio_contract"]["organism"]["species_supported"]
+    assert species["value"] == "human"
+    assert species["confidence"] == "high"
+    assert species["evidence"] == ["tutorial.ipynb:cell:1"]

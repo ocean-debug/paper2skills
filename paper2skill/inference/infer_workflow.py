@@ -4,9 +4,6 @@ from typing import Any
 
 
 STEP_TYPE_RULES = {
-    "load_data": ["read", "read_csv", "read_h5ad", "read_10x", "read10x", "load", "import"],
-    "qc": ["calculate_qc", "filter_cells", "filter_genes", "mito", "qc"],
-    "filtering": ["filter", "subset"],
     "normalization": ["normalize", "normalizedata", "normalize_total"],
     "transformation": ["log1p", "lognormalize", "scale", "scaledata"],
     "feature_selection": ["highly_variable", "variablefeatures"],
@@ -15,8 +12,11 @@ STEP_TYPE_RULES = {
     "differential_expression": ["rank_genes", "findmarkers", "deseq", "edger", "limma"],
     "model_training": ["fit", "train"],
     "prediction": ["predict", "classify"],
+    "qc": ["calculate_qc", "filter_cells", "filter_genes", "mito", "qc"],
+    "filtering": ["filter", "subset"],
     "visualization": ["plot", "scatter", "umap", "tsne", "savefig", "ggsave"],
     "save_output": ["write", "to_csv", "save", "saverds", "write_h5ad"],
+    "load_data": ["read", "read_csv", "read_h5ad", "read_10x", "read10x", "load"],
 }
 
 
@@ -35,6 +35,7 @@ def build_workflow_dag(steps: list[dict[str, Any]]) -> dict[str, Any]:
     edges = []
     last_object_producer: dict[str, str] = {}
     last_file_producer: dict[str, str] = {}
+    object_states: dict[str, dict[str, Any]] = {}
     for index, step in enumerate(steps):
         step_id = step.get("step_id") or step.get("id") or f"step_{index + 1:03d}"
         node_type = classify_step_type(step)
@@ -50,7 +51,14 @@ def build_workflow_dag(steps: list[dict[str, Any]]) -> dict[str, Any]:
             producer = last_file_producer.get(name)
             if producer and producer != step_id:
                 edges.append({"from": producer, "to": step_id, "reason": f"shared_file:{name}"})
-        for name in output_objects:
+        state_objects = list(dict.fromkeys(output_objects + input_objects))
+        state_after = object_state_after(step, state_objects, node_type, object_states)
+        for name, state in state_after.items():
+            object_states[name] = state
+        mutated_objects = output_objects
+        if node_type in MUTATING_STEP_TYPES:
+            mutated_objects = output_objects or input_objects
+        for name in mutated_objects:
             last_object_producer[name] = step_id
         for name in output_files:
             last_file_producer[name] = step_id
@@ -64,7 +72,7 @@ def build_workflow_dag(steps: list[dict[str, Any]]) -> dict[str, Any]:
                 "output_files": output_files,
                 "input_objects": input_objects,
                 "output_objects": output_objects,
-                "object_state_after": object_state_after(step, output_objects or input_objects, node_type),
+                "object_state_after": state_after,
                 "parameters": step.get("parameters", {}),
                 "evidence": [step.get("evidence_id") or step_id],
                 "confidence": step.get("confidence", "medium"),
@@ -92,11 +100,27 @@ def classify_step_type(step: dict[str, Any]) -> str:
     return "other"
 
 
-def object_state_after(step: dict[str, Any], objects: list[str], node_type: str) -> dict[str, dict[str, Any]]:
+MUTATING_STEP_TYPES = {
+    "load_data",
+    "qc",
+    "filtering",
+    "normalization",
+    "transformation",
+    "feature_selection",
+    "dimensionality_reduction",
+    "clustering",
+    "differential_expression",
+    "model_training",
+    "prediction",
+}
+
+
+def object_state_after(step: dict[str, Any], objects: list[str], node_type: str, previous_states: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
     state: dict[str, dict[str, Any]] = {}
     signals = set(step.get("bio_signals", []) or [])
+    previous_states = previous_states or {}
     for name in objects:
-        value: dict[str, Any] = {}
+        value: dict[str, Any] = dict(previous_states.get(name, {}))
         if "single_cell" in signals:
             value["modality"] = "scRNA-seq"
         if node_type == "load_data" or "raw_counts" in signals:

@@ -95,6 +95,7 @@ references/tutorial_candidates.json
 references/tutorial_scanner_report.json
 references/io_contract.yaml
 references/evidence_graph.json
+references/adapter_spec.yaml
 references/build_report.json
 ```
 
@@ -114,6 +115,8 @@ Supported now:
 - Python and R toy skill generation.
 - Tutorial scanning, dependency mining, workflow DAG inference, and basic bio IO contracts.
 - Environment preflight, install planning, and gated disposable conda environment creation.
+- Adapter readiness tracking via `references/adapter_spec.yaml`.
+- Demo-only execution and blocked non-demo runs when adapters are not ready.
 
 Experimental:
 
@@ -121,6 +124,7 @@ Experimental:
 - Evidence graph conflict decisions.
 - Source-aware bio contract inference.
 - Adapter-based execution scaffolding.
+- Mini offline bioinformatics benchmark coverage for Scanpy, Seurat, DESeq2-like, CLI, and workflow-engine repository shapes.
 
 Not yet:
 
@@ -129,7 +133,7 @@ Not yet:
 - CUDA/system library automatic configuration.
 - Large dataset download automation.
 - Arbitrary install script execution.
-- Fully automatic real algorithm execution for unknown repositories.
+- Fully automatic real algorithm execution for unknown repositories. Unknown adapters stay `candidate` or `blocked` and do not run as successful demo fallbacks.
 
 ## Maturity Levels
 
