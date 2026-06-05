@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 import env_manager
 
+EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+
 
 def write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +133,19 @@ def main(argv: list[str] | None = None) -> int:
     adapter_report = {"status": "demo_only", "adapter_type": selected_adapter, "message": "Demo summary runner was used."}
     demo_run = is_demo_run(manifest, spec)
     if not demo_run:
+        if spec.get("status") not in EXECUTABLE_ADAPTER_STATUSES:
+            adapter_report = {
+                "status": "blocked",
+                "adapter_type": selected_adapter,
+                "adapter_status": spec.get("status"),
+                "entrypoint": spec.get("entrypoint"),
+                "message": "Adapter status is not executable; reviewed, ready, or verified status is required.",
+                "caveats": spec.get("caveats", []),
+            }
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
         adapter_report = run_adapter(selected_adapter, manifest, out)
         if adapter_report.get("status") != "pass":
             if adapter_report.get("status") in {"not_implemented", "candidate"}:
@@ -151,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     write_json(out / "workflow" / "executed_steps.json", {"status": "pass", "executed": [step.get("id") for step in load_json(out / "workflow" / "plan.json").get("steps", [])]})
     repro = out / "reproducibility"
     repro.mkdir(parents=True, exist_ok=True)
-    for name in ["source_manifest.json", "algorithm_contract.yaml", "adapter_spec.yaml", "bio_contract.yaml"]:
+    for name in ["source_manifest.json", "algorithm_contract.yaml", "adapter_spec.yaml", "adapter_review.yaml", "bio_contract.yaml", "notebook_execution_policy.json"]:
         src = ROOT / "references" / name
         if src.exists():
             shutil.copyfile(src, repro / name)

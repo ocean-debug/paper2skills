@@ -32,6 +32,9 @@ def test_bio_contract_infers_single_cell_transform_chain_and_metadata_key():
     assert bio["modality"]["primary"]["value"] == "scRNA-seq"
     assert bio["input_matrix_state"]["matrix_transformations"] == ["raw_counts_loaded", "normalized", "log1p_transformed"]
     assert bio["metadata_requirements"]["celltype_key"]["value"] == "cell_type"
+    scrna = bio["modality_contracts"]["scrna_seq"]
+    assert scrna["input_state"]["matrix_state"]["value"] == "log1p"
+    assert scrna["metadata"]["celltype_key"]["value"] == "cell_type"
 
 
 def test_strict_bio_contract_does_not_promote_background_species_keyword():
@@ -78,3 +81,26 @@ def test_bio_contract_prefers_tutorial_evidence_over_paper_background_conflict()
     assert species["value"] == "human"
     assert species["confidence"] == "high"
     assert species["evidence"] == ["tutorial.ipynb:cell:1"]
+
+
+def test_bio_contract_adds_bulk_rna_seq_modality_contract():
+    trace = {
+        "workflow_steps": [
+            {
+                "step_id": "tutorial_001:cell_001",
+                "evidence_id": "tutorial.ipynb:cell:1",
+                "code_preview": "dds <- DESeqDataSetFromMatrix(countData = counts, colData = sample_table, design = ~ condition)",
+                "command_or_code": "DESeq2::DESeqDataSetFromMatrix(countData = counts, colData = sample_table, design = ~ condition)",
+                "function_calls": ["DESeq2::DESeqDataSetFromMatrix"],
+            }
+        ]
+    }
+
+    contract = infer_bio_contract(trace, paper_sections=[])
+
+    bio = contract["bio_contract"]
+    assert bio["modality"]["primary"]["value"] == "bulk RNA-seq"
+    bulk = bio["modality_contracts"]["bulk_rna_seq"]
+    assert bulk["input_state"]["matrix_state"]["value"] == "raw_counts"
+    assert bulk["metadata"]["condition_key"]["value"] == "condition"
+    assert bulk["statistical"]["design_formula"]["value"] == "~ condition"

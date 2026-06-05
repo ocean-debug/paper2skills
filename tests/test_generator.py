@@ -20,6 +20,8 @@ def test_generator_creates_complete_toy_python_skill(tmp_path: Path):
     assert result["status"] == "pass", result
     assert (out / "references" / "algorithm_contract.yaml").exists()
     assert (out / "references" / "adapter_spec.yaml").exists()
+    assert (out / "references" / "adapter_review.yaml").exists()
+    assert (out / "references" / "notebook_execution_policy.json").exists()
     assert (out / "references" / "bio_contract.yaml").exists()
     assert (out / "references" / "workflow_dag.json").exists()
     assert (out / "scripts" / "adapters" / "python_api_adapter.py").exists()
@@ -106,6 +108,241 @@ caveats: []
     invalid = validate_skill(out)
     assert invalid["status"] == "fail"
     assert any("adapter_spec.status" in error for error in invalid["errors"])
+
+
+def test_validate_skill_accepts_reviewed_and_verified_adapter_statuses(tmp_path: Path):
+    context = build_context(**example_inputs("toy_python"))
+    out = generate_skill(context, tmp_path / "toy-python-skill")
+    adapter_spec = out / "references" / "adapter_spec.yaml"
+    adapter_review = out / "references" / "adapter_review.yaml"
+    spec = yaml.safe_load(adapter_spec.read_text(encoding="utf-8"))
+    review = yaml.safe_load(adapter_review.read_text(encoding="utf-8"))
+
+    spec["status"] = "reviewed"
+    review.update({"status": "reviewed", "human_approved": True, "dry_run": {"status": "not_run"}, "expected_outputs": []})
+    adapter_spec.write_text(yaml.safe_dump(spec, sort_keys=False), encoding="utf-8")
+    adapter_review.write_text(yaml.safe_dump(review, sort_keys=False), encoding="utf-8")
+    assert validate_skill(out)["status"] == "pass"
+
+    spec["status"] = "verified"
+    review.update({"status": "verified", "human_approved": True, "dry_run": {"status": "pass"}, "expected_outputs": ["results/summary.json"], "output_validation": {"status": "pass"}})
+    adapter_spec.write_text(yaml.safe_dump(spec, sort_keys=False), encoding="utf-8")
+    adapter_review.write_text(yaml.safe_dump(review, sort_keys=False), encoding="utf-8")
+    assert validate_skill(out)["status"] == "pass"
+
+
+def test_validate_skill_rejects_invalid_adapter_review_lifecycle(tmp_path: Path):
+    context = build_context(**example_inputs("toy_python"))
+    out = generate_skill(context, tmp_path / "toy-python-skill")
+    adapter_review = out / "references" / "adapter_review.yaml"
+    review = yaml.safe_load(adapter_review.read_text(encoding="utf-8"))
+
+    review.update({"status": "ready", "dry_run": {"status": "not_run"}})
+    adapter_review.write_text(yaml.safe_dump(review, sort_keys=False), encoding="utf-8")
+
+    invalid = validate_skill(out)
+    assert invalid["status"] == "fail"
+    assert any("adapter_review.dry_run.status" in error for error in invalid["errors"])
+
+    review.update({"status": "verified", "dry_run": {"status": "pass"}, "expected_outputs": []})
+    review.pop("output_validation", None)
+    adapter_review.write_text(yaml.safe_dump(review, sort_keys=False), encoding="utf-8")
+
+    invalid = validate_skill(out)
+    assert invalid["status"] == "fail"
+    assert any("adapter_review.output_validation.status" in error for error in invalid["errors"])
+
+    review.update({"status": "verified", "dry_run": {"status": "pass"}, "expected_outputs": "results/summary.json", "output_validation": {"status": "pass"}})
+    adapter_review.write_text(yaml.safe_dump(review, sort_keys=False), encoding="utf-8")
+
+    invalid = validate_skill(out)
+    assert invalid["status"] == "fail"
+    assert any("adapter_review.expected_outputs: expected list" in error for error in invalid["errors"])
+
+
+def test_adapter_review_human_approval_promotes_candidate_to_reviewed(tmp_path: Path):
+    repo = tmp_path / "api-repo"
+    package = repo / "reviewed_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .core import summarize\n", encoding="utf-8")
+    (package / "core.py").write_text("def summarize(path):\n    return {'rows': 0}\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='reviewed-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nReviewed Python API method.\n", encoding="utf-8")
+    review = tmp_path / "adapter_review.yaml"
+    review.write_text(
+        """
+adapter_type: python_api
+status: reviewed
+entrypoint: reviewed_pkg:summarize
+command: null
+module: reviewed_pkg
+function: summarize
+human_approved: true
+dry_run:
+  status: not_run
+expected_outputs: []
+evidence:
+  - human_review
+caveats: []
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = build_context(paper=str(paper), repo=str(repo), maturity_level="L2", adapter_review=str(review))
+
+    assert context["adapter_spec"]["status"] == "reviewed"
+    assert context["adapter_spec"]["module"] == "reviewed_pkg"
+
+
+def test_adapter_review_dry_run_promotes_candidate_to_ready_without_human_approval(tmp_path: Path):
+    repo = tmp_path / "api-repo"
+    package = repo / "ready_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .core import summarize\n", encoding="utf-8")
+    (package / "core.py").write_text("def summarize(path):\n    return {'rows': 0}\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='ready-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nDry-run validated Python API method.\n", encoding="utf-8")
+    review = tmp_path / "adapter_review.yaml"
+    review.write_text(
+        """
+adapter_type: python_api
+status: ready
+entrypoint: ready_pkg:summarize
+command: null
+module: ready_pkg
+function: summarize
+human_approved: false
+dry_run:
+  status: pass
+expected_outputs: []
+evidence:
+  - dry_run
+caveats: []
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = build_context(paper=str(paper), repo=str(repo), maturity_level="L2", adapter_review=str(review))
+
+    assert context["adapter_spec"]["status"] == "ready"
+    assert context["adapter_spec"]["module"] == "ready_pkg"
+
+
+def test_adapter_review_malformed_mapping_blocks_without_crashing(tmp_path: Path):
+    repo = tmp_path / "api-repo"
+    package = repo / "malformed_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .core import summarize\n", encoding="utf-8")
+    (package / "core.py").write_text("def summarize(path):\n    return {'rows': 0}\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='malformed-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nMalformed review mapping.\n", encoding="utf-8")
+    review = tmp_path / "adapter_review.yaml"
+    review.write_text(
+        """
+adapter_type: python_api
+status: ready
+entrypoint: malformed_pkg:summarize
+command: null
+module:
+  - malformed_pkg
+function: summarize
+human_approved: false
+dry_run:
+  status: pass
+expected_outputs: []
+evidence:
+  - dry_run
+caveats: []
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = build_context(paper=str(paper), repo=str(repo), maturity_level="L2", adapter_review=str(review))
+
+    assert context["adapter_spec"]["status"] == "blocked"
+    assert "explicit adapter mapping" in " ".join(context["adapter_spec"]["caveats"])
+
+
+def test_adapter_review_requires_explicit_mapping_for_executable_status(tmp_path: Path):
+    repo = tmp_path / "api-repo"
+    package = repo / "reviewed_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .core import summarize\n", encoding="utf-8")
+    (package / "core.py").write_text("def summarize(path):\n    return {'rows': 0}\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='reviewed-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nReviewed Python API method.\n", encoding="utf-8")
+    review = tmp_path / "adapter_review.yaml"
+    review.write_text(
+        """
+adapter_type: python_api
+status: reviewed
+human_approved: true
+dry_run:
+  status: not_run
+expected_outputs: []
+evidence:
+  - human_review
+caveats: []
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = build_context(paper=str(paper), repo=str(repo), maturity_level="L2", adapter_review=str(review))
+
+    assert context["adapter_spec"]["status"] == "blocked"
+    assert "explicit adapter mapping" in " ".join(context["adapter_spec"]["caveats"])
+
+
+def test_adapter_review_verified_requires_output_validation(tmp_path: Path):
+    repo = tmp_path / "api-repo"
+    package = repo / "verified_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .core import summarize\n", encoding="utf-8")
+    (package / "core.py").write_text("def summarize(path):\n    return {'rows': 0}\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='verified-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nVerified Python API method.\n", encoding="utf-8")
+    review = tmp_path / "adapter_review.yaml"
+    review.write_text(
+        """
+adapter_type: python_api
+status: verified
+entrypoint: verified_pkg:summarize
+command: null
+module: verified_pkg
+function: summarize
+human_approved: true
+dry_run:
+  status: pass
+expected_outputs:
+  - results/summary.json
+evidence:
+  - human_review
+caveats: []
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    context = build_context(paper=str(paper), repo=str(repo), maturity_level="L2", adapter_review=str(review))
+    assert context["adapter_spec"]["status"] == "blocked"
+
+    review.write_text(
+        review.read_text(encoding="utf-8")
+        + "output_validation:\n"
+        + "  status: pass\n",
+        encoding="utf-8",
+    )
+    context = build_context(paper=str(paper), repo=str(repo), maturity_level="L2", adapter_review=str(review))
+    assert context["adapter_spec"]["status"] == "verified"
 
 
 def test_validate_skill_rejects_invalid_workflow_dag_and_environment_records(tmp_path: Path):

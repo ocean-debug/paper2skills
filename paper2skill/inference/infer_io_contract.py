@@ -8,13 +8,16 @@ def infer_io_contract(tutorial_trace: dict[str, Any], bio_contract: dict[str, An
     inputs = []
     outputs = []
     format_evidence = []
+    text_items = []
     for step in tutorial_trace.get("workflow_steps", []):
         inputs.extend(step.get("inputs", []))
         inputs.extend(step.get("read_files", []))
         outputs.extend(step.get("outputs", []))
         outputs.extend(step.get("write_files", []))
         format_evidence.extend(step_format_evidence(step))
+        text_items.extend(step_format_evidence(step))
     bio = (bio_contract or {}).get("bio_contract", {})
+    modality = (((bio.get("modality") or {}).get("primary") or {}).get("value"))
     return {
         "input_contract": {
             "required": {
@@ -22,10 +25,10 @@ def infer_io_contract(tutorial_trace: dict[str, Any], bio_contract: dict[str, An
                 "primary_data": {
                     "type": "file",
                     "state": "not_confirmed" if not inputs else "tutorial_confirmed",
-                    "format": file_format_field(format_evidence),
+                    "format": file_format_field(format_evidence, modality),
                     "matrix_state": matrix_state_field(bio),
                     "matrix_orientation": field_value("unknown", "low", []),
-                    "metadata_keys": metadata_keys(bio),
+                    "metadata_keys": metadata_keys(bio, text_items),
                     "organism": organism_fields(bio),
                     "external_resources": external_resources(bio),
                     "evidence": sorted({str(value) for value in inputs if value}),
@@ -68,17 +71,31 @@ def field_value(value: Any, confidence: str = "low", evidence: list[str] | None 
     return {"value": value, "confidence": confidence, "evidence": evidence or []}
 
 
-def file_format_field(paths: list[Any]) -> dict[str, Any]:
+def file_format_field(paths: list[Any], modality: str | None = None) -> dict[str, Any]:
+    detected_values: dict[str, list[str]] = {}
     for value in paths:
-        detected = detect_file_format(str(value))
+        detected = detect_file_format(str(value), modality)
         if detected != "unknown":
-            return field_value(detected, "high", [str(value)])
+            detected_values.setdefault(detected, []).append(str(value))
+    primary_values = {key: value for key, value in detected_values.items() if key not in {"csv", "tsv"}}
+    if primary_values:
+        detected_values = primary_values
+    if len(detected_values) == 1:
+        detected, evidence = next(iter(detected_values.items()))
+        return field_value(detected, "high", evidence)
+    if len(detected_values) > 1:
+        evidence = [item for values in detected_values.values() for item in values]
+        result = field_value("not_confirmed", "low", evidence)
+        result["conflicts"] = sorted(detected_values)
+        return result
     return field_value("unknown", "low", [])
 
 
-def detect_file_format(value: str) -> str:
+def detect_file_format(value: str, modality: str | None = None) -> str:
     lower = value.lower()
     name = PurePosixPath(lower.replace("\\", "/")).name
+    if modality == "bulk RNA-seq" and ("deseqdatasetfrommatrix" in lower or "countdata" in lower or "counts" in name):
+        return "count_matrix"
     if lower.endswith(".h5ad"):
         return "h5ad"
     if lower.endswith((".rds", ".rda")):
@@ -87,6 +104,8 @@ def detect_file_format(value: str) -> str:
         return "10x_mtx"
     if lower.endswith(".mtx"):
         return "mtx"
+    if modality == "bulk RNA-seq" and lower.endswith((".csv", ".tsv", ".txt")):
+        return "count_matrix"
     if lower.endswith((".csv", ".tsv")):
         return "csv" if lower.endswith(".csv") else "tsv"
     if lower.endswith(".loom"):
@@ -108,9 +127,15 @@ def matrix_state_field(bio: dict[str, Any]) -> dict[str, Any]:
     return field_value("unknown", "low", [])
 
 
-def metadata_keys(bio: dict[str, Any]) -> dict[str, Any]:
+def metadata_keys(bio: dict[str, Any], text_items: list[str] | None = None) -> dict[str, Any]:
     metadata = bio.get("metadata_requirements", {})
-    return {key: metadata.get(key, field_value("not_confirmed")) for key in ["sample_key", "batch_key", "condition_key", "celltype_key", "perturbation_key"]}
+    values = {key: metadata.get(key, field_value("not_confirmed")) for key in ["sample_key", "batch_key", "condition_key", "celltype_key", "perturbation_key"]}
+    text = "\n".join(text_items or [])
+    if values["condition_key"]["value"] == "not_confirmed" and "condition" in text.lower():
+        values["condition_key"] = field_value("condition", "medium", ["tutorial_metadata_key"])
+    if values["sample_key"]["value"] == "not_confirmed" and "sample" in text.lower():
+        values["sample_key"] = field_value("sample", "medium", ["tutorial_metadata_key"])
+    return values
 
 
 def organism_fields(bio: dict[str, Any]) -> dict[str, Any]:

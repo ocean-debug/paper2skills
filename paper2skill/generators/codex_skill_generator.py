@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
+import re
 import shutil
 from typing import Any
 
@@ -29,6 +30,8 @@ from paper2skill.runtime.install_planner import build_install_plan, render_insta
 
 
 TEMPLATE_ROOT = PROJECT_ROOT / "paper2skill" / "templates" / "codex_skill"
+EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+ADAPTER_STATUSES = {"demo_only", "candidate", "blocked", "ready", "reviewed", "verified"}
 
 
 @dataclass
@@ -165,6 +168,132 @@ def allow_ready_python_adapter(repo_path: Path | None) -> bool:
     return resolved in TRUSTED_READY_PYTHON_FIXTURES
 
 
+def load_adapter_review(path: str | Path | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    review_path = Path(path)
+    if not review_path.exists():
+        return None
+    data = yaml.safe_load(review_path.read_text(encoding="utf-8")) or {}
+    return data if isinstance(data, dict) else None
+
+
+def default_adapter_review(spec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "adapter_type": spec.get("adapter_type"),
+        "status": spec.get("status"),
+        "entrypoint": spec.get("entrypoint"),
+        "command": spec.get("command"),
+        "module": spec.get("module"),
+        "function": spec.get("function"),
+        "human_approved": False,
+        "dry_run": {"status": "trusted_fixture" if spec.get("status") == "ready" else "not_run"},
+        "expected_outputs": [],
+        "evidence": list(spec.get("evidence", []) or []),
+        "caveats": ["No human approval was provided; candidate adapters remain non-executable"],
+    }
+
+
+def apply_adapter_review(spec: dict[str, Any], review: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not review:
+        return spec, default_adapter_review(spec)
+    review_data = {**default_adapter_review(spec), **review}
+    requested_status = review_data.get("status")
+    if requested_status not in ADAPTER_STATUSES:
+        reviewed_spec = dict(spec)
+        reviewed_spec["status"] = "blocked"
+        reviewed_spec["caveats"] = list(spec.get("caveats", []) or []) + ["adapter_review.yaml requested an invalid status"]
+        review_data["status"] = "blocked"
+        return reviewed_spec, review_data
+    if requested_status in EXECUTABLE_ADAPTER_STATUSES:
+        if requested_status == "reviewed" and review.get("human_approved") is not True:
+            reviewed_spec = dict(spec)
+            reviewed_spec["caveats"] = list(spec.get("caveats", []) or []) + ["adapter_review.yaml did not set human_approved=true"]
+            review_data["status"] = reviewed_spec["status"]
+            return reviewed_spec, review_data
+        if missing := missing_explicit_adapter_mapping(spec, review):
+            reviewed_spec = dict(spec)
+            reviewed_spec["status"] = "blocked"
+            reviewed_spec["caveats"] = list(spec.get("caveats", []) or []) + [f"adapter_review.yaml must provide explicit adapter mapping: {', '.join(missing)}"]
+            review_data["status"] = "blocked"
+            return reviewed_spec, review_data
+        if not adapter_review_matches(spec, review):
+            reviewed_spec = dict(spec)
+            reviewed_spec["status"] = "blocked"
+            reviewed_spec["caveats"] = list(spec.get("caveats", []) or []) + ["adapter_review.yaml mapping does not match the inferred adapter"]
+            review_data["status"] = "blocked"
+            return reviewed_spec, review_data
+        if requested_status == "ready" and not adapter_review_has_ready_evidence(review_data):
+            reviewed_spec = dict(spec)
+            reviewed_spec["status"] = "blocked"
+            reviewed_spec["caveats"] = list(spec.get("caveats", []) or []) + ["adapter_review.yaml ready status requires a passing dry_run"]
+            review_data["status"] = "blocked"
+            return reviewed_spec, review_data
+        if requested_status == "verified" and not adapter_review_has_verified_evidence(review_data):
+            reviewed_spec = dict(spec)
+            reviewed_spec["status"] = "blocked"
+            reviewed_spec["caveats"] = list(spec.get("caveats", []) or []) + ["adapter_review.yaml verified status requires passing dry_run and output_validation evidence"]
+            review_data["status"] = "blocked"
+            return reviewed_spec, review_data
+    reviewed_spec = dict(spec)
+    for key in ["adapter_type", "entrypoint", "command", "module", "function"]:
+        if key in review_data:
+            reviewed_spec[key] = review_data.get(key)
+    reviewed_spec["status"] = requested_status
+    reviewed_spec["evidence"] = sorted(dict.fromkeys((spec.get("evidence", []) or []) + (review_data.get("evidence", []) or [])))
+    reviewed_spec["caveats"] = list(review_data.get("caveats", []) or reviewed_spec.get("caveats", []) or [])
+    return reviewed_spec, review_data
+
+
+def adapter_review_matches(spec: dict[str, Any], review: dict[str, Any]) -> bool:
+    if review.get("adapter_type") != spec.get("adapter_type"):
+        return False
+    for key in ["entrypoint", "command", "module", "function"]:
+        expected = spec.get(key)
+        approved = review.get(key)
+        if expected and approved and expected != approved:
+            return False
+    if review.get("module") and not safe_python_name(str(review["module"])):
+        return False
+    if review.get("function") and not safe_python_name(str(review["function"])):
+        return False
+    command = review.get("command")
+    if isinstance(command, str) and ("\n" in command or "\r" in command):
+        return False
+    return True
+
+
+def missing_explicit_adapter_mapping(spec: dict[str, Any], review: dict[str, Any]) -> list[str]:
+    adapter_type = spec.get("adapter_type")
+    if adapter_type == "python_api":
+        required = ["adapter_type", "entrypoint", "module", "function"]
+    elif adapter_type in {"cli", "workflow_engine"}:
+        required = ["adapter_type", "entrypoint", "command"]
+    elif adapter_type in {"notebook", "r_script"}:
+        required = ["adapter_type", "entrypoint"]
+    else:
+        required = ["adapter_type"]
+    return [key for key in required if missing_adapter_review_mapping_value(review.get(key))]
+
+
+def missing_adapter_review_mapping_value(value: Any) -> bool:
+    return not isinstance(value, str) or value == ""
+
+
+def adapter_review_has_ready_evidence(review: dict[str, Any]) -> bool:
+    dry_run = review.get("dry_run") or {}
+    return dry_run.get("status") in {"pass", "trusted_fixture"}
+
+
+def adapter_review_has_verified_evidence(review: dict[str, Any]) -> bool:
+    output_validation = review.get("output_validation") or {}
+    return adapter_review_has_ready_evidence(review) and output_validation.get("status") == "pass" and bool(review.get("expected_outputs"))
+
+
+def safe_python_name(value: str) -> bool:
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$", value))
+
+
 def build_adapter_spec(
     adapter_type: str,
     repo_evidence: dict[str, Any],
@@ -253,6 +382,37 @@ def first_item(values: list[dict[str, Any]] | None) -> dict[str, Any] | None:
     return values[0] if values else None
 
 
+def notebook_execution_policy(tutorial_trace: dict[str, Any]) -> dict[str, Any]:
+    combined = {
+        "will_execute": False,
+        "reason": "static_analysis_only",
+        "notebooks": [],
+        "shell_magics": [],
+        "line_magics": [],
+        "cell_magics": [],
+        "parameter_cells": [],
+        "large_outputs": [],
+        "risks": [],
+    }
+    risks: set[str] = set()
+    for tutorial in tutorial_trace.get("tutorials", []):
+        policy = tutorial.get("execution_policy")
+        if not policy:
+            continue
+        path = tutorial.get("path")
+        combined["notebooks"].append(path)
+        for key in ["shell_magics", "line_magics", "cell_magics", "large_outputs"]:
+            for item in policy.get(key, []) or []:
+                record = dict(item)
+                record["notebook"] = path
+                combined[key].append(record)
+        for cell in policy.get("parameter_cells", []) or []:
+            combined["parameter_cells"].append({"notebook": path, "cell": cell})
+        risks.update(policy.get("risks", []) or [])
+    combined["risks"] = sorted(risks)
+    return combined
+
+
 def build_context(
     *,
     skill_name: str | None = None,
@@ -270,6 +430,7 @@ def build_context(
     no_execute_tutorials: bool = True,
     strict_evidence: bool = False,
     tutorial_filter: str | None = None,
+    adapter_review: str | Path | None = None,
     collection_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     skill_name = slugify(skill_name or algorithm_name or "generated-skill")
@@ -316,6 +477,7 @@ def build_context(
         maturity_level,
         allow_ready_adapter=allow_ready_python_adapter(resolved.repo_path),
     )
+    adapter_spec, adapter_review_data = apply_adapter_review(adapter_spec, load_adapter_review(adapter_review))
     environment_spec = infer_environment_spec(dependency_evidence, classification["language"])
     if classification["language"] == "python" and not environment_spec["python"]["packages"]:
         environment_spec["python"]["packages"] = []
@@ -379,6 +541,8 @@ def build_context(
         "install_plan": install_plan,
         "install_plan_markdown": render_install_plan_markdown(install_plan),
         "adapter_spec": adapter_spec,
+        "adapter_review": adapter_review_data,
+        "notebook_execution_policy": notebook_execution_policy(tutorial_trace),
         "algorithm_contract": algorithm_contract,
         "bio_contract": bio_contract,
         "evidence_graph": evidence_graph,
@@ -391,6 +555,7 @@ def build_context(
             "no_execute_tutorials": no_execute_tutorials,
             "strict_evidence": strict_evidence,
             "tutorial_filter": tutorial_filter,
+            "adapter_review": str(adapter_review) if adapter_review else None,
         },
         "warnings": resolved.warnings,
         "demo_data": _demo_data_for_language(classification["language"]),
@@ -439,6 +604,8 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_json(root / "references" / "repo_evidence.json", public_context["repo_evidence"])
     write_yaml(root / "references" / "algorithm_contract.yaml", public_context["algorithm_contract"])
     write_yaml(root / "references" / "adapter_spec.yaml", public_context["adapter_spec"])
+    write_yaml(root / "references" / "adapter_review.yaml", public_context["adapter_review"])
+    write_json(root / "references" / "notebook_execution_policy.json", public_context["notebook_execution_policy"])
     write_yaml(root / "references" / "bio_contract.yaml", public_context["bio_contract"])
     write_yaml(root / "references" / "io_contract.yaml", {"input_contract": public_context["algorithm_contract"].get("input_contract"), "output_contract": public_context["algorithm_contract"].get("output_contract")})
     write_json(root / "references" / "evidence_graph.json", public_context["evidence_graph"])
@@ -457,7 +624,7 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
 
 def write_source_snapshot(context: dict[str, Any], root: Path) -> None:
     adapter_spec = context.get("adapter_spec") or {}
-    if adapter_spec.get("adapter_type") != "python_api" or adapter_spec.get("status") != "ready":
+    if adapter_spec.get("adapter_type") != "python_api" or adapter_spec.get("status") not in EXECUTABLE_ADAPTER_STATUSES:
         return
     repo_path = (((context.get("source_manifest") or {}).get("repo") or {}).get("resolved_path"))
     if not repo_path:
@@ -553,6 +720,8 @@ def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_json(root / "tutorial_trace.json", public_context["tutorial_trace"])
     write_json(root / "workflow_dag.json", public_context["workflow"].get("workflow_dag", {"nodes": [], "edges": []}))
     write_yaml(root / "adapter_spec.preview.yaml", public_context["adapter_spec"])
+    write_yaml(root / "adapter_review.preview.yaml", public_context["adapter_review"])
+    write_json(root / "notebook_execution_policy.json", public_context["notebook_execution_policy"])
     write_yaml(root / "algorithm_contract.preview.yaml", public_context["algorithm_contract"])
     write_json(root / "environment_report.json", _public_environment_report(context["environment_report"]))
     write_text(root / "build_plan.md", _build_plan_markdown(public_context))

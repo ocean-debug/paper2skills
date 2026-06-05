@@ -43,7 +43,8 @@ def mine_api(repo_path: str | Path | None) -> dict[str, Any]:
             item = dict(item)
             item["path"] = public_local_path(path, root)
             r_functions.append(item)
-    r_exports = r_namespace_exports(root)
+    r_namespace = r_namespace_imports(root)
+    r_exports = r_namespace["exports"]
     language = "python" if api_functions or classes else ("r" if r_functions else "unknown")
     return {
         "language": language,
@@ -54,6 +55,7 @@ def mine_api(repo_path: str | Path | None) -> dict[str, Any]:
         "cli_commands": cli_commands,
         "api_functions": api_functions or r_functions,
         "r_exports": r_exports,
+        "r_namespace": r_namespace,
         "classes": classes,
         "workflow_engines": workflow_engines(root),
         "tutorials": public_local_paths([p for p in root.rglob("*") if p.suffix.lower() in {".ipynb", ".py", ".r", ".rmd"}], root),
@@ -138,18 +140,36 @@ def public_python_module_name(path: Path, root: Path, function_name: str) -> str
 
 
 def r_namespace_exports(root: Path) -> list[dict[str, Any]]:
+    return r_namespace_imports(root)["exports"]
+
+
+def r_namespace_imports(root: Path) -> dict[str, list[dict[str, Any]]]:
     namespace = root / "NAMESPACE"
+    result = {"imports": [], "import_from": [], "exports": [], "s3methods": []}
     if not namespace.exists():
-        return []
+        return result
     text = namespace.read_text(encoding="utf-8", errors="replace")
-    names = re.findall(r"export\(([^)]+)\)", text)
-    exports = []
-    for group in names:
+    for group in re.findall(r"\bimport\(([^)]+)\)", text):
         for name in group.split(","):
             clean = name.strip().strip("'\"")
             if clean:
-                exports.append({"name": clean, "source": "NAMESPACE"})
-    return exports
+                result["imports"].append({"package": clean, "source": "NAMESPACE:import"})
+    for group in re.findall(r"\bimportFrom\(([^)]+)\)", text):
+        parts = [part.strip().strip("'\"") for part in group.split(",") if part.strip()]
+        if len(parts) >= 2:
+            package = parts[0]
+            for function in parts[1:]:
+                result["import_from"].append({"package": package, "function": function, "source": "NAMESPACE:importFrom"})
+    for group in re.findall(r"\bexport\(([^)]+)\)", text):
+        for name in group.split(","):
+            clean = name.strip().strip("'\"")
+            if clean:
+                result["exports"].append({"name": clean, "source": "NAMESPACE:export"})
+    for group in re.findall(r"\bS3method\(([^)]+)\)", text):
+        parts = [part.strip().strip("'\"") for part in group.split(",") if part.strip()]
+        if len(parts) >= 2:
+            result["s3methods"].append({"generic": parts[0], "class": parts[1], "source": "NAMESPACE:S3method"})
+    return result
 
 
 def workflow_engines(root: Path) -> list[dict[str, Any]]:

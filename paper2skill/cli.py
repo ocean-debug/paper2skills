@@ -55,6 +55,7 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-execute-tutorials", action="store_true")
     parser.add_argument("--strict-evidence", action="store_true")
     parser.add_argument("--tutorial-filter", default=None)
+    parser.add_argument("--adapter-review", default=None)
     parser.add_argument("--tutorial", action="append", default=[])
     parser.add_argument("--maturity-target", default=None)
 
@@ -73,6 +74,7 @@ def command_plan(args: argparse.Namespace) -> int:
         no_execute_tutorials=args.no_execute_tutorials,
         strict_evidence=args.strict_evidence,
         tutorial_filter=args.tutorial_filter,
+        adapter_review=args.adapter_review,
         collection_dir=Path(args.out) / ".paper2skill_collection",
         maturity_level=args.maturity_target or "L1",
     )
@@ -100,6 +102,7 @@ def command_build(args: argparse.Namespace) -> int:
         "no_execute_tutorials": args.no_execute_tutorials,
         "strict_evidence": args.strict_evidence,
         "tutorial_filter": args.tutorial_filter,
+        "adapter_review": args.adapter_review,
     }.items():
         if value is not None and value != "" and value != [] and value is not False:
             values[key] = value
