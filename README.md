@@ -29,6 +29,14 @@ python -m paper2skill.cli validate --skill .agents/skills/toy-python-skill
 python -m paper2skill.cli test --skill .agents/skills/toy-python-skill --mode all
 ```
 
+Development quality gates:
+
+```bash
+python -m pytest -q -m "not benchmark"
+python -m pytest -q -m benchmark tests/benchmarks
+python -m pytest -q
+```
+
 Minimal end-to-end build from paper and repository inputs:
 
 ```bash
@@ -127,11 +135,11 @@ Experimental:
 - Adapter-based execution scaffolding.
 - R/Bioconductor metadata hints from DESCRIPTION, NAMESPACE, and R source.
 - IPython notebook shell/cell magic, parameter, path, and risk detection.
-- Mini offline bioinformatics benchmark coverage for Scanpy, Seurat, DESeq2-like, CLI, and workflow-engine repository shapes.
+- Optional offline benchmark coverage for synthetic omics algorithm paper, repository, and tutorial shapes.
 
 Not yet:
 
-- Robust large benchmark coverage.
+- Robust large benchmark coverage against real-world repository diversity.
 - Complete online Bioconductor metadata resolution.
 - CUDA/system library automatic configuration.
 - Large dataset download automation.
@@ -147,7 +155,7 @@ toy Python and toy R examples are intended as L2 demo-executable examples.
 ## Roadmap
 
 - MVP: Codex Skill generation for Python and R algorithm repositories.
-- Next: benchmark suite for Scanpy, Seurat, and DESeq2-style workflows.
+- Next: broader benchmark suite for omics algorithm paper, repository, and tutorial evidence shapes.
 - Later: optional MCP export.
 - Later: optional Codex plugin packaging.
 - Out of scope for MVP: GPU/CUDA auto-configuration, large dataset download,

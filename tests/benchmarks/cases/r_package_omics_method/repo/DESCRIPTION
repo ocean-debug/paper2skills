@@ -1,0 +1,12 @@
+Package: OmicsRMethod
+Version: 0.1.0
+Imports:
+    OmicsR (>= 1.0),
+    SummarizedExperiment
+Suggests:
+    testthat
+biocViews:
+    Transcriptomics,
+    SingleCell
+SystemRequirements:
+    libhdf5

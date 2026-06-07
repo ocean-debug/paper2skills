@@ -1,0 +1,7 @@
+[project]
+name = "cli-omics-method"
+version = "0.1.0"
+dependencies = []
+
+[project.scripts]
+omics-rank = "omics_cli.cli:main"

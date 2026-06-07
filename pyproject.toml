@@ -40,3 +40,6 @@ paper2skill = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+  "benchmark: offline omics algorithm benchmark cases for Paper2Skill generation quality",
+]

@@ -1,0 +1,13 @@
+adapter_type: python_api
+status: ready
+entrypoint: omics_api:summarize
+command: null
+module: omics_api
+function: summarize
+human_approved: false
+dry_run:
+  status: pass
+expected_outputs: []
+evidence:
+  - benchmark_dry_run
+caveats: []

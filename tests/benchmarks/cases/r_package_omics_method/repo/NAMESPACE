@@ -1,0 +1,4 @@
+import(OmicsR)
+importFrom(SummarizedExperiment, assay)
+export(run_omics)
+S3method(plot, omics_result)
