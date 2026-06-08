@@ -1,0 +1,7 @@
+cell,condition,cell_type,batch,dataset
+cell_1,control,cd4_t,batch1,ifnb
+cell_2,control,cd4_t,batch1,ifnb
+cell_3,stimulated,cd4_t,batch2,ifnb
+cell_4,stimulated,cd4_t,batch2,ifnb
+cell_5,control,b_cell,batch1,pancreas
+cell_6,stimulated,b_cell,batch2,pancreas

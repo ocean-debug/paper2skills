@@ -1,0 +1,19 @@
+case_id: case_04_augur
+tool_name: Augur
+paper_title: Cell type prioritization in single-cell data
+paper_url: https://www.nature.com/articles/s41587-020-0605-1
+repo_url: https://github.com/neurorestore/Augur
+tutorial_urls:
+- id: readme_usage
+  url: https://github.com/neurorestore/Augur
+  purpose: usage
+- id: readme_demonstration
+  url: https://github.com/neurorestore/Augur
+  purpose: demonstration
+task_category:
+- single_cell
+- cell_type_prioritization
+- perturbation_response_scoring
+primary_language: R
+expected_adapter_type: r_script_or_r_package
+expected_initial_adapter_status: verified

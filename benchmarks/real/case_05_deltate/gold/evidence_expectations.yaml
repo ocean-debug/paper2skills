@@ -1,6 +1,6 @@
 high_priority_sources:
 - repo_readme
-- DTEG.R_script
+- Rscript CLI source
 - paper_protocol
 required_claims_with_evidence:
 - raw Ribo-seq count matrix required

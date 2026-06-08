@@ -1,0 +1,18 @@
+case_id: case_01_concord
+tool_name: CONCORD
+paper_title: Revealing a coherent cell-state landscape across single-cell datasets with CONCORD
+paper_url: https://www.nature.com/articles/s41587-025-02950-z
+repo_url: https://github.com/Gartner-Lab/Concord
+tutorial_urls:
+- id: official_documentation
+  url: https://qinzhu.github.io/Concord_documentation/
+  purpose: main_workflow
+task_category:
+- single_cell
+- representation_learning
+- batch_integration
+- denoising
+- dimensionality_reduction
+primary_language: Python
+expected_adapter_type: python_api
+expected_initial_adapter_status: candidate

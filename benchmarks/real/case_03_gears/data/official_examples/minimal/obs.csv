@@ -1,0 +1,5 @@
+cell,condition,cell_type
+cell_1,ctrl,A549
+cell_2,ctrl,A549
+cell_3,CBL,A549
+cell_4,CNN1,A549

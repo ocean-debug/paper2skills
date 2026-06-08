@@ -4,7 +4,7 @@ MODALITY_RULES = {
     "perturb-seq": ["perturb-seq", "perturbation", "perturbed", "gene perturbation", "single-gene", "multi-gene"],
     "scRNA-seq": ["single-cell RNA", "scRNA-seq", "single cell", "AnnData", "Seurat", "SingleCellExperiment", "scanpy", "h5ad", "10x"],
     "spatial_transcriptomics": ["spatial transcriptomics", "Visium", "Slide-seq", "MERFISH", "spatial", "Squidpy"],
-    "ribo_rna_seq": ["Ribo-seq", "RNA-seq", "translational efficiency", "SeqType", "ribosome profiling", "DTEG"],
+    "ribo_rna_seq": ["Ribo-seq", "RNA-seq", "translational efficiency", "differential translational efficiency", "translationally regulated genes", "SeqType", "ribosome profiling"],
     "bulk_RNA-seq": ["bulk RNA", "bulk RNA-seq", "DESeq2", "edgeR", "limma", "counts matrix", "countData", "sample information"],
     "scATAC-seq": ["scATAC", "Signac", "ArchR", "peak matrix", "fragments.tsv"],
     "multiome": ["multiome", "RNA + ATAC", "paired RNA and ATAC"],

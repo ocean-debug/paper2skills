@@ -1,3 +1,47 @@
+workflow_mode: multi_workflow
+workflows:
+- workflow_id: perturbation_prediction_ifnb
+  task: perturbation_prediction
+  primary: true
+  tutorial_ids:
+  - perturbation_prediction_ifnb
+  nodes:
+  - id: load_data
+    type: load_data
+  - id: preprocess
+    type: preprocessing
+  - id: validate_condition_and_cell_type
+    type: metadata_validation
+  - id: train_scgen
+    type: model_training
+  - id: predict_response
+    type: prediction
+  edges:
+  - load_data -> preprocess
+  - preprocess -> validate_condition_and_cell_type
+  - validate_condition_and_cell_type -> train_scgen
+  - train_scgen -> predict_response
+- workflow_id: batch_removal_pancreas
+  task: batch_removal
+  primary: false
+  tutorial_ids:
+  - batch_removal_pancreas
+  nodes:
+  - id: load_data
+    type: load_data
+  - id: preprocess
+    type: preprocessing
+  - id: validate_batch_labels
+    type: metadata_validation
+  - id: train_scgen_batch_model
+    type: model_training
+  - id: remove_batch_effect
+    type: batch_correction
+  edges:
+  - load_data -> preprocess
+  - preprocess -> validate_batch_labels
+  - validate_batch_labels -> train_scgen_batch_model
+  - train_scgen_batch_model -> remove_batch_effect
 nodes:
 - id: load_data
   type: load_data

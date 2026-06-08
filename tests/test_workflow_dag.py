@@ -70,3 +70,25 @@ def test_workflow_prioritizes_read_transform_and_feature_selection_over_train_va
     dag = infer_workflow(trace)["workflow_dag"]
 
     assert [node["type"] for node in dag["nodes"]] == ["load_data", "transformation", "feature_selection"]
+
+
+def test_workflow_detects_model_initialization_without_tool_name_rules():
+    trace = {
+        "workflow_steps": [
+            {
+                "step_id": "s1",
+                "command_or_code": "model = Model(latent_dim=32)",
+                "function_calls": ["Model"],
+            },
+            {
+                "step_id": "s2",
+                "command_or_code": "model.train(train_batches)",
+                "function_calls": ["model.train"],
+                "input_objects": ["model"],
+            },
+        ]
+    }
+
+    dag = infer_workflow(trace)["workflow_dag"]
+
+    assert [node["type"] for node in dag["nodes"]] == ["model_initialization", "model_training"]

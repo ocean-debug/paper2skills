@@ -1,0 +1,149 @@
+official_examples:
+- example_id: perturbation_prediction_ifnb_smoke
+  tutorial_id: perturbation_prediction_ifnb
+  workflow_id: perturbation_prediction_ifnb
+  execution_mode: smoke
+  allow_download: false
+  fixture_files:
+  - source: data/official_examples/minimal/expr.csv
+    target: .benchmark/fixtures/scgen/expr.csv
+  - source: data/official_examples/minimal/obs.csv
+    target: .benchmark/fixtures/scgen/obs.csv
+  reviewed_adapter:
+    status: verified
+    adapter_type: python_api
+    files:
+    - source: data/official_examples/minimal/reviewed_cli_adapter.py
+      target: scripts/adapters/python_api_adapter.py
+    - source: data/official_examples/minimal/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: python_api
+      status: verified
+      entrypoint: scripts/adapters/cli_adapter.py
+      command: reviewed L2 smoke adapter
+      evidence:
+      - level2_official_examples.yaml
+      - data/official_examples/minimal/expr.csv
+      - data/official_examples/minimal/obs.csv
+      caveats:
+      - Benchmark-reviewed smoke adapter for minimal fixture; no package install or notebook execution.
+    adapter_review:
+      adapter_type: python_api
+      status: verified
+      human_approved: true
+      dry_run:
+        status: pass
+        scope: L2 minimal perturbation fixture
+      expected_outputs:
+      - results/predicted_response.csv
+      - results/summary.json
+      caveats:
+      - Verified only for L2 minimal fixture execution.
+  input_manifest:
+    inputs:
+      primary_data:
+        path: .benchmark/fixtures/scgen/expr.csv
+        expression_matrix: .benchmark/fixtures/scgen/expr.csv
+        exists: true
+      metadata:
+        path: .benchmark/fixtures/scgen/obs.csv
+        exists: true
+      algorithm:
+        mode: reviewed_smoke
+        parameters:
+          workflow: perturbation_prediction
+          condition_key: condition
+          cell_type_key: cell_type
+          batch_key: batch
+          control_label: control
+          target_label: stimulated
+  expected_preflight:
+    missing_dependencies_allowed: true
+    install_plan_required_if_missing: true
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: predicted_response
+    path: results/predicted_response.csv
+    required: true
+    validation: prediction_table_exists
+  - name: summary
+    path: results/summary.json
+    required: true
+    validation: summary_json_exists
+  sanity_checks:
+  - check: prediction_table_has_gene_and_predicted_delta_columns
+- example_id: batch_removal_pancreas_smoke
+  tutorial_id: batch_removal_pancreas
+  workflow_id: batch_removal_pancreas
+  execution_mode: smoke
+  allow_download: false
+  fixture_files:
+  - source: data/official_examples/minimal/expr.csv
+    target: .benchmark/fixtures/scgen/expr.csv
+  - source: data/official_examples/minimal/obs.csv
+    target: .benchmark/fixtures/scgen/obs.csv
+  reviewed_adapter:
+    status: verified
+    adapter_type: python_api
+    files:
+    - source: data/official_examples/minimal/reviewed_cli_adapter.py
+      target: scripts/adapters/python_api_adapter.py
+    - source: data/official_examples/minimal/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: python_api
+      status: verified
+      entrypoint: scripts/adapters/cli_adapter.py
+      command: reviewed L2 smoke adapter
+      evidence:
+      - level2_official_examples.yaml
+      - data/official_examples/minimal/expr.csv
+      - data/official_examples/minimal/obs.csv
+      caveats:
+      - Benchmark-reviewed smoke adapter for minimal fixture; no package install or notebook execution.
+    adapter_review:
+      adapter_type: python_api
+      status: verified
+      human_approved: true
+      dry_run:
+        status: pass
+        scope: L2 minimal batch-removal fixture
+      expected_outputs:
+      - results/batch_corrected_representation.csv
+      - results/summary.json
+      caveats:
+      - Verified only for L2 minimal fixture execution.
+  input_manifest:
+    inputs:
+      primary_data:
+        path: .benchmark/fixtures/scgen/expr.csv
+        expression_matrix: .benchmark/fixtures/scgen/expr.csv
+        exists: true
+      metadata:
+        path: .benchmark/fixtures/scgen/obs.csv
+        exists: true
+      algorithm:
+        mode: reviewed_smoke
+        parameters:
+          workflow: batch_removal
+          condition_key: condition
+          cell_type_key: cell_type
+          batch_key: batch
+  expected_preflight:
+    missing_dependencies_allowed: true
+    install_plan_required_if_missing: true
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: batch_corrected_representation
+    path: results/batch_corrected_representation.csv
+    required: true
+    validation: embedding_table_exists
+  - name: summary
+    path: results/summary.json
+    required: true
+    validation: summary_json_exists
+  sanity_checks:
+  - check: embedding_table_has_cell_and_embedding_columns

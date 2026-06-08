@@ -22,6 +22,7 @@ def compare_bio_contract(gold: dict[str, Any], generated: dict[str, Any]) -> dic
 
 
 def compare_modality(gold: dict[str, Any], contract: dict[str, Any]) -> float:
+    gold = merged_bio_gold(gold)
     expected = {canonical_bio_token(item) for item in flatten_strings(gold.get("modality")) if item}
     if not expected:
         return 1.0
@@ -30,6 +31,7 @@ def compare_modality(gold: dict[str, Any], contract: dict[str, Any]) -> float:
 
 
 def compare_matrix_state(gold: dict[str, Any], contract: dict[str, Any]) -> float:
+    gold = merged_bio_gold(gold)
     expected = expected_matrix_states(gold)
     if not expected:
         return 1.0
@@ -53,6 +55,7 @@ def expected_matrix_states(gold: dict[str, Any]) -> set[str]:
 
 
 def compare_not_confirmed(gold: dict[str, Any], contract: dict[str, Any]) -> float:
+    gold = merged_bio_gold(gold)
     expected_paths = count_not_confirmed(gold)
     if not expected_paths:
         return 1.0
@@ -96,3 +99,14 @@ def canonical_bio_token(value: Any) -> str:
         "singlecellexperiment": "scrna_seq",
     }
     return aliases.get(token, token)
+
+
+def merged_bio_gold(gold: dict[str, Any]) -> dict[str, Any]:
+    if "global" not in gold and "tasks" not in gold:
+        return gold
+    merged: dict[str, Any] = {}
+    global_gold = gold.get("global") or {}
+    merged.update(global_gold)
+    if gold.get("tasks"):
+        merged["tasks"] = gold["tasks"]
+    return merged

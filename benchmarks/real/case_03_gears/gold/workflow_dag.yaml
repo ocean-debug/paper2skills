@@ -1,3 +1,37 @@
+workflow_mode: pipeline_workflow
+workflows:
+- workflow_id: gears_pipeline
+  task: perturbation_prediction
+  primary: true
+  stages:
+  - stage_id: data_preparation
+    tutorial_ids:
+    - data_tutorial
+    nodes:
+    - id: initialize_pertdata
+      type: load_data
+    - id: load_dataset
+      type: load_data
+    - id: prepare_split
+      type: data_split
+  - stage_id: model_training
+    tutorial_ids:
+    - model_tutorial
+    nodes:
+    - id: get_dataloader
+      type: dataloader
+    - id: initialize_model
+      type: model_initialization
+    - id: train_model
+      type: model_training
+  - stage_id: inference
+    tutorial_ids:
+    - inference_tutorial
+    nodes:
+    - id: predict_perturbation
+      type: prediction
+    - id: gene_interaction_prediction
+      type: prediction
 nodes:
 - id: initialize_pertdata
   type: load_data

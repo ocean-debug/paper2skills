@@ -31,6 +31,7 @@ def compare_io_contract(gold: dict[str, Any], generated: dict[str, Any]) -> dict
 
 def extract_gold_formats(gold: dict[str, Any]) -> set[str]:
     formats: set[str] = set()
+    gold = merged_io_gold(gold)
     primary = gold.get("primary_input") or {}
     for key in ["accepted_formats", "accepted_objects"]:
         for item in primary.get(key) or []:
@@ -45,6 +46,7 @@ def extract_gold_formats(gold: dict[str, Any]) -> set[str]:
 
 def extract_metadata_keys(gold: dict[str, Any]) -> set[str]:
     result: set[str] = set()
+    gold = merged_io_gold(gold)
     metadata = gold.get("metadata") or {}
     for key, value in metadata.items():
         if not normalize_token(key).endswith("_file"):
@@ -63,6 +65,7 @@ def extract_metadata_keys(gold: dict[str, Any]) -> set[str]:
 
 
 def extract_output_terms(gold: dict[str, Any]) -> set[str]:
+    gold = merged_io_gold(gold)
     output = gold.get("output") or {}
     terms = set()
     for item in flatten_strings(output):
@@ -118,3 +121,23 @@ def canonical_token(value: str) -> str:
 
 def tokens_equivalent(left: str, right: str) -> bool:
     return canonical_token(left) == canonical_token(right)
+
+
+def merged_io_gold(gold: dict[str, Any]) -> dict[str, Any]:
+    if "global" not in gold and "per_workflow" not in gold:
+        return gold
+    merged: dict[str, Any] = {}
+    global_gold = gold.get("global") or {}
+    merged.update(global_gold)
+    if global_gold.get("primary_inputs"):
+        merged["primary_inputs"] = global_gold["primary_inputs"]
+    for workflow in (gold.get("per_workflow") or {}).values():
+        if not isinstance(workflow, dict):
+            continue
+        if workflow.get("metadata"):
+            merged.setdefault("metadata", {}).update(workflow["metadata"])
+        if workflow.get("output"):
+            merged.setdefault("output", {}).update(workflow["output"])
+        if workflow.get("primary_input"):
+            merged.setdefault("primary_input", {}).update(workflow["primary_input"])
+    return merged

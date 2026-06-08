@@ -1,0 +1,81 @@
+official_examples:
+- example_id: minimal_perturbation_prediction_smoke
+  tutorial_id: demo_index
+  workflow_id: gears_pipeline
+  execution_mode: smoke
+  allow_download: false
+  fixture_files:
+  - source: data/official_examples/minimal/expr.csv
+    target: .benchmark/fixtures/gears/expr.csv
+  - source: data/official_examples/minimal/obs.csv
+    target: .benchmark/fixtures/gears/obs.csv
+  - source: data/official_examples/minimal/var.csv
+    target: .benchmark/fixtures/gears/var.csv
+  reviewed_adapter:
+    status: verified
+    adapter_type: python_api
+    files:
+    - source: data/official_examples/minimal/reviewed_python_api_adapter.py
+      target: scripts/adapters/python_api_adapter.py
+    - source: data/official_examples/minimal/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: python_api
+      status: verified
+      entrypoint: scripts/adapters/python_api_adapter.py
+      module: scripts.adapters.python_api_adapter
+      function: run
+      evidence:
+      - level2_official_examples.yaml
+      - data/official_examples/minimal/expr.csv
+      - data/official_examples/minimal/obs.csv
+      - data/official_examples/minimal/var.csv
+      caveats:
+      - Benchmark-reviewed smoke adapter for minimal perturb-seq fixture; no package install or notebook execution.
+    adapter_review:
+      adapter_type: python_api
+      status: verified
+      human_approved: true
+      entrypoint: scripts/adapters/python_api_adapter.py
+      module: scripts.adapters.python_api_adapter
+      function: run
+      dry_run:
+        status: pass
+        scope: L2 minimal GEARS perturbation fixture
+      expected_outputs:
+      - results/perturbation_prediction.csv
+      - results/summary.json
+      caveats:
+      - Verified only for L2 minimal fixture execution.
+  input_manifest:
+    inputs:
+      primary_data:
+        path: .benchmark/fixtures/gears/expr.csv
+        expression_matrix: .benchmark/fixtures/gears/expr.csv
+        obs: .benchmark/fixtures/gears/obs.csv
+        var: .benchmark/fixtures/gears/var.csv
+        exists: true
+      algorithm:
+        mode: reviewed_smoke
+        parameters:
+          condition_key: condition
+          cell_type_key: cell_type
+          perturbation_query:
+          - CBL
+          - CNN1
+  expected_preflight:
+    missing_dependencies_allowed: true
+    install_plan_required_if_missing: true
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: perturbation_prediction
+    path: results/perturbation_prediction.csv
+    required: true
+    validation: prediction_table_or_anndata
+  - name: summary
+    path: results/summary.json
+    required: true
+    validation: summary_json_exists
+  sanity_checks:
+  - check: prediction_table_has_gene_and_predicted_expression_columns

@@ -1,0 +1,71 @@
+official_examples:
+- example_id: minimal_auc_smoke
+  tutorial_id: readme_demonstration
+  workflow_id: main
+  execution_mode: smoke
+  allow_download: false
+  fixture_files:
+  - source: data/official_examples/minimal/expr.csv
+    target: .benchmark/fixtures/augur/expr.csv
+  - source: data/official_examples/minimal/meta.csv
+    target: .benchmark/fixtures/augur/meta.csv
+  reviewed_adapter:
+    status: verified
+    adapter_type: cli
+    files:
+    - source: data/official_examples/minimal/reviewed_cli_adapter.py
+      target: scripts/adapters/cli_adapter.py
+    - source: data/official_examples/minimal/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: cli
+      status: verified
+      entrypoint: scripts/adapters/cli_adapter.py
+      command: reviewed L2 dry-run adapter
+      evidence:
+      - level2_official_examples.yaml
+      - data/official_examples/minimal/expr.csv
+      - data/official_examples/minimal/meta.csv
+      caveats:
+      - Benchmark-reviewed dry-run adapter for minimal fixture; no package install or notebook execution.
+    adapter_review:
+      adapter_type: cli
+      status: verified
+      human_approved: true
+      dry_run:
+        status: pass
+        scope: L2 minimal scRNA fixture
+      expected_outputs:
+      - results/augur_auc.csv
+      - results/summary.json
+      caveats:
+      - Verified only for L2 minimal fixture execution.
+  input_manifest:
+    inputs:
+      primary_data:
+        path: .benchmark/fixtures/augur/expr.csv
+        exists: true
+      metadata:
+        path: .benchmark/fixtures/augur/meta.csv
+        exists: true
+      algorithm:
+        mode: reviewed_smoke
+        parameters:
+          cell_type_col: cell.type
+          label_col: condition
+  expected_preflight:
+    missing_dependencies_allowed: true
+    install_plan_required_if_missing: true
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: augur_auc
+    path: results/augur_auc.csv
+    required: true
+    validation: auc_between_0_and_1
+  - name: summary
+    path: results/summary.json
+    required: true
+    validation: summary_json_exists
+  sanity_checks:
+  - check: auc_table_has_cell_type_and_auc_columns

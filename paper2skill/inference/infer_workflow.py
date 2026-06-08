@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -12,7 +13,7 @@ STEP_TYPE_RULES = {
     "feature_selection": ["highly_variable", "variablefeatures", "hvg", "highly variable"],
     "dimensionality_reduction": ["pca", "umap", "tsne", "neighbors"],
     "model_checkpoint": ["checkpoint", "load_state_dict", "state_dict", "save_model", "model path"],
-    "model_initialization": ["vae(", "gears(", "concord(", "scgen(", "new(", "initialize", "initialise"],
+    "model_initialization": ["vae(", "new(", "initialize", "initialise", "instantiate", "constructor"],
     "model_training_or_embedding": ["fit_transform", "embedding", "embed", "representation", "latent"],
     "model_training": ["fit", "fit_", ".fit", "train(", ".train", "train_model", "training"],
     "prediction": ["predict", "classify"],
@@ -20,7 +21,7 @@ STEP_TYPE_RULES = {
     "load_metadata": ["metadata", "sample information", "sample_info", "sampleid", "sample id", "obs["],
     "input_validation": ["check", "validate", "required", "system requirements", "input files", "usage:"],
     "data_split": ["split", "train_test", "train/test", "train data", "test data"],
-    "dataloader": ["dataloader", "data loader", "loader", "pertdata", "load_dataset"],
+    "dataloader": ["dataloader", "data loader", "loader", "perturbation data", "load_dataset"],
     "clustering": ["leiden", "louvain", "findclusters"],
     "differential_expression": ["rank_genes", "findmarkers", "deseq", "edger", "limma"],
     "qc": ["calculate_qc", "filter_cells", "filter_genes", "mito", "qc"],
@@ -94,6 +95,8 @@ def build_workflow_dag(steps: list[dict[str, Any]]) -> dict[str, Any]:
 def classify_step_type(step: dict[str, Any]) -> str:
     if is_package_load_step(step):
         return "load_package"
+    if has_model_initialization_signal(step):
+        return "model_initialization"
     haystack = " ".join(
         [
             str(step.get("description", "")),
@@ -112,6 +115,12 @@ def classify_step_type(step: dict[str, Any]) -> str:
     if step.get("read_files") or step.get("inputs"):
         return "load_data"
     return "other"
+
+
+def has_model_initialization_signal(step: dict[str, Any]) -> bool:
+    code = str(step.get("command_or_code") or step.get("code_preview") or "")
+    constructor = r"(?:[A-Z][A-Za-z0-9_]*|[A-Za-z0-9_.]*(?:Model|Classifier|Regressor|Estimator|VAE))"
+    return bool(re.search(rf"(?:^|\n)\s*\w+\s*(?:=|<-)\s*{constructor}\s*\(", code))
 
 
 def is_package_load_step(step: dict[str, Any]) -> bool:

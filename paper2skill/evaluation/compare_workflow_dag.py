@@ -9,7 +9,7 @@ from paper2skill.evaluation.load_gold import evaluation_result, finish_result, n
 def compare_workflow_dag(gold: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
     result = evaluation_result("workflow_dag")
     generated_dag = generated.get("workflow_dag") or {}
-    gold_nodes = gold.get("nodes") or []
+    gold_nodes = gold_nodes_from_gold(gold)
     generated_nodes = generated_dag.get("nodes") or []
     gold_types = [canonical_step_type(node.get("type")) for node in gold_nodes if node.get("type")]
     generated_types = [canonical_step_type(node.get("type")) for node in generated_nodes if node.get("type")]
@@ -21,15 +21,33 @@ def compare_workflow_dag(gold: dict[str, Any], generated: dict[str, Any]) -> dic
     generated_edges = parse_generated_edges(generated_dag)
     edge_recall = edge_type_recall(gold_edges, generated_edges, gold_nodes, generated_nodes)
     object_state_accuracy = compare_object_states(gold_nodes, generated_nodes)
+    stage_accuracy = pipeline_stage_accuracy(gold, generated_dag)
+    mode_accuracy = 1.0 if not gold.get("workflow_mode") else workflow_mode_accuracy(gold, generated_dag)
     return finish_result(
         result,
         {
+            "workflow_mode_accuracy": mode_accuracy,
             "workflow_node_recall": node_recall,
             "workflow_edge_recall": edge_recall,
             "step_type_accuracy": node_recall,
             "object_state_accuracy": object_state_accuracy,
+            "pipeline_stage_accuracy": stage_accuracy,
         },
     )
+
+
+def gold_nodes_from_gold(gold: dict[str, Any]) -> list[dict[str, Any]]:
+    if gold.get("nodes"):
+        return gold.get("nodes") or []
+    nodes: list[dict[str, Any]] = []
+    for workflow in gold.get("workflows") or []:
+        if not isinstance(workflow, dict):
+            continue
+        nodes.extend(workflow.get("nodes") or [])
+        for stage in workflow.get("stages") or []:
+            if isinstance(stage, dict):
+                nodes.extend(stage.get("nodes") or [])
+    return nodes
 
 
 def multiset_recall(expected: list[str], observed: list[str]) -> float:
@@ -61,6 +79,13 @@ def parse_gold_edges(gold: dict[str, Any]) -> list[tuple[str, str]]:
             right = item.get("to") or item.get("target")
             if left and right:
                 result.append((str(left), str(right)))
+    for workflow in gold.get("workflows") or []:
+        if not isinstance(workflow, dict):
+            continue
+        result.extend(parse_gold_edges({"edges": workflow.get("edges") or []}))
+        for stage in workflow.get("stages") or []:
+            if isinstance(stage, dict):
+                result.extend(parse_gold_edges({"edges": stage.get("edges") or []}))
     return result
 
 
@@ -118,3 +143,29 @@ def canonical_step_type(value: Any) -> str:
         "qc": "input_validation",
     }
     return aliases.get(token, token)
+
+
+def workflow_mode_accuracy(gold: dict[str, Any], generated_dag: dict[str, Any]) -> float:
+    expected = normalize_token(gold.get("workflow_mode"))
+    if not expected:
+        return 1.0
+    observed_text = normalize_token(generated_dag)
+    if expected in observed_text:
+        return 1.0
+    if expected == "pipeline_workflow" and ("stage" in observed_text or "pipeline" in observed_text):
+        return 1.0
+    if expected in {"multi_workflow", "single_workflow_multiple_examples"} and "workflow" in observed_text:
+        return 1.0
+    return 0.0
+
+
+def pipeline_stage_accuracy(gold: dict[str, Any], generated_dag: dict[str, Any]) -> float:
+    expected = []
+    for workflow in gold.get("workflows") or []:
+        if isinstance(workflow, dict):
+            expected.extend(str(stage.get("stage_id") or stage.get("stage")) for stage in workflow.get("stages") or [] if isinstance(stage, dict))
+    expected = [normalize_token(item) for item in expected if normalize_token(item)]
+    if not expected:
+        return 1.0
+    observed = normalize_token(generated_dag)
+    return sum(1 for item in expected if item in observed) / len(expected)

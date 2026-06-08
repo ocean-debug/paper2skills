@@ -1,0 +1,30 @@
+valid_inputs:
+- input_id: synthetic_perturbseq_anndata
+  workflow_id: gears_pipeline
+  input_manifest:
+    format: h5ad
+    matrix_state: raw_counts
+    metadata:
+      condition_key: condition
+      cell_type_key: cell_type
+    var:
+      gene_name: gene_name
+  expected_behavior: blocked_until_reviewed
+  expected_validation: pass
+invalid_inputs:
+- input_id: missing_gene_name
+  workflow_id: gears_pipeline
+  input_manifest:
+    validation_errors:
+    - missing gene_name
+  expected_behavior: block
+  expected_reason_contains:
+  - gene_name
+- input_id: invalid_perturbation_gene_list
+  workflow_id: gears_pipeline
+  input_manifest:
+    validation_errors:
+    - invalid perturbation gene list
+  expected_behavior: block
+  expected_reason_contains:
+  - perturbation

@@ -38,7 +38,9 @@ python -m pytest -q
 ```
 
 Benchmark-driven development for real-world cases is documented in
-[`docs/benchmark.md`](docs/benchmark.md).
+[`docs/benchmark.md`](docs/benchmark.md). The benchmark framework is organized as
+a five-level pyramid: L0 package/safety validation, L1 static extraction, L2
+official examples, L3 new-data validation, and L4 agentic safe-use tasks.
 
 Minimal end-to-end build from paper and repository inputs:
 
@@ -138,14 +140,15 @@ Experimental:
 - Adapter-based execution scaffolding.
 - R/Bioconductor metadata hints from DESCRIPTION, NAMESPACE, and R source.
 - IPython notebook shell/cell magic, parameter, path, and risk detection.
-- Optional offline benchmark coverage for synthetic omics algorithm paper, repository, and tutorial shapes.
+- Optional offline benchmark coverage for synthetic and real omics algorithm paper, repository, and tutorial shapes.
+- Five-level benchmark evaluation with opt-in downloads/execution for reviewed examples.
 
 Not yet:
 
-- Robust large benchmark coverage against real-world repository diversity.
+- Broad large-data benchmark coverage against real-world repository diversity.
 - Complete online Bioconductor metadata resolution.
 - CUDA/system library automatic configuration.
-- Large dataset download automation.
+- Default-on large dataset download automation.
 - Arbitrary install script execution.
 - Fully automatic real algorithm execution for unknown repositories. Unknown adapters stay `candidate` or `blocked`; only `ready`, `reviewed`, or `verified` adapters execute.
 
