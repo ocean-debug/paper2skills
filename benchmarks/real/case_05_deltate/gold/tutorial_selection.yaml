@@ -1,0 +1,12 @@
+should_select:
+- README.md
+expected_tutorial_signals:
+- Rscript --vanilla DTEG.R
+- Rscript --vanilla DTEG.R ribo_counts.txt rna_counts.txt sample_info.txt 1
+- Ribo-seq count matrix
+- RNA-seq count matrix
+- Sample information file
+- sample_data/Results
+- Condition
+- SeqType
+- Batch

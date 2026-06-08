@@ -1,0 +1,17 @@
+language:
+  python: true
+  r: false
+python_required:
+- scgen
+- scanpy
+- anndata
+- scvi-tools
+python_optional:
+- torch
+install_evidence:
+  pip:
+  - pip install scgen
+  - pip install git+https://github.com/theislab/scgen.git
+expected_dependency_metrics:
+  required_dependency_recall_min: 0.75
+  optional_dependency_recall_min: 0.5

@@ -1,0 +1,21 @@
+paper:
+  expected_status: parsed_or_metadata_recorded
+  expected_sections:
+  - abstract_or_summary
+  - methods
+  - data_or_code_availability
+repo:
+  expected_clone_or_index: true
+  expected_commit_sha: true
+  expected_files_or_dirs:
+  - R
+  - README.md
+  - DESCRIPTION
+  - NAMESPACE
+tutorial:
+  expected_url: https://github.com/neurorestore/Augur
+  expected_readme_sections:
+  - System requirements
+  - Installation
+  - Usage
+  - Demonstration

@@ -37,6 +37,9 @@ python -m pytest -q -m benchmark tests/benchmarks
 python -m pytest -q
 ```
 
+Benchmark-driven development for real-world cases is documented in
+[`docs/benchmark.md`](docs/benchmark.md).
+
 Minimal end-to-end build from paper and repository inputs:
 
 ```bash

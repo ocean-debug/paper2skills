@@ -9,7 +9,7 @@ def infer_environment_spec(dependencies: dict[str, Any], language: str = "unknow
     return {
         "install_policy": "ask",
         "python": {
-            "packages": [item for item in python_records if item.get("required", True)],
+            "packages": [item for item in python_records if item.get("required", True) or item.get("category") in {"self_package", "install_hint"}],
         },
         "r": {
             "required": language == "r" or bool(r_packages),

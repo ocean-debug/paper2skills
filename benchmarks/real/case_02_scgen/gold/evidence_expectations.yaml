@@ -1,0 +1,10 @@
+high_priority_sources:
+- readthedocs_tutorial
+- repo_readme
+- api_docs
+required_claims_with_evidence:
+- scGen predicts perturbation response
+- normalized data recommended
+- condition labels required
+- cell_type labels required
+- pip install scgen

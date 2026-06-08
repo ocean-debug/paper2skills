@@ -1,0 +1,11 @@
+should_select:
+- title_contains: Perturbation Prediction
+- title_contains: Batch-Removal
+expected_tutorial_signals:
+- normalized data
+- cell_type
+- condition
+- control
+- perturbed
+- HVG
+- SCGEN

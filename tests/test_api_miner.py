@@ -44,3 +44,31 @@ def test_api_miner_detects_r_namespace_exports(tmp_path: Path):
     (tmp_path / "R" / "demo.R").write_text("run_demo <- function(x) x\n", encoding="utf-8")
     evidence = mine_api(tmp_path)
     assert [item["name"] for item in evidence["r_exports"]] == ["run_demo", "summarize"]
+
+
+def test_api_miner_detects_rscript_cli_scripts(tmp_path: Path):
+    script = tmp_path / "run_method.R"
+    script.write_text(
+        """
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) stop("missing input")
+input <- args[1]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    evidence = mine_api(tmp_path)
+
+    assert evidence["cli_commands"] == [
+        {
+            "framework": "rscript",
+            "path": "run_method.R",
+            "name": "run_method.R",
+            "command": "Rscript run_method.R",
+            "source": "run_method.R",
+            "signals": ["commandArgs"],
+            "positional_arguments": [{"index": 1, "token": "args[1]"}],
+            "minimum_arg_count": 1,
+        }
+    ]

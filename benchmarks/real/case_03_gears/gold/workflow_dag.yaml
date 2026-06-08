@@ -1,0 +1,60 @@
+nodes:
+- id: initialize_pertdata
+  type: load_data
+  expected_calls:
+  - PertData
+  output_objects:
+  - pert_data
+- id: load_dataset
+  type: load_data
+  expected_calls:
+  - pert_data.load
+  expected_parameters:
+    data_name: norman_or_other
+- id: prepare_split
+  type: data_split
+  expected_calls:
+  - prepare_split
+  expected_parameters:
+    split: simulation
+- id: get_dataloader
+  type: dataloader
+  expected_calls:
+  - get_dataloader
+  output_objects:
+  - dataloader
+- id: initialize_model
+  type: model_initialization
+  expected_calls:
+  - GEARS
+  - model_initialize
+  output_objects:
+  - gears_model
+- id: train_model
+  type: model_training
+  expected_calls:
+  - train
+- id: save_or_load_model
+  type: model_checkpoint
+  expected_calls:
+  - save_model
+  - load_pretrained
+- id: predict_perturbation
+  type: prediction
+  expected_calls:
+  - predict
+  expected_inputs:
+  - perturbation_gene_list
+- id: gene_interaction_prediction
+  type: prediction
+  expected_calls:
+  - GI_predict
+edges:
+- initialize_pertdata -> load_dataset
+- load_dataset -> prepare_split
+- prepare_split -> get_dataloader
+- get_dataloader -> initialize_model
+- initialize_model -> train_model
+- train_model -> save_or_load_model
+- save_or_load_model -> predict_perturbation
+- predict_perturbation -> gene_interaction_prediction

@@ -232,6 +232,63 @@ caveats: []
     assert context["adapter_spec"]["module"] == "ready_pkg"
 
 
+def test_python_package_without_function_stays_candidate_not_demo_only(tmp_path: Path):
+    repo = tmp_path / "class-repo"
+    package = repo / "class_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("from .model import Model\n", encoding="utf-8")
+    (package / "model.py").write_text("class Model:\n    pass\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='class-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nPython package API method.\n", encoding="utf-8")
+
+    context = build_context(paper=str(paper), repo=str(repo))
+
+    assert context["adapter_spec"]["adapter_type"] == "python_api"
+    assert context["adapter_spec"]["status"] == "candidate"
+    assert context["adapter_spec"]["entrypoint"] is None
+
+
+def test_python_package_source_without_public_api_stays_candidate(tmp_path: Path):
+    repo = tmp_path / "package-repo"
+    package = repo / "src" / "package_pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[project]\nname='package-pkg'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nInstallable Python package method.\n", encoding="utf-8")
+
+    context = build_context(paper=str(paper), repo=str(repo))
+
+    assert context["adapter_spec"]["adapter_type"] == "python_api"
+    assert context["adapter_spec"]["status"] == "candidate"
+    assert context["adapter_spec"]["entrypoint"] is None
+
+
+def test_python_package_metadata_with_notebook_tutorial_infers_notebook_adapter(tmp_path: Path):
+    repo = tmp_path / "notebook-repo"
+    notebooks = repo / "notebooks"
+    notebooks.mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname='notebook-repo'\nversion='0.1.0'\ndependencies=[]\n", encoding="utf-8")
+    notebook = {
+        "cells": [
+            {"cell_type": "markdown", "source": ["# Tutorial\n"], "metadata": {}},
+            {"cell_type": "code", "source": ["data = 'input.csv'\n"], "metadata": {}, "outputs": [], "execution_count": None},
+        ],
+        "metadata": {},
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+    (notebooks / "tutorial.ipynb").write_text(json.dumps(notebook), encoding="utf-8")
+    paper = tmp_path / "paper.md"
+    paper.write_text("# Methods\n\nNotebook-first Python method.\n", encoding="utf-8")
+
+    context = build_context(paper=str(paper), repo=str(repo), tutorials=[str(notebooks / "tutorial.ipynb")])
+
+    assert context["adapter_spec"]["adapter_type"] == "notebook"
+    assert context["adapter_spec"]["status"] == "candidate"
+
+
 def test_adapter_review_malformed_mapping_blocks_without_crashing(tmp_path: Path):
     repo = tmp_path / "api-repo"
     package = repo / "malformed_pkg"

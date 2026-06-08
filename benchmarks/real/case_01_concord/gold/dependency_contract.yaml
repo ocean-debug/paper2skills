@@ -1,0 +1,26 @@
+language:
+  python: true
+  r: false
+python_required:
+- concord-sc
+- torch
+- scanpy
+- anndata
+python_optional:
+- faiss-cpu
+- faiss-gpu
+- plotly
+install_evidence:
+  pip:
+  - pip install concord-sc
+  - pip install torch torchvision torchaudio
+  optional:
+  - pip install concord-sc[optional]
+  - pip install faiss-cpu
+  - pip install faiss-gpu
+system_or_hardware:
+  cuda_optional: true
+  gpu_optional: true
+expected_dependency_metrics:
+  required_dependency_recall_min: 0.75
+  optional_dependency_recall_min: 0.5

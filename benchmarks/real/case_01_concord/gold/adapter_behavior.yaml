@@ -1,0 +1,13 @@
+expected_adapter_type: python_api
+expected_initial_status: candidate
+reason: real execution requires review of model training time, device, memory, and
+  input data assumptions
+demo_run:
+  allowed: true
+  expected_behavior: safe_demo_or_blocked_if_no_demo
+non_demo_run:
+  expected_behavior: blocked_until_reviewed
+  must_not:
+  - auto_install_torch
+  - auto_download_large_data
+  - execute_unknown_notebook

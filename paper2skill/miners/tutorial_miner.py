@@ -43,7 +43,16 @@ def mine_repo_tutorials(repo_root: str | Path, tutorial_filter: str | None = Non
                 item.include_in_tools = False
                 item.reason = "excluded_by_filter"
         candidates = filtered
-    included = [Path(repo_root) / item.path for item in candidates if item.include_in_tools]
+    included = []
+    seen_paths = set()
+    for item in candidates:
+        if not item.include_in_tools:
+            continue
+        source_path = item.source_path or item.path.split("#", 1)[0]
+        if source_path in seen_paths:
+            continue
+        seen_paths.add(source_path)
+        included.append(Path(repo_root) / source_path)
     trace = mine_tutorials(included, base_dir=repo_root)
     trace["tutorial_candidates"] = [item.__dict__ for item in candidates]
     report = dict(scan["report"])

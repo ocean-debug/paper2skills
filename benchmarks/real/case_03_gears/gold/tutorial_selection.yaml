@@ -1,0 +1,16 @@
+should_select:
+- demo/data_tutorial.ipynb
+- demo/model_tutorial.ipynb
+- demo/tutorial_inference_Norman.ipynb
+should_rank_high:
+- model_tutorial.ipynb
+- tutorial_inference_Norman.ipynb
+expected_tutorial_signals:
+- PertData
+- GEARS
+- prepare_split
+- get_dataloader
+- model_initialize
+- train
+- predict
+- GI_predict

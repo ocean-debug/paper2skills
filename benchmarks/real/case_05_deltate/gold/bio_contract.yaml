@@ -1,0 +1,14 @@
+modality:
+- Ribo-seq
+- RNA-seq
+task: translational_efficiency_and_differential_translation
+matrix_state:
+  raw_counts_required: true
+  normalized_input_disallowed: true
+  batch_corrected_input_disallowed: true
+experimental_design:
+  condition_required: true
+  sequencing_type_required: true
+  batch_optional_or_flagged: true
+gene_id_type:
+  value: not_confirmed

@@ -15,6 +15,10 @@ class TutorialCandidate:
     reason: str
     signals: dict[str, bool]
     evidence_id: str
+    section_title: str | None = None
+    section_anchor: str | None = None
+    source_path: str | None = None
+    code_block_index: int | None = None
 
 
 TUTORIAL_SUFFIXES = {".ipynb", ".md", ".rst", ".rmd", ".r", ".py"}
@@ -45,8 +49,31 @@ def scan_tutorial_candidates(repo_root: str | Path) -> dict[str, Any]:
                 reason=reason,
                 signals=signals,
                 evidence_id=f"tutorial_candidate:{index:03d}",
+                source_path=rel,
             )
         )
+        if path.suffix.lower() in {".md", ".rst", ".rmd"} and not is_excluded(path, root):
+            for section_index, section in enumerate(extract_sections(path), start=1):
+                if not section_has_tutorial_signal(section):
+                    continue
+                anchor = anchor_for(section["title"])
+                section_rel = f"{rel}#{anchor}" if anchor else rel
+                candidates.append(
+                    TutorialCandidate(
+                        path=section_rel,
+                        title=section["title"],
+                        file_type=path.suffix.lower().lstrip("."),
+                        priority=priority_for(path, rel) - 1,
+                        include_in_tools=signals["not_deprecated"],
+                        reason="included_section",
+                        signals={**signals, "heading_section": True, "has_code": bool(section["code_blocks"])},
+                        evidence_id=f"tutorial_candidate:{index:03d}:section_{section_index:03d}",
+                        section_title=section["title"],
+                        section_anchor=anchor,
+                        source_path=rel,
+                        code_block_index=section["code_blocks"][0] if section["code_blocks"] else None,
+                    )
+                )
     candidates.sort(key=lambda item: (not item.include_in_tools, item.priority, item.path))
     return {"candidates": candidates, "report": {"total": len(candidates), "included": sum(1 for item in candidates if item.include_in_tools)}}
 
@@ -80,6 +107,61 @@ def extract_title(path: Path) -> str | None:
         if stripped.startswith("#"):
             return stripped.lstrip("#").strip()
     return None
+
+
+def extract_sections(path: Path) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    code_block_index = 0
+    in_fence = False
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            if in_fence:
+                code_block_index += 1
+                if current is not None:
+                    current["code_blocks"].append(code_block_index)
+            if current is not None:
+                current["text"].append(line)
+            continue
+        if not in_fence and stripped.startswith("#"):
+            if current is not None:
+                sections.append(current)
+            current = {"title": stripped.lstrip("#").strip(), "text": [], "code_blocks": []}
+            continue
+        if current is not None:
+            current["text"].append(line)
+    if current is not None:
+        sections.append(current)
+    return sections
+
+
+def section_has_tutorial_signal(section: dict[str, Any]) -> bool:
+    title = str(section.get("title") or "").lower()
+    text = "\n".join(section.get("text") or []).lower()
+    words = [
+        "usage",
+        "demonstration",
+        "demo",
+        "tutorial",
+        "example",
+        "installation",
+        "system requirements",
+        "preparing input",
+        "running",
+        "workflow",
+        "input files",
+    ]
+    return bool(section.get("code_blocks")) or any(word in title or word in text for word in words)
+
+
+def anchor_for(title: str | None) -> str | None:
+    if not title:
+        return None
+    anchor = "".join(char.lower() if char.isalnum() else "-" for char in title.strip())
+    anchor = "-".join(part for part in anchor.split("-") if part)
+    return anchor or None
 
 
 def priority_for(path: Path, rel: str) -> int:

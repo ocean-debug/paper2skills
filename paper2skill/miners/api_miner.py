@@ -38,7 +38,9 @@ def mine_api(repo_path: str | Path | None) -> dict[str, Any]:
             item["path"] = public_local_path(path, root)
             classes.append(item)
     for path in root.rglob("*.R"):
-        mined = mine_r_source(path.read_text(encoding="utf-8", errors="replace"))
+        source = path.read_text(encoding="utf-8", errors="replace")
+        mined = mine_r_source(source)
+        cli_commands.extend(r_cli_commands(source, path, root))
         for item in mined.get("function_calls", []):
             item = dict(item)
             item["path"] = public_local_path(path, root)
@@ -117,6 +119,52 @@ def python_cli_commands(source: str, path: Path, root: Path) -> list[dict[str, A
     if "fire.Fire" in source:
         commands.append({"framework": "fire", "path": public_path, "name": path.stem})
     return commands
+
+
+def r_cli_commands(source: str, path: Path, root: Path) -> list[dict[str, Any]]:
+    public_path = public_local_path(path, root)
+    frameworks = []
+    if re.search(r"\bcommandArgs\s*\(", source):
+        frameworks.append("commandArgs")
+    if re.search(r"\blibrary\s*\(\s*(optparse|argparse|docopt)\s*\)", source) or re.search(r"\b(optparse|argparse|docopt)::", source):
+        frameworks.append("r_cli_parser")
+    if not frameworks:
+        return []
+    return [
+        {
+            "framework": "rscript",
+            "path": public_path,
+            "name": path.name,
+            "command": f"Rscript {public_path}",
+            "source": public_path,
+            "signals": sorted(dict.fromkeys(frameworks)),
+            "positional_arguments": r_positional_arguments(source),
+            "minimum_arg_count": r_minimum_arg_count(source),
+        }
+    ]
+
+
+def r_positional_arguments(source: str) -> list[dict[str, Any]]:
+    args_names = sorted(set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*<-\s*commandArgs\s*\(", source)))
+    args_names.append("args")
+    arguments = []
+    seen = set()
+    for name in args_names:
+        pattern = rf"\b{re.escape(name)}\s*(?:\[\[|\[)\s*(\d+)\s*(?:\]\]|\])"
+        for match in re.finditer(pattern, source):
+            index = int(match.group(1))
+            if index in seen:
+                continue
+            seen.add(index)
+            arguments.append({"index": index, "token": match.group(0)})
+    return sorted(arguments, key=lambda item: item["index"])
+
+
+def r_minimum_arg_count(source: str) -> int | None:
+    matches = [int(value) for value in re.findall(r"length\s*\(\s*[A-Za-z_][A-Za-z0-9_]*\s*\)\s*<\s*(\d+)", source)]
+    if not matches:
+        return None
+    return max(matches)
 
 
 def python_module_name(path: Path, root: Path) -> str:

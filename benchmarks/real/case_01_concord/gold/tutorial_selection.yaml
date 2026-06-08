@@ -1,0 +1,15 @@
+should_select:
+- title_contains: Getting started
+- title_contains: PBMC3k
+- title_contains: scRNA-seq minimal example
+should_exclude:
+- deprecated: true
+- no_code: true
+expected_tutorial_signals:
+- import concord as ccd
+- import scanpy as sc
+- sc.datasets.pbmc3k_processed
+- sc.pp.normalize_total
+- sc.pp.log1p
+- ccd.Concord
+- fit_transform

@@ -1,0 +1,13 @@
+expected_adapter_type: python_api
+expected_initial_status: candidate
+reason: model training may require GPU, PyG, downloaded/preprocessed datasets, and
+  perturbation-specific metadata review
+non_demo_run:
+  expected_behavior: blocked_until_reviewed
+demo_run:
+  allowed: true
+  expected_behavior: static_or_small_demo_only
+must_not:
+- auto_download_large_perturb_seq_data_without_confirmation
+- auto_train_gpu_model_without_review
+- mark_adapter_ready_from_notebook_presence_alone

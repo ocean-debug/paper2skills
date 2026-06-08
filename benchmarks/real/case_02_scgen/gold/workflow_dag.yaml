@@ -1,0 +1,59 @@
+nodes:
+- id: load_data
+  type: load_data
+  output_objects:
+  - adata
+  expected_calls:
+  - scanpy.read
+  - read_h5ad
+- id: normalize_total
+  type: normalization
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: normalized
+- id: log1p
+  type: transformation
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: log1p
+- id: highly_variable_genes
+  type: feature_selection
+  input_objects:
+  - adata
+  expected_state_after:
+    hvg_selected: true
+- id: model_initialize
+  type: model_initialization
+  expected_calls:
+  - SCGEN
+- id: train_model
+  type: model_training
+  expected_inputs:
+  - adata
+  - condition_key
+  - cell_type_key
+- id: predict_perturbation
+  type: prediction
+  expected_inputs:
+  - trained_model
+  - target_cell_type_or_species
+  - source_condition
+  - target_condition
+- id: output_prediction
+  type: save_output
+  expected_outputs:
+  - predicted_adata_or_expression_matrix
+edges:
+- load_data -> normalize_total
+- normalize_total -> log1p
+- log1p -> highly_variable_genes
+- highly_variable_genes -> model_initialize
+- model_initialize -> train_model
+- train_model -> predict_perturbation
+- predict_perturbation -> output_prediction

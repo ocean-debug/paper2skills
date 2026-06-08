@@ -5,7 +5,10 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import zipfile
 from urllib.parse import urlparse, unquote
+from urllib.request import urlopen
+import json
 
 from paper2skill.collectors.path_sanitizer import public_local_path
 from paper2skill.common import write_json
@@ -74,14 +77,16 @@ def local_repo_path(repo: str) -> Path:
 
 
 def clone_repo(repo: str, work_dir: Path, ref: str | None = None) -> Path:
-    if shutil.which("git") is None:
-        raise RuntimeError("git is required to clone remote repositories")
     repo_root = work_dir / "repo"
     repo_root.mkdir(parents=True, exist_ok=True)
     repo_name = repo_name_from_url(repo)
     dest = repo_root / repo_name
     if dest.exists():
         shutil.rmtree(dest)
+    if shutil.which("git") is None:
+        if github_parts(repo):
+            return download_github_archive(repo, dest, ref)
+        raise RuntimeError("git is required to clone remote repositories")
     command = ["git", "clone", "--depth", "1"]
     if ref:
         command.extend(["--branch", ref])
@@ -104,6 +109,78 @@ def repo_name_from_url(repo: str) -> str:
     return value or "repo"
 
 
+def github_parts(repo: str) -> tuple[str, str] | None:
+    parsed = urlparse(repo)
+    if parsed.netloc.lower() != "github.com":
+        return None
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        return None
+    owner, name = parts[0], parts[1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return owner, name
+
+
+def download_github_archive(repo: str, dest: Path, ref: str | None = None) -> Path:
+    parts = github_parts(repo)
+    if not parts:
+        raise RuntimeError("git is required to clone non-GitHub remote repositories")
+    owner, name = parts
+    branch = ref or github_default_branch(owner, name)
+    archive_url = f"https://codeload.github.com/{owner}/{name}/zip/{branch}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_zip = dest.parent / f"{dest.name}.zip"
+    with urlopen(archive_url, timeout=120) as response:
+        tmp_zip.write_bytes(response.read())
+    with zipfile.ZipFile(tmp_zip) as archive:
+        members = [member for member in archive.infolist() if not member.is_dir()]
+        roots = {member.filename.split("/", 1)[0] for member in members if "/" in member.filename}
+        if len(roots) != 1:
+            raise RuntimeError("GitHub archive has unexpected layout")
+        root_prefix = next(iter(roots)) + "/"
+        dest.mkdir(parents=True, exist_ok=True)
+        for member in members:
+            if not member.filename.startswith(root_prefix):
+                continue
+            rel = member.filename[len(root_prefix) :]
+            if not rel or unsafe_archive_path(rel):
+                continue
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source:
+                target.write_bytes(source.read())
+    tmp_zip.unlink(missing_ok=True)
+    sha = github_ref_sha(owner, name, branch)
+    if sha:
+        (dest / ".paper2skill_commit_sha").write_text(sha + "\n", encoding="utf-8")
+    return dest
+
+
+def unsafe_archive_path(value: str) -> bool:
+    path = Path(value)
+    return path.is_absolute() or ".." in path.parts
+
+
+def github_default_branch(owner: str, name: str) -> str:
+    with urlopen(f"https://api.github.com/repos/{owner}/{name}", timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    branch = data.get("default_branch")
+    if not branch:
+        raise RuntimeError("GitHub repository metadata did not include default_branch")
+    return str(branch)
+
+
+def github_ref_sha(owner: str, name: str, branch: str) -> str | None:
+    try:
+        with urlopen(f"https://api.github.com/repos/{owner}/{name}/git/ref/heads/{branch}", timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    obj = data.get("object") or {}
+    return obj.get("sha")
+
+
 def build_repo_manifest(repo: str, path: Path | None, ref: str | None, is_remote: bool, clone_status: str = "local") -> dict[str, Any]:
     return {
         "repo_url": repo if is_remote else None,
@@ -121,6 +198,9 @@ def build_repo_manifest(repo: str, path: Path | None, ref: str | None, is_remote
 def git_rev_parse(path: Path) -> str | None:
     if not path.exists():
         return None
+    archive_sha = path / ".paper2skill_commit_sha"
+    if archive_sha.exists():
+        return archive_sha.read_text(encoding="utf-8").strip() or None
     try:
         result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, capture_output=True, check=False)
     except FileNotFoundError:
@@ -134,7 +214,7 @@ def index_repo(path: Path) -> dict[str, Any]:
     files = []
     if not path.exists():
         return {"files": files}
-    for item in sorted(p for p in path.rglob("*") if p.is_file() and ".git" not in p.parts):
+    for item in sorted(p for p in path.rglob("*") if p.is_file() and ".git" not in p.parts and p.name != ".paper2skill_commit_sha"):
         rel = item.relative_to(path).as_posix()
         files.append({"path": rel, "suffix": item.suffix.lower(), "size_bytes": item.stat().st_size, "category": categorize_file(rel, item.name)})
     return {"files": files}

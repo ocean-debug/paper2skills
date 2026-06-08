@@ -1,0 +1,20 @@
+paper:
+  expected_status: parsed_or_metadata_recorded
+  expected_sections:
+  - abstract_or_summary
+  - methods
+  - data_or_code_availability
+repo:
+  expected_clone_or_index: true
+  expected_commit_sha: true
+  expected_files_or_dirs:
+  - scgen
+  - docs
+  - pyproject.toml
+  - setup.py
+  - README.md
+tutorial:
+  expected_url: https://scgen.readthedocs.io/en/stable/
+  expected_tutorial_pages:
+  - 'SCGEN: Perturbation Prediction'
+  - 'SCGEN: Batch-Removal'

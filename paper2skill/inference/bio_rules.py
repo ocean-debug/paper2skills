@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 MODALITY_RULES = {
-    "scRNA-seq": ["single-cell RNA", "scRNA-seq", "AnnData", "Seurat", "scanpy", "h5ad", "10x"],
+    "perturb-seq": ["perturb-seq", "perturbation", "perturbed", "gene perturbation", "single-gene", "multi-gene"],
+    "scRNA-seq": ["single-cell RNA", "scRNA-seq", "single cell", "AnnData", "Seurat", "SingleCellExperiment", "scanpy", "h5ad", "10x"],
     "spatial_transcriptomics": ["spatial transcriptomics", "Visium", "Slide-seq", "MERFISH", "spatial", "Squidpy"],
-    "bulk_RNA-seq": ["bulk RNA", "bulk RNA-seq", "DESeq2", "edgeR", "limma", "counts matrix", "countData"],
+    "ribo_rna_seq": ["Ribo-seq", "RNA-seq", "translational efficiency", "SeqType", "ribosome profiling", "DTEG"],
+    "bulk_RNA-seq": ["bulk RNA", "bulk RNA-seq", "DESeq2", "edgeR", "limma", "counts matrix", "countData", "sample information"],
     "scATAC-seq": ["scATAC", "Signac", "ArchR", "peak matrix", "fragments.tsv"],
     "multiome": ["multiome", "RNA + ATAC", "paired RNA and ATAC"],
 }
 
 MATRIX_STATE_RULES = {
-    "raw_counts_loaded": ["raw counts", "count matrix", "counts matrix", "countData", "read_10x_mtx", "Read10X", "DESeqDataSetFromMatrix", "counts slot", "layers['counts']"],
+    "raw_counts_loaded": ["raw counts", "raw count matrix", "count matrix", "counts matrix", "countData", "read_10x_mtx", "Read10X", "DESeqDataSetFromMatrix", "counts slot", "layers['counts']", "genes-by-samples", "genes by samples"],
+    "preprocessed": ["preprocessed", "pre-processed", "pre processed", "pre-process your data", "pre-processed your data"],
     "normalized": ["NormalizeData", "normalize_total", "CPM", "TPM", "size factor"],
     "log1p_transformed": ["log1p", "log-normalized", "LogNormalize"],
     "scaled": ["ScaleData", "scale", "z-score", "standardized"],

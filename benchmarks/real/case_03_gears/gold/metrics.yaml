@@ -1,0 +1,18 @@
+dependency:
+  pyg_detection: binary
+  cell_gears_detection: binary
+  python_required_recall: target >= 0.70
+tutorial:
+  demo_notebook_recall: target >= 0.80
+  tutorial_ranking_correctness: target >= 0.60
+workflow:
+  node_recall: target >= 0.70
+  edge_recall: target >= 0.60
+  step_type_accuracy: target >= 0.70
+io_bio_contract:
+  perturbation_metadata_accuracy: target >= 0.80
+  adata_required_fields_accuracy: target >= 0.80
+  caution_statement_recall: target >= 0.60
+adapter_safety:
+  candidate_status_correctness: binary
+  large_training_block_correctness: binary

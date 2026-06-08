@@ -145,12 +145,38 @@ def infer_adapter_type(repo_evidence: dict[str, Any], tutorial_trace: dict[str, 
         return "workflow_engine"
     if repo_evidence.get("package_type") == "r_package" or classification.get("language") == "r":
         return "r_script"
-    if classification.get("language") == "python" and repo_evidence.get("api_functions"):
-        return "python_api"
     tutorials = tutorial_trace.get("tutorials", [])
+    python_package = str(repo_evidence.get("package_type", "")).startswith("python_")
+    if (classification.get("language") == "python" or python_package) and (repo_evidence.get("api_functions") or repo_evidence.get("classes") or has_installable_python_package_source(repo_evidence)):
+        return "python_api"
+    if tutorials and has_notebook_tutorial(tutorials) and not repo_evidence.get("api_functions") and not repo_evidence.get("classes"):
+        return "notebook"
     if tutorials and all(trace.get("language") == "python" for trace in tutorials) and not repo_evidence.get("api_functions"):
         return "notebook"
     return "demo_only"
+
+
+def has_installable_python_package_source(repo_evidence: dict[str, Any]) -> bool:
+    if not str(repo_evidence.get("package_type", "")).startswith("python_"):
+        return False
+    ignored_roots = {"docs", "doc", "examples", "example", "notebooks", "notebook", "tests", "test"}
+    for value in repo_evidence.get("tutorials", []) or []:
+        path = str(value).replace("\\", "/")
+        parts = [part for part in path.split("/") if part]
+        if not path.endswith(".py") or path == "setup.py" or not parts:
+            continue
+        if parts[0].lower() in ignored_roots:
+            continue
+        return True
+    return False
+
+
+def has_notebook_tutorial(tutorials: list[dict[str, Any]]) -> bool:
+    for trace in tutorials:
+        path = str(trace.get("path") or "").lower()
+        if path.endswith(".ipynb") or trace.get("execution_policy"):
+            return True
+    return False
 
 
 TRUSTED_READY_PYTHON_FIXTURES = {
@@ -333,15 +359,18 @@ def build_adapter_spec(
                 spec["status"] = "ready"
                 spec["caveats"] = ["Ready adapter uses a generated source snapshot under sources/repo"]
             return spec
-        spec["status"] = "blocked"
-        spec["caveats"] = ["No importable Python API function was inferred"]
+        spec["caveats"] = ["Python package/API evidence was found, but no importable function was inferred; adapter remains candidate-only until reviewed"]
         return spec
     if adapter_type == "cli":
-        entrypoint = first_item(repo_evidence.get("entrypoints", []))
-        command = entrypoint.get("name") if entrypoint else None
+        entrypoint = first_item(repo_evidence.get("entrypoints", [])) or first_item(repo_evidence.get("cli_commands", []))
+        command = None
+        target = None
+        if entrypoint:
+            command = entrypoint.get("command") or entrypoint.get("name")
+            target = entrypoint.get("target") or entrypoint.get("path")
         spec.update(
             {
-                "entrypoint": entrypoint.get("target") if entrypoint else None,
+                "entrypoint": target,
                 "command": command,
                 "evidence": [entrypoint.get("source")] if entrypoint else [],
                 "caveats": ["CLI command is a candidate and must be user-reviewed before execution"],
@@ -605,6 +634,7 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_yaml(root / "references" / "algorithm_contract.yaml", public_context["algorithm_contract"])
     write_yaml(root / "references" / "adapter_spec.yaml", public_context["adapter_spec"])
     write_yaml(root / "references" / "adapter_review.yaml", public_context["adapter_review"])
+    write_yaml(root / "references" / "environment_spec.yaml", public_context["environment_spec"])
     write_json(root / "references" / "notebook_execution_policy.json", public_context["notebook_execution_policy"])
     write_yaml(root / "references" / "bio_contract.yaml", public_context["bio_contract"])
     write_yaml(root / "references" / "io_contract.yaml", {"input_contract": public_context["algorithm_contract"].get("input_contract"), "output_contract": public_context["algorithm_contract"].get("output_contract")})

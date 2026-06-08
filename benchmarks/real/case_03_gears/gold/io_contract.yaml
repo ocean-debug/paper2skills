@@ -1,0 +1,30 @@
+primary_input:
+  object_type: AnnData_or_GEARS_PertData
+  accepted_formats:
+  - AnnData_object
+  - preprocessed_GEARS_dataset
+  required_adata_var:
+  - gene_name
+  required_adata_obs:
+  - condition
+  - cell_type
+perturbation_metadata:
+  condition_key:
+    required: true
+    semantic: perturbation identity
+  cell_type_key:
+    required: true
+    semantic: cell type
+  perturbation_query:
+    format: list_of_gene_lists
+    examples:
+    - - CBL
+      - CNN1
+    - - FEV
+output:
+  predicted_transcriptional_response:
+    required: true
+  GI_prediction:
+    required: optional
+  top_DE_plot:
+    required: optional
