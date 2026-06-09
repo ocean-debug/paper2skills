@@ -245,12 +245,17 @@ def test_cli_scan_plan_repair_and_export_lock_write_json(tmp_path: Path, monkeyp
     repair_out = tmp_path / "repair.json"
     lock_out = tmp_path / "lock_plan.json"
 
-    def fake_run(command, **kwargs):
-        if command[:3] == ["conda", "env", "export"]:
-            return subprocess.CompletedProcess(command, 0, stdout="name: demo\n", stderr="")
-        raise FileNotFoundError(command[0])
+    def fake_export_lock_artifacts(env, out, **kwargs):
+        return {
+            "status": "partial",
+            "env": env,
+            "out": str(out),
+            "dry_run": False,
+            "auto_export_performed": True,
+            "results": [{"kind": "conda_env_export", "exit_code": 0}],
+        }
 
-    monkeypatch.setattr("paper2skill.env_rebuilder.lockfile.subprocess.run", fake_run)
+    monkeypatch.setattr("paper2skill.env_rebuilder.__main__.export_lock_artifacts", fake_export_lock_artifacts)
 
     assert main(["scan", "--repo", str(repo), "--out", str(scan_out)]) == 0
     assert main(["plan", "--scan", str(scan_out), "--target", "new", "--env", ".venv", "--out", str(plan_out)]) == 0
