@@ -1,0 +1,13 @@
+modality: scRNA-seq
+supported_input_object: AnnData
+species:
+  value: not_confirmed
+  reason: tutorial example does not make species a required input contract
+gene_id_type:
+  value: not_confirmed
+minimum_data_requirements:
+  cells: not_confirmed
+  genes: not_confirmed
+external_resources:
+  reference_genome: not_required
+  pathway_database: optional_for_GO_enrichment

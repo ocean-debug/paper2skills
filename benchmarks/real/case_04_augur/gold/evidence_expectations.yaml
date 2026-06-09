@@ -1,0 +1,17 @@
+high_priority_sources:
+- repo_readme
+- DESCRIPTION
+- NAMESPACE
+- R_source
+required_claims_with_evidence:
+- calculate_auc main function
+- calculate_auc(expr, meta, cell_type_col = "cell.type", label_col = "condition")
+- calculate_auc(sc) for Seurat object input
+- genes-by-cells scRNA-seq input matrix
+- features-by-cells input matrix
+- metadata requires cell type annotations and sample labels to be predicted
+- Seurat sc@meta.data contains cell_type and label columns
+- output is AUC table
+- output is available at augur$AUC
+- supports Seurat / monocle3 / SingleCellExperiment objects
+- installation via devtools::install_github("neurorestore/Augur")

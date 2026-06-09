@@ -1,0 +1,103 @@
+workflow_mode: multi_workflow
+workflows:
+- workflow_id: perturbation_prediction_ifnb
+  task: perturbation_prediction
+  primary: true
+  tutorial_ids:
+  - perturbation_prediction_ifnb
+  nodes:
+  - id: load_data
+    type: load_data
+  - id: preprocess
+    type: preprocessing
+  - id: validate_condition_and_cell_type
+    type: metadata_validation
+  - id: train_scgen
+    type: model_training
+  - id: predict_response
+    type: prediction
+  edges:
+  - load_data -> preprocess
+  - preprocess -> validate_condition_and_cell_type
+  - validate_condition_and_cell_type -> train_scgen
+  - train_scgen -> predict_response
+- workflow_id: batch_removal_pancreas
+  task: batch_removal
+  primary: false
+  tutorial_ids:
+  - batch_removal_pancreas
+  nodes:
+  - id: load_data
+    type: load_data
+  - id: preprocess
+    type: preprocessing
+  - id: validate_batch_labels
+    type: metadata_validation
+  - id: train_scgen_batch_model
+    type: model_training
+  - id: remove_batch_effect
+    type: batch_correction
+  edges:
+  - load_data -> preprocess
+  - preprocess -> validate_batch_labels
+  - validate_batch_labels -> train_scgen_batch_model
+  - train_scgen_batch_model -> remove_batch_effect
+nodes:
+- id: load_data
+  type: load_data
+  output_objects:
+  - adata
+  expected_calls:
+  - scanpy.read
+  - read_h5ad
+- id: normalize_total
+  type: normalization
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: normalized
+- id: log1p
+  type: transformation
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: log1p
+- id: highly_variable_genes
+  type: feature_selection
+  input_objects:
+  - adata
+  expected_state_after:
+    hvg_selected: true
+- id: model_initialize
+  type: model_initialization
+  expected_calls:
+  - SCGEN
+- id: train_model
+  type: model_training
+  expected_inputs:
+  - adata
+  - condition_key
+  - cell_type_key
+- id: predict_perturbation
+  type: prediction
+  expected_inputs:
+  - trained_model
+  - target_cell_type_or_species
+  - source_condition
+  - target_condition
+- id: output_prediction
+  type: save_output
+  expected_outputs:
+  - predicted_adata_or_expression_matrix
+edges:
+- load_data -> normalize_total
+- normalize_total -> log1p
+- log1p -> highly_variable_genes
+- highly_variable_genes -> model_initialize
+- model_initialize -> train_model
+- train_model -> predict_perturbation
+- predict_perturbation -> output_prediction

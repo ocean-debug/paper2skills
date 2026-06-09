@@ -1,0 +1,78 @@
+nodes:
+- id: load_package
+  type: load_package
+  expected_calls:
+  - import concord
+  - import scanpy
+  - import torch
+- id: load_data
+  type: load_data
+  output_objects:
+  - adata
+  expected_calls:
+  - sc.datasets.pbmc3k_processed
+- id: raw_counts_restore
+  type: transformation
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: raw_counts
+- id: feature_selection
+  type: feature_selection
+  input_objects:
+  - adata
+  output_objects:
+  - feature_list
+  expected_calls:
+  - select_features
+- id: normalization
+  type: normalization
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: normalized
+- id: log_transform
+  type: transformation
+  input_objects:
+  - adata
+  output_objects:
+  - adata
+  expected_state_after:
+    matrix_state: log1p
+- id: model_initialize
+  type: model_initialization
+  input_objects:
+  - adata
+  - feature_list
+  output_objects:
+  - cur_ccd
+  expected_calls:
+  - ccd.Concord
+- id: fit_transform
+  type: model_training_or_embedding
+  input_objects:
+  - cur_ccd
+  output_objects:
+  - adata.obsm["Concord"]
+  expected_calls:
+  - fit_transform
+- id: visualization
+  type: visualization
+  input_objects:
+  - adata
+  expected_calls:
+  - run_umap
+  - plot_embedding
+edges:
+- load_data -> raw_counts_restore
+- raw_counts_restore -> feature_selection
+- raw_counts_restore -> normalization
+- feature_selection -> model_initialize
+- normalization -> log_transform
+- log_transform -> model_initialize
+- model_initialize -> fit_transform
+- fit_transform -> visualization

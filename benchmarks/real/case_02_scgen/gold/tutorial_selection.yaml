@@ -1,0 +1,33 @@
+selection_mode: multi_tutorial_multi_workflow
+should_select:
+- title_contains: Perturbation Prediction
+- title_contains: Batch-Removal
+required_tutorials:
+- tutorial_id: perturbation_prediction_ifnb
+  title_contains: Perturbation Prediction
+  purpose: perturbation_prediction
+  primary: true
+  required: true
+  expected_signals:
+  - condition
+  - control
+  - perturbed
+  - predict
+- tutorial_id: batch_removal_pancreas
+  title_contains: Batch-Removal
+  purpose: batch_removal
+  primary: false
+  required: true
+  expected_signals:
+  - batch
+  - pancreas
+  - integration
+optional_tutorials: []
+expected_tutorial_signals:
+- normalized data
+- cell_type
+- condition
+- control
+- perturbed
+- HVG
+- SCGEN

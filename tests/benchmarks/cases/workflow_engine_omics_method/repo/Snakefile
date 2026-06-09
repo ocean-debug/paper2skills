@@ -1,0 +1,11 @@
+rule all:
+    input:
+        "results/report.tsv"
+
+rule rank:
+    input:
+        "data/assay.tsv"
+    output:
+        "results/report.tsv"
+    shell:
+        "omics-rank {input} > {output}"

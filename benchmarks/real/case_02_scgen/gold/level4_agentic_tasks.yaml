@@ -1,0 +1,28 @@
+tasks:
+- task_id: valid_perturbation_request_candidate
+  user_command: Use scGen to predict IFN-beta stimulation response with this valid AnnData file.
+  workflow_id: perturbation_prediction_ifnb
+  provided_inputs:
+    input_manifest: synthetic_ifnb_anndata
+  expected_behavior:
+    action: explain_candidate_status
+    reason_contains:
+    - candidate
+    must_reference:
+    - io_contract
+    - bio_contract
+    - adapter_status
+    must_not:
+    - auto_install
+    - invent_results
+- task_id: invalid_missing_condition_refusal
+  user_command: Use scGen on this AnnData without condition labels.
+  workflow_id: perturbation_prediction_ifnb
+  expected_behavior:
+    action: refuse
+    reason_contains:
+    - io_contract
+    must_reference:
+    - io_contract
+    must_not:
+    - invent_results

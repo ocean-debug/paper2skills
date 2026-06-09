@@ -56,3 +56,39 @@ def test_workflow_dag_infers_shared_object_edges_and_step_types():
     assert {"from": "tutorial_001:cell_003", "to": "tutorial_001:cell_004", "reason": "shared_object:adata"} in dag["edges"]
     assert dag["nodes"][1]["object_state_after"]["adata"]["matrix_state"] == "normalized"
     assert dag["nodes"][3]["object_state_after"]["adata"]["matrix_state"] == "log1p"
+
+
+def test_workflow_prioritizes_read_transform_and_feature_selection_over_train_variable_names():
+    trace = {
+        "workflow_steps": [
+            {"step_id": "s1", "command_or_code": "train = sc.read('.train_kang.h5ad')", "function_calls": ["sc.read"]},
+            {"step_id": "s2", "command_or_code": "sc.pp.log1p(train)", "function_calls": ["sc.pp.log1p"], "input_objects": ["train"]},
+            {"step_id": "s3", "command_or_code": "sc.pp.highly_variable_genes(train)", "function_calls": ["sc.pp.highly_variable_genes"], "input_objects": ["train"]},
+        ]
+    }
+
+    dag = infer_workflow(trace)["workflow_dag"]
+
+    assert [node["type"] for node in dag["nodes"]] == ["load_data", "transformation", "feature_selection"]
+
+
+def test_workflow_detects_model_initialization_without_tool_name_rules():
+    trace = {
+        "workflow_steps": [
+            {
+                "step_id": "s1",
+                "command_or_code": "model = Model(latent_dim=32)",
+                "function_calls": ["Model"],
+            },
+            {
+                "step_id": "s2",
+                "command_or_code": "model.train(train_batches)",
+                "function_calls": ["model.train"],
+                "input_objects": ["model"],
+            },
+        ]
+    }
+
+    dag = infer_workflow(trace)["workflow_dag"]
+
+    assert [node["type"] for node in dag["nodes"]] == ["model_initialization", "model_training"]

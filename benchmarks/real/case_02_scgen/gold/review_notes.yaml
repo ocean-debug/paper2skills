@@ -1,0 +1,11 @@
+status: needs_review
+notes:
+  - category: external_tutorial_docs
+    reason: Gold tutorial signals include readthedocs pages that are not guaranteed to be present in the GitHub repository.
+    action: Confirm whether readthedocs collection is in scope for live build runs.
+  - category: preprocessing_signals
+    reason: Normalized data and HVG expectations may be described in tutorial prose rather than executable code.
+    action: Recheck after markdown/prose mining and decide whether these remain required evidence.
+  - category: dependency_contract
+    reason: Optional torch support can appear as framework evidence even when not declared as a direct install requirement.
+    action: Verify required versus optional dependency status.

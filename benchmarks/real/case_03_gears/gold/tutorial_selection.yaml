@@ -1,0 +1,37 @@
+selection_mode: multi_tutorial_pipeline_stages
+should_select:
+- demo/data_tutorial.ipynb
+- demo/model_tutorial.ipynb
+- demo/tutorial_inference_Norman.ipynb
+required_tutorials:
+- tutorial_id: data_tutorial
+  path_or_url_contains: data_tutorial
+  purpose: data_preparation
+  stage: data_preparation
+  required: true
+- tutorial_id: model_tutorial
+  path_or_url_contains: model_tutorial
+  purpose: model_training
+  stage: model_training
+  required: true
+- tutorial_id: inference_tutorial
+  path_or_url_contains: inference
+  purpose: prediction
+  stage: inference
+  required: true
+optional_tutorials:
+- tutorial_id: plotting_tutorial
+  purpose: visualization
+  stage: visualization
+should_rank_high:
+- model_tutorial.ipynb
+- tutorial_inference_Norman.ipynb
+expected_tutorial_signals:
+- PertData
+- GEARS
+- prepare_split
+- get_dataloader
+- model_initialize
+- train
+- predict
+- GI_predict

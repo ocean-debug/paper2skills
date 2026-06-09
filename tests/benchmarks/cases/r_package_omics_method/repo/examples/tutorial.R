@@ -1,0 +1,5 @@
+library(OmicsR)
+input_file <- file.path("data", "experiment.rds")
+obj <- readRDS(input_file)
+obj <- normalizeOmics(obj)
+saveRDS(obj, file.path("results", "normalized.rds"))

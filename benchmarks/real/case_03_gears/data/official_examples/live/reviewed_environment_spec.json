@@ -1,0 +1,60 @@
+{
+  "install_policy": "never",
+  "python": {
+    "packages": [
+      {
+        "spec": "numpy",
+        "import_name": "numpy",
+        "required": true
+      },
+      {
+        "spec": "pandas",
+        "import_name": "pandas",
+        "required": true
+      },
+      {
+        "spec": "scanpy",
+        "import_name": "scanpy",
+        "required": true
+      },
+      {
+        "spec": "anndata",
+        "import_name": "anndata",
+        "required": true
+      },
+      {
+        "spec": "torch",
+        "import_name": "torch",
+        "required": true
+      },
+      {
+        "spec": "cell-gears",
+        "import_name": "gears",
+        "required": true
+      }
+    ]
+  },
+  "r": {
+    "required": false,
+    "packages": []
+  },
+  "executables": [],
+  "conda": {
+    "packages": [
+      "numpy",
+      "pandas"
+    ]
+  },
+  "system_requirements": [],
+  "external_resources": [],
+  "optional_dependencies": {
+    "python": {},
+    "r": {}
+  },
+  "ignored_dependencies": [],
+  "optional": {
+    "cuda": "record_only",
+    "system_libraries": "record_only",
+    "external_databases": "record_only"
+  }
+}

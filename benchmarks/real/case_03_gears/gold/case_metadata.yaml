@@ -1,0 +1,26 @@
+case_id: case_03_gears
+tool_name: GEARS
+paper_title: "GEARS: Predicting transcriptional outcomes of novel multi-gene perturbations"
+paper_url: https://www.nature.com/articles/s41587-023-01905-6
+repo_url: https://github.com/snap-stanford/GEARS
+tutorial_urls:
+- id: demo_index
+  url: https://github.com/snap-stanford/GEARS/tree/master/demo
+  purpose: tutorial_index
+- id: data_tutorial
+  url: https://github.com/snap-stanford/GEARS/tree/master/demo
+  purpose: data_preparation
+- id: model_tutorial
+  url: https://github.com/snap-stanford/GEARS/tree/master/demo
+  purpose: model_training
+- id: inference_tutorial
+  url: https://github.com/snap-stanford/GEARS/tree/master/demo
+  purpose: prediction
+task_category:
+- perturb_seq
+- single_cell
+- gene_perturbation_prediction
+- geometric_deep_learning
+primary_language: Python
+expected_adapter_type: python_api
+expected_initial_adapter_status: candidate

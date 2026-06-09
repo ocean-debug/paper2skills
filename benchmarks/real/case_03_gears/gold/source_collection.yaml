@@ -1,0 +1,23 @@
+paper:
+  expected_status: parsed_or_metadata_recorded
+  expected_sections:
+  - abstract_or_summary
+  - methods
+  - data_or_code_availability
+repo:
+  expected_clone_or_index: true
+  expected_commit_sha: true
+  expected_files_or_dirs:
+  - gears
+  - demo
+  - requirements.txt
+  - setup.py
+  - README.md
+tutorial:
+  expected_url: https://github.com/snap-stanford/GEARS/tree/master/demo
+  expected_demo_files:
+  - data_tutorial.ipynb
+  - model_tutorial.ipynb
+  - tutorial_inference_Norman.ipynb
+  - tutorial_plot_top20_DE.ipynb
+  - tutorial_uncertainty.ipynb

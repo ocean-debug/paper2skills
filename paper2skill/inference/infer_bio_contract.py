@@ -5,6 +5,35 @@ from typing import Any
 
 from paper2skill.inference.bio_rules import GENE_ID_RULES, MATRIX_STATE_RULES, MODALITY_RULES, SPECIES_RULES, match_rules
 
+MODALITY_PRIORITY = {
+    "ribo_rna_seq": 4,
+    "perturb-seq": 3,
+    "scRNA-seq": 2,
+    "bulk_RNA-seq": 1,
+}
+
+NEGATED_NORMALIZATION_PATTERNS = [
+    r"\bnot\s+(?:be\s+)?normalized\b",
+    r"\bnot\s+normalized\b",
+    r"\bshould\s+not\s+be\s+normalized\b",
+    r"\bmust\s+not\s+be\s+normalized\b",
+    r"\bnormalized\s+or\s+batch\s+corrected\b",
+]
+
+NEGATED_BATCH_PATTERNS = [
+    r"\bnot\s+(?:be\s+)?batch\s+corrected\b",
+    r"\bnot\s+batch\s+corrected\b",
+    r"\bshould\s+not\s+be\s+batch\s+corrected\b",
+    r"\bnormalized\s+or\s+batch\s+corrected\b",
+]
+
+BATCH_ACCOUNTED_PATTERNS = [
+    r"batch effects? (?:are |should be )?(?:accounted for|removed|corrected)",
+    r"batch effects?.{0,160}(?:accounted for|removed|corrected)",
+    r"account(?:ed)? for .*batch effects?",
+    r"remove .*batch effects?",
+]
+
 
 def field_value(value: Any = "not_confirmed", confidence: str = "low", evidence: list[str] | None = None) -> dict[str, Any]:
     return {"value": value, "confidence": confidence, "evidence": evidence or []}
@@ -26,6 +55,9 @@ def default_bio_contract() -> dict[str, Any]:
                 "sample_key": "not_confirmed",
                 "batch_key": "not_confirmed",
                 "condition_key": "not_confirmed",
+                "label_key": "not_confirmed",
+                "seqtype_key": "not_confirmed",
+                "perturbation_key": "not_confirmed",
             },
             "minimum_data_requirements": {
                 "min_cells": "not_confirmed",
@@ -61,11 +93,13 @@ def infer_bio_contract(
 ) -> dict[str, Any]:
     text_items = evidence_texts(tutorial_trace, paper_sections or [])
     all_text = "\n".join(item["text"] for item in text_items)
-    modality = first_with_evidence(text_items, MODALITY_RULES, strict_evidence)
+    modality = best_modality_with_evidence(text_items, strict_evidence)
     species = first_with_evidence(text_items, SPECIES_RULES, strict_evidence)
     gene_id = first_with_evidence(text_items, GENE_ID_RULES, strict_evidence)
     transformations = transformation_chain(text_items, strict_evidence)
-    celltype_key = metadata_key(all_text, "celltype_key", ["cell_type", "celltype", "celltypes"])
+    normalized_disallowed = evidence_for_patterns(text_items, NEGATED_NORMALIZATION_PATTERNS, strict_evidence)
+    batch_disallowed = evidence_for_patterns(text_items, NEGATED_BATCH_PATTERNS, strict_evidence)
+    batch_accounted_for = evidence_for_patterns(text_items, BATCH_ACCOUNTED_PATTERNS, strict_evidence)
     base = default_bio_contract()["bio_contract"]
     base["modality"] = {
         "primary": field_value(normalize_modality(modality[0]), modality[2], modality[1]) if modality else field_value(),
@@ -78,17 +112,16 @@ def infer_bio_contract(
     }
     base["input_matrix_state"] = {
         "raw_counts_required": field_value("raw_counts_loaded" in transformations, "high" if "raw_counts_loaded" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "raw_counts_loaded", strict_evidence)),
-        "normalized_allowed": field_value("normalized" in transformations, "high" if "normalized" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "normalized", strict_evidence)),
+        "preprocessed_required": field_value("preprocessed" in transformations, "high" if "preprocessed" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "preprocessed", strict_evidence)),
+        "normalized_allowed": field_value("normalized" in transformations and not normalized_disallowed, "high" if "normalized" in transformations and not normalized_disallowed else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "normalized", strict_evidence)),
+        "normalized_input_disallowed": field_value(bool(normalized_disallowed), "high" if normalized_disallowed else "low", normalized_disallowed),
+        "batch_corrected_input_disallowed": field_value(bool(batch_disallowed), "high" if batch_disallowed else "low", batch_disallowed),
+        "batch_effects_accounted_for": field_value(bool(batch_accounted_for), "high" if batch_accounted_for else "low", batch_accounted_for),
         "log_transformed_allowed": field_value("log1p_transformed" in transformations, "high" if "log1p_transformed" in transformations else "low", evidence_for_value(text_items, MATRIX_STATE_RULES, "log1p_transformed", strict_evidence)),
         "matrix_orientation": field_value(),
         "matrix_transformations": transformations,
     }
-    base["metadata_requirements"] = {
-        "celltype_key": field_value(celltype_key, "medium", ["tutorial_metadata_key"]) if celltype_key else field_value(),
-        "sample_key": field_value(),
-        "batch_key": field_value(metadata_key(all_text, "batch_key", ["batch"]), "medium", ["tutorial_metadata_key"]) if metadata_key(all_text, "batch_key", ["batch"]) else field_value(),
-        "condition_key": field_value(metadata_key(all_text, "condition_key", ["condition"]), "medium", ["tutorial_metadata_key"]) if metadata_key(all_text, "condition_key", ["condition"]) else field_value(),
-    }
+    base["metadata_requirements"] = metadata_requirements(all_text)
     base["modality_contracts"] = modality_contracts(base, all_text)
     return {"bio_contract": base}
 
@@ -141,6 +174,29 @@ def first_with_evidence(items: list[dict[str, Any]], rules: dict[str, list[str]]
     return value, evidence, confidence
 
 
+def best_modality_with_evidence(items: list[dict[str, Any]], strict_evidence: bool = False) -> tuple[str, list[str], str] | None:
+    scores: dict[str, float] = {}
+    evidence: dict[str, set[str]] = {}
+    confidence: dict[str, str] = {}
+    for item in items:
+        source_confidence = confidence_for_source(item["source_type"])
+        if strict_evidence and source_confidence == "low":
+            continue
+        for value, words in MODALITY_RULES.items():
+            matched_words = [word for word in words if rule_in_text(item["text"], word)]
+            if not matched_words:
+                continue
+            scores[value] = scores.get(value, 0.0) + item["weight"] * len(set(matched_words))
+            scores[value] += MODALITY_PRIORITY.get(value, 0) * 0.1
+            evidence.setdefault(value, set()).add(item["evidence_id"])
+            if confidence_rank(source_confidence) >= confidence_rank(confidence.get(value, "low")):
+                confidence[value] = source_confidence
+    if not scores:
+        return None
+    value = sorted(scores, key=lambda item: (scores[item], MODALITY_PRIORITY.get(item, 0), item), reverse=True)[0]
+    return value, sorted(evidence.get(value, [])), confidence.get(value, "low")
+
+
 def transformation_chain(items: list[dict[str, Any]], strict_evidence: bool = False) -> list[str]:
     found = []
     for value in MATRIX_STATE_RULES:
@@ -155,14 +211,59 @@ def evidence_for_value(items: list[dict[str, Any]], rules: dict[str, list[str]],
     for item in items:
         if strict_evidence and confidence_for_source(item["source_type"]) == "low":
             continue
-        if any(word.lower() in item["text"].lower() for word in words):
+        if value == "normalized" and has_negated_normalization(item["text"]):
+            continue
+        if any(rule_in_text(item["text"], word) for word in words):
             matches.append(item)
     return [item["evidence_id"] for item in sorted(matches, key=lambda value: value["weight"], reverse=True)]
 
 
+def evidence_for_patterns(items: list[dict[str, Any]], patterns: list[str], strict_evidence: bool = False) -> list[str]:
+    matches = []
+    for item in items:
+        if strict_evidence and confidence_for_source(item["source_type"]) == "low":
+            continue
+        if any(re.search(pattern, item["text"], flags=re.IGNORECASE | re.DOTALL) for pattern in patterns):
+            matches.append(item)
+    return [item["evidence_id"] for item in sorted(matches, key=lambda value: value["weight"], reverse=True)]
+
+
+def has_negated_normalization(text: str) -> bool:
+    return any(re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL) for pattern in NEGATED_NORMALIZATION_PATTERNS)
+
+
+def rule_in_text(text: str, word: str) -> bool:
+    if re.fullmatch(r"[A-Za-z0-9_+-]+", word):
+        return re.search(rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])", text, flags=re.IGNORECASE) is not None
+    return word.lower() in text.lower()
+
+
+def metadata_requirements(text: str) -> dict[str, Any]:
+    return {
+        "celltype_key": metadata_field(text, ["cell.type", "cell_type", "celltype", "celltypes", "cell type"], "cell_type"),
+        "sample_key": metadata_field(text, ["SampleID", "sample_id", "sample id", "sample"], "sample"),
+        "batch_key": metadata_field(text, ["Batch", "batch"], "Batch"),
+        "condition_key": metadata_field(text, ["Condition", "condition"], "condition"),
+        "label_key": metadata_field(text, ["label_col", "label"], "label"),
+        "seqtype_key": metadata_field(text, ["SeqType", "seqtype", "sequencing type"], "SeqType"),
+        "perturbation_key": metadata_field(text, ["perturbation_key", "perturbation", "perturbed"], "perturbation"),
+    }
+
+
+def metadata_field(text: str, candidates: list[str], canonical: str) -> dict[str, Any]:
+    matched = metadata_key(text, "", candidates)
+    if not matched:
+        return field_value()
+    value = field_value(canonical, "medium", ["tutorial_metadata_key"])
+    aliases = sorted({candidate for candidate in candidates if metadata_key(text, "", [candidate])})
+    if aliases:
+        value["aliases"] = aliases
+    return value
+
+
 def metadata_key(text: str, _field: str, candidates: list[str]) -> str | None:
     for candidate in candidates:
-        if re.search(rf"['\"]{re.escape(candidate)}['\"]", text) or candidate in text:
+        if re.search(rf"['\"]{re.escape(candidate)}['\"]", text) or re.search(rf"\b{re.escape(candidate)}\b", text, flags=re.IGNORECASE):
             return candidate
     return None
 
@@ -170,6 +271,7 @@ def metadata_key(text: str, _field: str, candidates: list[str]) -> str | None:
 def normalize_modality(value: str) -> str:
     return {
         "bulk_RNA-seq": "bulk RNA-seq",
+        "ribo_rna_seq": "Ribo-seq/RNA-seq",
         "spatial_transcriptomics": "spatial",
     }.get(value, value)
 
@@ -181,6 +283,8 @@ def matrix_state_value(base: dict[str, Any]) -> dict[str, Any]:
         return field_value("log1p", "high", matrix.get("log_transformed_allowed", {}).get("evidence", []))
     if "normalized" in transformations:
         return field_value("normalized", "high", matrix.get("normalized_allowed", {}).get("evidence", []))
+    if "preprocessed" in transformations or matrix.get("preprocessed_required", {}).get("value") is True:
+        return field_value("preprocessed", "high", matrix.get("preprocessed_required", {}).get("evidence", []))
     if "raw_counts_loaded" in transformations or matrix.get("raw_counts_required", {}).get("value") is True:
         return field_value("raw_counts", "high", matrix.get("raw_counts_required", {}).get("evidence", []))
     return field_value()
@@ -200,6 +304,27 @@ def modality_contracts(base: dict[str, Any], all_text: str) -> dict[str, Any]:
             "input_state": {"matrix_state": field_value(), "formats": ["count_matrix", "csv", "tsv"]},
             "metadata": {"sample_key": field_value(), "condition_key": field_value(), "batch_key": field_value()},
             "statistical": {"design_formula": field_value(), "replicates": field_value()},
+            "reference_resources": base.get("reference_resources", {}),
+            "outputs": {"required": []},
+        },
+        "perturb_seq": {
+            "input_state": {"matrix_state": matrix_state_value(base), "formats": ["h5ad", "AnnData_object"]},
+            "metadata": {
+                "condition_key": metadata.get("condition_key", field_value()),
+                "celltype_key": metadata.get("celltype_key", field_value()),
+                "perturbation_key": metadata.get("perturbation_key", field_value()),
+            },
+            "reference_resources": base.get("reference_resources", {}),
+            "outputs": {"required": []},
+        },
+        "ribo_rna_seq": {
+            "input_state": {"matrix_state": matrix_state_value(base), "formats": ["count_matrix", "csv", "tsv"]},
+            "metadata": {
+                "sample_key": metadata.get("sample_key", field_value()),
+                "condition_key": metadata.get("condition_key", field_value()),
+                "seqtype_key": metadata.get("seqtype_key", field_value()),
+                "batch_key": metadata.get("batch_key", field_value()),
+            },
             "reference_resources": base.get("reference_resources", {}),
             "outputs": {"required": []},
         },
@@ -226,7 +351,7 @@ def modality_contracts(base: dict[str, Any], all_text: str) -> dict[str, Any]:
         contracts["scrna_seq"]["input_state"]["matrix_state"] = matrix_state_value(base)
         contracts["scrna_seq"]["metadata"] = {
             key: metadata.get(key, field_value())
-            for key in ["celltype_key", "sample_key", "batch_key", "condition_key"]
+            for key in ["celltype_key", "sample_key", "batch_key", "condition_key", "label_key"]
         }
     if modality == "bulk RNA-seq":
         contracts["bulk_rna_seq"]["input_state"]["matrix_state"] = matrix_state_value(base)
@@ -234,6 +359,10 @@ def modality_contracts(base: dict[str, Any], all_text: str) -> dict[str, Any]:
         formula = design_formula(all_text)
         if formula:
             contracts["bulk_rna_seq"]["statistical"]["design_formula"] = field_value(formula, "high", ["tutorial_design_formula"])
+    if modality == "perturb-seq":
+        contracts["perturb_seq"]["input_state"]["matrix_state"] = matrix_state_value(base)
+    if modality == "Ribo-seq/RNA-seq":
+        contracts["ribo_rna_seq"]["input_state"]["matrix_state"] = matrix_state_value(base)
     if modality == "spatial":
         contracts["spatial"]["input_state"]["matrix_state"] = matrix_state_value(base)
     return contracts

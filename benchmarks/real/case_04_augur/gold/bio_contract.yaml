@@ -1,0 +1,15 @@
+modality: scRNA-seq
+task: cell_type_prioritization
+input_state:
+  preprocessed: true
+  batch_effects_should_be_accounted_for: true
+  preprocessing_required_before_augur: true
+classifier_goal:
+  predict_experimental_condition_from_molecular_measurements_per_cell_type: true
+biological_constraints:
+- input_scRNA_seq_should_be_preprocessed
+- batch_effects_should_be_removed_or_accounted_for_before_input
+species:
+  value: not_confirmed
+gene_id_type:
+  value: not_confirmed

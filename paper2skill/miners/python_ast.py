@@ -113,10 +113,12 @@ def classify_bio_signals(text: str, calls: list[dict] | list[str]) -> list[str]:
     haystack = text.lower() + " " + " ".join(call["name"] if isinstance(call, dict) else str(call) for call in calls).lower()
     signals = []
     rules = {
-        "single_cell": ["scanpy", "seurat", "anndata", "read_10x", "read10x", "h5ad"],
+        "single_cell": ["scanpy", "seurat", "singlecellexperiment", "anndata", "read_10x", "read10x", "h5ad", "single-cell", "single cell"],
         "normalization": ["normalize_total", "normalizedata", "normalize"],
         "log_transform": ["log1p", "lognormalize"],
-        "raw_counts": ["read_10x_mtx", "read10x", "raw counts", "count matrix"],
+        "raw_counts": ["read_10x_mtx", "read10x", "raw counts", "count matrix", "counts matrix", "genes-by-samples", "features-by-cells"],
+        "perturbation": ["perturbation", "perturb-seq", "perturbed"],
+        "ribo_rna_seq": ["ribo-seq", "rna-seq", "seqtype", "translational efficiency"],
         "plot": ["plot", "scatter", "umap", "tsne", "savefig", "ggsave"],
     }
     for signal, words in rules.items():

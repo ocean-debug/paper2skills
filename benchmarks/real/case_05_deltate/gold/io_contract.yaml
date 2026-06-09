@@ -1,0 +1,36 @@
+primary_inputs:
+  ribo_count_matrix:
+    format: tabular_count_matrix
+    matrix_state: raw_counts
+    normalized_or_batch_corrected_allowed: false
+    orientation: genes_by_samples
+    first_column: Gene ID
+  rna_count_matrix:
+    format: tabular_count_matrix
+    matrix_state: raw_counts
+    normalized_or_batch_corrected_allowed: false
+    orientation: genes_by_samples
+    first_column: Gene ID
+  sample_info_file:
+    format: tabular_metadata
+    required_columns:
+    - SampleID
+    - Condition
+    - SeqType
+    - Batch
+    constraints:
+    - same_sample_order_as_count_matrices
+    - SeqType contains RIBO and RNA
+cli_arguments:
+  arg1: ribo_count_matrix
+  arg2: rna_count_matrix
+  arg3: sample_info_file
+  arg4: batch_effect_covariate_flag_yes_1_no_0
+output:
+  result_directory:
+    location: sample_data/Results
+    required: true
+  dteg_result_table:
+    required: true
+  rdata:
+    required: optional

@@ -29,6 +29,19 @@ python -m paper2skill.cli validate --skill .agents/skills/toy-python-skill
 python -m paper2skill.cli test --skill .agents/skills/toy-python-skill --mode all
 ```
 
+Development quality gates:
+
+```bash
+python -m pytest -q -m "not benchmark"
+python -m pytest -q -m benchmark tests/benchmarks
+python -m pytest -q
+```
+
+Benchmark-driven development for real-world cases is documented in
+[`docs/benchmark.md`](docs/benchmark.md). The benchmark framework is organized as
+a five-level pyramid: L0 package/safety validation, L1 static extraction, L2
+official examples, L3 new-data validation, and L4 agentic safe-use tasks.
+
 Minimal end-to-end build from paper and repository inputs:
 
 ```bash
@@ -127,14 +140,15 @@ Experimental:
 - Adapter-based execution scaffolding.
 - R/Bioconductor metadata hints from DESCRIPTION, NAMESPACE, and R source.
 - IPython notebook shell/cell magic, parameter, path, and risk detection.
-- Mini offline bioinformatics benchmark coverage for Scanpy, Seurat, DESeq2-like, CLI, and workflow-engine repository shapes.
+- Optional offline benchmark coverage for synthetic and real omics algorithm paper, repository, and tutorial shapes.
+- Five-level benchmark evaluation with opt-in downloads/execution for reviewed examples.
 
 Not yet:
 
-- Robust large benchmark coverage.
+- Broad large-data benchmark coverage against real-world repository diversity.
 - Complete online Bioconductor metadata resolution.
 - CUDA/system library automatic configuration.
-- Large dataset download automation.
+- Default-on large dataset download automation.
 - Arbitrary install script execution.
 - Fully automatic real algorithm execution for unknown repositories. Unknown adapters stay `candidate` or `blocked`; only `ready`, `reviewed`, or `verified` adapters execute.
 
@@ -147,7 +161,7 @@ toy Python and toy R examples are intended as L2 demo-executable examples.
 ## Roadmap
 
 - MVP: Codex Skill generation for Python and R algorithm repositories.
-- Next: benchmark suite for Scanpy, Seurat, and DESeq2-style workflows.
+- Next: broader benchmark suite for omics algorithm paper, repository, and tutorial evidence shapes.
 - Later: optional MCP export.
 - Later: optional Codex plugin packaging.
 - Out of scope for MVP: GPU/CUDA auto-configuration, large dataset download,

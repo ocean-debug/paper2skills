@@ -1,0 +1,19 @@
+required_files:
+- SKILL.md
+- scripts/preflight.py
+- scripts/plan.py
+- scripts/run.py
+- scripts/validate_outputs.py
+- references/io_contract.yaml
+- references/bio_contract.yaml
+- references/workflow_dag.json
+- references/adapter_spec.yaml
+- references/adapter_review.yaml
+- references/notebook_execution_policy.json
+- references/evidence_graph.json
+adapter_lifecycle:
+  candidate_not_executable: true
+notebook_policy:
+  unknown_notebooks_executable: false
+install_policy:
+  auto_install_without_confirmation: false

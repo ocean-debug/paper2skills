@@ -1,0 +1,14 @@
+high_priority_sources:
+- repo_readme
+- Rscript CLI source
+- paper_protocol
+required_claims_with_evidence:
+- raw Ribo-seq count matrix required
+- raw RNA-seq count matrix required
+- normalized or batch-corrected input should not be used
+- sample info required columns
+- sample information file follows the same sample order as count matrices
+- Rscript CLI positional arguments
+- Rscript --vanilla DTEG.R ribo_counts.txt rna_counts.txt sample_info.txt 1
+- DESeq2 and ggplot2 library dependencies
+- sample_data/Results output directory

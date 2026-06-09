@@ -1,0 +1,28 @@
+valid_inputs:
+- input_id: synthetic_ifnb_anndata
+  workflow_id: perturbation_prediction_ifnb
+  input_manifest:
+    format: h5ad
+    matrix_state: normalized
+    metadata:
+      condition_key: condition
+      cell_type_key: cell_type
+  expected_behavior: blocked_until_reviewed
+  expected_validation: pass
+invalid_inputs:
+- input_id: missing_condition_key
+  workflow_id: perturbation_prediction_ifnb
+  input_manifest:
+    validation_errors:
+    - missing condition_key
+  expected_behavior: block
+  expected_reason_contains:
+  - condition_key
+- input_id: missing_cell_type_key
+  workflow_id: perturbation_prediction_ifnb
+  input_manifest:
+    validation_errors:
+    - missing cell_type
+  expected_behavior: block
+  expected_reason_contains:
+  - cell_type

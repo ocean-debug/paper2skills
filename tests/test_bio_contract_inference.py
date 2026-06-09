@@ -104,3 +104,96 @@ def test_bio_contract_adds_bulk_rna_seq_modality_contract():
     assert bulk["input_state"]["matrix_state"]["value"] == "raw_counts"
     assert bulk["metadata"]["condition_key"]["value"] == "condition"
     assert bulk["statistical"]["design_formula"]["value"] == "~ condition"
+
+
+def test_bio_contract_adds_perturb_seq_and_ribo_rna_metadata_contracts():
+    perturb_trace = {
+        "workflow_steps": [
+            {
+                "step_id": "tutorial_001:cell_001",
+                "evidence_id": "tutorial.ipynb:cell:1",
+                "code_preview": "Perturb-seq AnnData uses adata.obs['condition'] and adata.obs['cell_type'] for gene perturbation prediction",
+                "command_or_code": "adata.obs['condition']; adata.obs['cell_type']",
+                "function_calls": [],
+            }
+        ]
+    }
+    ribo_trace = {
+        "workflow_steps": [
+            {
+                "step_id": "tutorial_001:cell_001",
+                "evidence_id": "tutorial.ipynb:cell:1",
+                "code_preview": "Ribo-seq and RNA-seq raw count matrix uses SampleID, Condition, SeqType, and Batch columns",
+                "command_or_code": "raw count matrix SampleID Condition SeqType Batch",
+                "function_calls": [],
+            }
+        ]
+    }
+
+    perturb = infer_bio_contract(perturb_trace, paper_sections=[])["bio_contract"]
+    ribo = infer_bio_contract(ribo_trace, paper_sections=[])["bio_contract"]
+
+    assert perturb["modality"]["primary"]["value"] == "perturb-seq"
+    assert perturb["modality_contracts"]["perturb_seq"]["metadata"]["condition_key"]["value"] == "condition"
+    assert ribo["modality"]["primary"]["value"] == "Ribo-seq/RNA-seq"
+    assert ribo["modality_contracts"]["ribo_rna_seq"]["metadata"]["seqtype_key"]["value"] == "SeqType"
+
+
+def test_bio_contract_infers_augur_like_preprocessed_scrna_constraints():
+    trace = {
+        "workflow_steps": [
+            {
+                "step_id": "README.md:section:usage",
+                "evidence_id": "README.md:section:usage",
+                "code_preview": (
+                    "calculate_auc takes a preprocessed features-by-cells "
+                    "(genes-by-cells for scRNA-seq) matrix and metadata. "
+                    "If batch effects are present, these should be accounted for. "
+                    "calculate_auc(expr, meta, cell_type_col = \"cell.type\", label_col = \"condition\")"
+                ),
+                "command_or_code": "augur = calculate_auc(expr, meta, cell_type_col = \"cell.type\", label_col = \"condition\")",
+                "function_calls": ["calculate_auc"],
+            }
+        ]
+    }
+
+    bio = infer_bio_contract(trace, paper_sections=[])["bio_contract"]
+
+    assert bio["modality"]["primary"]["value"] == "scRNA-seq"
+    assert bio["input_matrix_state"]["preprocessed_required"]["value"] is True
+    assert bio["input_matrix_state"]["raw_counts_required"]["value"] is False
+    assert bio["input_matrix_state"]["batch_effects_accounted_for"]["value"] is True
+    assert bio["metadata_requirements"]["celltype_key"]["value"] == "cell_type"
+    assert "cell.type" in bio["metadata_requirements"]["celltype_key"]["aliases"]
+    assert bio["metadata_requirements"]["condition_key"]["value"] == "condition"
+
+
+def test_bio_contract_prefers_paired_ribo_rna_over_bulk_and_handles_negated_normalization():
+    trace = {
+        "workflow_steps": [
+            {
+                "step_id": "README.md:section:inputs",
+                "evidence_id": "README.md:section:inputs",
+                "code_preview": (
+                    "Calculating DTEGs requires count matrices for both Ribo-seq and RNA-seq. "
+                    "These should be raw counts, not normalized or batch corrected. "
+                    "Each row is a gene and each column is a sample. "
+                    "SampleID Condition SeqType Batch. DESeq2 is used downstream."
+                ),
+                "command_or_code": "Rscript --vanilla DTEG.R ribo_counts.txt rna_counts.txt sample_info.txt 1",
+                "function_calls": ["Rscript", "DESeq2::DESeqDataSetFromMatrix"],
+            }
+        ]
+    }
+
+    bio = infer_bio_contract(trace, paper_sections=[])["bio_contract"]
+
+    assert bio["modality"]["primary"]["value"] == "Ribo-seq/RNA-seq"
+    assert bio["input_matrix_state"]["raw_counts_required"]["value"] is True
+    assert bio["input_matrix_state"]["normalized_allowed"]["value"] is False
+    assert bio["input_matrix_state"]["normalized_input_disallowed"]["value"] is True
+    assert bio["input_matrix_state"]["batch_corrected_input_disallowed"]["value"] is True
+    ribo = bio["modality_contracts"]["ribo_rna_seq"]
+    assert ribo["metadata"]["sample_key"]["value"] == "sample"
+    assert "SampleID" in ribo["metadata"]["sample_key"]["aliases"]
+    assert ribo["metadata"]["seqtype_key"]["value"] == "SeqType"

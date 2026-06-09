@@ -1,0 +1,42 @@
+nodes:
+- id: load_library
+  type: load_package
+  expected_calls:
+  - library(Augur)
+- id: load_input_matrix_and_metadata
+  type: load_data
+  expected_inputs:
+  - expr
+  - meta
+  expected_state:
+    matrix_orientation: features_by_cells
+    matrix_semantics: genes_by_cells_scRNA_seq
+- id: validate_metadata
+  type: input_validation
+  expected_metadata:
+  - cell.type
+  - cell_type
+  - condition
+  - label
+- id: run_calculate_auc
+  type: model_training_or_scoring
+  expected_calls:
+  - calculate_auc
+  - calculate_auc(expr, meta, cell_type_col = "cell.type", label_col = "condition")
+  - calculate_auc(sc)
+  expected_inputs:
+  - expr_or_seurat_object
+  - meta
+  - cell_type_col
+  - label_col
+  output_objects:
+  - augur
+- id: extract_auc
+  type: output_extraction
+  expected_outputs:
+  - augur$AUC
+edges:
+- load_library -> load_input_matrix_and_metadata
+- load_input_matrix_and_metadata -> validate_metadata
+- validate_metadata -> run_calculate_auc
+- run_calculate_auc -> extract_auc

@@ -1,0 +1,11 @@
+status: needs_review
+notes:
+  - category: io_alias
+    reason: Gold accepts AnnData, GEARS PertData, and preprocessed package datasets; generated evidence may surface h5ad or package dataset paths.
+    action: Keep aliases explicit and verify that scoring treats equivalent representations fairly.
+  - category: workflow_granularity
+    reason: Data split, dataloader, model initialization, and checkpoint steps may be spread across demos and package APIs.
+    action: Confirm whether API-level evidence can satisfy workflow gold when tutorials are sparse.
+  - category: dependency_contract
+    reason: PyG prerequisites may be transitive or documented outside direct dependency files.
+    action: Verify whether PyG should remain required, optional, or evidence expectation only.

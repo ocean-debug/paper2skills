@@ -1,0 +1,24 @@
+language:
+  python: true
+  r: false
+python_required:
+- cell-gears
+- torch
+- torch-geometric
+- scanpy
+- anndata
+python_optional:
+- numpy
+- pandas
+- scipy
+install_evidence:
+  pip:
+  - pip install cell-gears
+  prerequisite:
+  - Install PyG
+system_or_hardware:
+  gpu_optional: true
+  cuda_optional: true
+expected_dependency_metrics:
+  required_dependency_recall_min: 0.75
+  pyg_detection_required: true

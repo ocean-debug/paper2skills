@@ -1,0 +1,5 @@
+cell,batch,cell_type
+cell_1,batch1,T_cell
+cell_2,batch1,T_cell
+cell_3,batch2,B_cell
+cell_4,batch2,B_cell

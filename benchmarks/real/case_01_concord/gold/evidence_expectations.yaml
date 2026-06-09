@@ -1,0 +1,10 @@
+high_priority_sources:
+- official_documentation
+- repo_readme
+- tutorial_code
+required_claims_with_evidence:
+- package_installation
+- AnnData_input
+- normalization_and_log1p
+- fit_transform_output_to_adata_obsm
+- optional_gpu_or_cuda_dependency

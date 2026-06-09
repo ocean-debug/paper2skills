@@ -1,0 +1,38 @@
+primary_input:
+  accepted_objects:
+  - genes_by_cells_matrix
+  - features_by_cells_matrix
+  - Seurat_object
+  - monocle3_object
+  - SingleCellExperiment_object
+  matrix_orientation:
+    expected: features_by_cells
+  matrix_state:
+    expected: preprocessed
+    raw_counts_required: false
+metadata:
+  cell_type_key:
+    required: true
+    defaults:
+    - cell.type
+    - cell_type
+    override_arg: cell_type_col
+  label_key:
+    required: true
+    defaults:
+    - condition
+    - label
+    override_arg: label_col
+    semantic: sample_or_condition_label_to_predict
+  seurat_meta_data:
+    container: sc@meta.data
+    required_columns:
+    - cell_type
+    - label
+output:
+  auc_table:
+    location: augur$AUC
+    columns:
+    - cell_type
+    - auc
+    required: true
