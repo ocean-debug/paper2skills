@@ -70,6 +70,15 @@ def run_real_benchmark(
     l2_mode: str = "dry_run",
     allow_install: str = "none",
     install_env: str | None = None,
+    create_conda_env: bool = False,
+    python_version: str = "3.11",
+    env_rebuilder: str = "legacy",
+    target_env_mode: str = "new",
+    allow_github_install: str = "ask",
+    gpu_policy: str = "optional",
+    torch_backend: str = "auto",
+    repair_attempts: int = 0,
+    export_lock: bool = False,
     builder: Builder = build_context,
     generator: Generator = generate_skill,
     evaluator: Evaluator = evaluate_case,
@@ -91,6 +100,15 @@ def run_real_benchmark(
                 l2_mode=l2_mode,
                 allow_install=allow_install,
                 install_env=install_env,
+                create_conda_env=create_conda_env,
+                python_version=python_version,
+                env_rebuilder=env_rebuilder,
+                target_env_mode=target_env_mode,
+                allow_github_install=allow_github_install,
+                gpu_policy=gpu_policy,
+                torch_backend=torch_backend,
+                repair_attempts=repair_attempts,
+                export_lock=export_lock,
                 builder=builder,
                 generator=generator,
                 evaluator=evaluator,
@@ -129,6 +147,15 @@ def run_one_case(
     l2_mode: str,
     allow_install: str,
     install_env: str | None,
+    create_conda_env: bool,
+    python_version: str,
+    env_rebuilder: str,
+    target_env_mode: str,
+    allow_github_install: str,
+    gpu_policy: str,
+    torch_backend: str,
+    repair_attempts: int,
+    export_lock: bool,
     builder: Builder,
     generator: Generator,
     evaluator: Evaluator,
@@ -163,7 +190,16 @@ def run_one_case(
                 allow_execution=allow_execution,
                 l2_mode=l2_mode,
                 allow_install=allow_install,
-                install_env=install_env,
+                install_env=install_env or default_l2_env(case_id),
+                create_conda_env=create_conda_env,
+                python_version=python_version,
+                env_rebuilder=env_rebuilder,
+                target_env_mode=target_env_mode,
+                allow_github_install=allow_github_install,
+                gpu_policy=gpu_policy,
+                torch_backend=torch_backend,
+                repair_attempts=repair_attempts,
+                export_lock=export_lock,
             )
         except TypeError:
             evaluation = evaluator(case_dir, skill_dir / "references")
@@ -183,6 +219,10 @@ def language_value(value: Any) -> str | None:
     if text == "r":
         return "r"
     return None
+
+
+def default_l2_env(case_id: str) -> str:
+    return f"p2s_l2_{case_id}"
 
 
 def public_case_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -230,8 +270,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-download-mb", type=float, default=0.0, help="Maximum download size for entries without a tighter limit")
     parser.add_argument("--allow-execution", default="reviewed_only", choices=["none", "reviewed_only", "all"], help="Execution policy for L2/L3")
     parser.add_argument("--l2-mode", default="dry_run", choices=["dry_run", "data_smoke", "live_execute"], help="L2 depth: dry_run, data_smoke, or live_execute")
-    parser.add_argument("--allow-install", default="none", choices=["none", "ask"], help="Dependency install policy; 'ask' returns an install approval request instead of installing")
-    parser.add_argument("--install-env", help="Target environment name/path to include in L2 install approval requests")
+    parser.add_argument("--allow-install", default="none", choices=["none", "ask", "approved"], help="Dependency install policy; 'approved' installs into the case env")
+    parser.add_argument("--install-env", help="Target environment name/path; omitted means p2s_l2_<case_id>")
+    parser.add_argument("--create-conda-env", action="store_true", help="Create the target conda env before approved live execution")
+    parser.add_argument("--python-version", default="3.11", help="Python version for --create-conda-env")
+    parser.add_argument("--env-rebuilder", default="legacy", choices=["legacy", "bio"], help="Environment rebuild planner for approved L2 installs")
+    parser.add_argument("--target-env-mode", default="new", choices=["new", "existing"], help="BioEnvRebuilder target mode")
+    parser.add_argument("--allow-github-install", default="ask", choices=["ask", "approved"], help="Whether BioEnvRebuilder may execute GitHub install steps")
+    parser.add_argument("--gpu-policy", default="optional", choices=["required", "optional", "cpu_only"], help="BioEnvRebuilder GPU policy")
+    parser.add_argument("--torch-backend", default="auto", choices=["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128"], help="uv PyTorch backend selection")
+    parser.add_argument("--repair-attempts", type=int, default=0, help="Number of BioEnvRebuilder repair attempts to record/request")
+    parser.add_argument("--export-lock", action="store_true", help="Request lockfile export artifacts after L2 approved installs")
     return parser
 
 
@@ -249,6 +298,15 @@ def main(argv: list[str] | None = None) -> int:
         l2_mode=args.l2_mode,
         allow_install=args.allow_install,
         install_env=args.install_env,
+        create_conda_env=args.create_conda_env,
+        python_version=args.python_version,
+        env_rebuilder=args.env_rebuilder,
+        target_env_mode=args.target_env_mode,
+        allow_github_install=args.allow_github_install,
+        gpu_policy=args.gpu_policy,
+        torch_backend=args.torch_backend,
+        repair_attempts=args.repair_attempts,
+        export_lock=args.export_lock,
     )
     print(json.dumps({"status": result["status"], "case_count": result["case_count"], "failed_case_count": result["failed_case_count"], "summary_path": result["summary_path"]}, ensure_ascii=False))
     return 0

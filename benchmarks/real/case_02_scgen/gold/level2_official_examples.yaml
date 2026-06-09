@@ -147,3 +147,60 @@ official_examples:
     validation: summary_json_exists
   sanity_checks:
   - check: embedding_table_has_cell_and_embedding_columns
+- example_id: scgen_package_live
+  tutorial_id: perturbation_prediction_ifnb
+  workflow_id: perturbation_prediction_ifnb
+  execution_mode: live_execute
+  allow_download: true
+  data_preparation:
+    source: reviewed_tiny_anndata_fixture
+    cache_key: scgen_live_tiny_anndata
+    performed_by: reviewed_adapter
+    notes:
+    - Reviewed adapter constructs a tiny AnnData perturbation fixture and imports the installed scGen package.
+  timeout_seconds: 1800
+  dependencies:
+    allowed_installers: [conda, pip]
+    conda: [numpy, pandas]
+    pip: [scanpy, anndata, scgen]
+  reviewed_adapter:
+    status: verified
+    adapter_type: python_api
+    files:
+    - source: data/official_examples/live/reviewed_python_api_adapter.py
+      target: scripts/adapters/python_api_adapter.py
+    - source: data/official_examples/live/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: python_api
+      status: verified
+      entrypoint: scripts/adapters/python_api_adapter.py
+      module: scripts.adapters.python_api_adapter
+      function: run
+      caveats:
+      - Reviewed live adapter imports the installed scGen package and runs a tiny perturbation workflow.
+    adapter_review:
+      adapter_type: python_api
+      status: verified
+      human_approved: true
+      entrypoint: scripts/adapters/python_api_adapter.py
+      module: scripts.adapters.python_api_adapter
+      function: run
+  input_manifest:
+    inputs:
+      primary_data:
+        path: assets/demo_input.csv
+        exists: true
+      algorithm:
+        mode: live
+        parameters:
+          workflow: perturbation_prediction
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: predicted_response
+    path: results/predicted_response.csv
+    required: true
+  - name: summary
+    path: results/summary.json
+    required: true

@@ -34,7 +34,7 @@ L2_MODE_RANK: Final[dict[str, int]] = {
     "live_execute": 2,
 }
 
-VALID_INSTALL_POLICIES: Final[tuple[str, ...]] = ("none", "ask")
+VALID_INSTALL_POLICIES: Final[tuple[str, ...]] = ("none", "ask", "approved")
 
 VALID_ADAPTER_STATUSES: Final[set[str]] = {
     "demo_only",

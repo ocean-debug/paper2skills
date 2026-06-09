@@ -34,6 +34,7 @@ paper2skill_plan/
 .paper2skill-smoke-leaks.txt
 .paper2skill_desensitize_smoke.sh
 .paper2skills-sync.tar
+.paper2skills-l2-live-sync*.tar
 .paper2skill-resolve/
 .paper2skill_collection/
 

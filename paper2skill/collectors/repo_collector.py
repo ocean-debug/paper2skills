@@ -93,9 +93,21 @@ def clone_repo(repo: str, work_dir: Path, ref: str | None = None) -> Path:
     command.extend([repo, str(dest)])
     result = subprocess.run(command, text=True, capture_output=True, check=False)
     if result.returncode != 0 and ref:
-        subprocess.run(["git", "clone", repo, str(dest)], text=True, capture_output=True, check=True)
-        subprocess.run(["git", "-C", str(dest), "checkout", ref], text=True, capture_output=True, check=True)
+        retry = subprocess.run(["git", "clone", repo, str(dest)], text=True, capture_output=True, check=False)
+        if retry.returncode == 0:
+            checkout = subprocess.run(["git", "-C", str(dest), "checkout", ref], text=True, capture_output=True, check=False)
+            if checkout.returncode == 0:
+                return dest
+        if github_parts(repo):
+            if dest.exists():
+                shutil.rmtree(dest)
+            return download_github_archive(repo, dest, ref)
+        raise RuntimeError(retry.stderr or retry.stdout or result.stderr or result.stdout)
     elif result.returncode != 0:
+        if github_parts(repo):
+            if dest.exists():
+                shutil.rmtree(dest)
+            return download_github_archive(repo, dest, ref)
         raise RuntimeError(result.stderr or result.stdout)
     return dest
 
@@ -127,12 +139,22 @@ def download_github_archive(repo: str, dest: Path, ref: str | None = None) -> Pa
     if not parts:
         raise RuntimeError("git is required to clone non-GitHub remote repositories")
     owner, name = parts
-    branch = ref or github_default_branch(owner, name)
-    archive_url = f"https://codeload.github.com/{owner}/{name}/zip/{branch}"
+    branches = [ref] if ref else ["main", "master", github_default_branch(owner, name)]
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp_zip = dest.parent / f"{dest.name}.zip"
-    with urlopen(archive_url, timeout=120) as response:
-        tmp_zip.write_bytes(response.read())
+    branch = None
+    archive_error: Exception | None = None
+    for candidate in dict.fromkeys(str(item) for item in branches if item):
+        archive_url = f"https://codeload.github.com/{owner}/{name}/zip/{candidate}"
+        try:
+            with urlopen(archive_url, timeout=120) as response:
+                tmp_zip.write_bytes(response.read())
+            branch = candidate
+            break
+        except Exception as exc:  # noqa: BLE001 - try common branch names before failing.
+            archive_error = exc
+    if branch is None:
+        raise RuntimeError(f"could not download GitHub archive for {owner}/{name}: {archive_error}")
     with zipfile.ZipFile(tmp_zip) as archive:
         members = [member for member in archive.infolist() if not member.is_dir()]
         roots = {member.filename.split("/", 1)[0] for member in members if "/" in member.filename}

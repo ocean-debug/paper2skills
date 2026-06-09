@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import shutil
@@ -9,11 +10,18 @@ from typing import Any
 
 import yaml
 
+from paper2skill.common import write_json
 from paper2skill.evaluation.execution.data_manager import prepare_download
+from paper2skill.evaluation.execution.install_approved_plan import build_install_plan, execute_install_plan
 from paper2skill.evaluation.execution.input_validator import validate_input_manifest
 from paper2skill.evaluation.execution.output_validator import validate_expected_outputs
 from paper2skill.evaluation.load_gold import evaluation_result, field_value, finish_result
 from paper2skill.evaluation.schemas import EXECUTABLE_ADAPTER_STATUSES, L2_MODE_RANK
+from paper2skill.env_rebuilder.executor import apply_install_plan as apply_bio_install_plan
+from paper2skill.env_rebuilder.env_paths import conda_env_args, resolve_env_path, uv_python_executable
+from paper2skill.env_rebuilder.lockfile import export_lock_artifacts
+from paper2skill.env_rebuilder.planner import plan_from_install_request
+from paper2skill.env_rebuilder.repair import diagnose_failure
 
 
 def evaluate_official_examples(
@@ -29,9 +37,18 @@ def evaluate_official_examples(
     l2_mode: str = "dry_run",
     allow_install: str = "none",
     install_env: str | None = None,
+    create_conda_env: bool = False,
+    python_version: str = "3.11",
+    env_rebuilder: str = "legacy",
+    target_env_mode: str = "new",
+    allow_github_install: str = "ask",
+    gpu_policy: str = "optional",
+    torch_backend: str = "auto",
+    repair_attempts: int = 0,
+    export_lock: bool = False,
 ) -> dict[str, Any]:
     result = evaluation_result("official_example_execution")
-    examples = gold.get("official_examples") or []
+    examples = selected_examples(gold.get("official_examples") or [], l2_mode)
     if not examples:
         return finish_result(result, {"official_examples_defined": 1.0})
     adapter_status = adapter_status_value(generated)
@@ -51,6 +68,15 @@ def evaluate_official_examples(
             l2_mode=l2_mode,
             allow_install=allow_install,
             install_env=install_env,
+            create_conda_env=create_conda_env,
+            python_version=python_version,
+            env_rebuilder=env_rebuilder,
+            target_env_mode=target_env_mode,
+            allow_github_install=allow_github_install,
+            gpu_policy=gpu_policy,
+            torch_backend=torch_backend,
+            repair_attempts=repair_attempts,
+            export_lock=export_lock,
         )
         reports.append(report)
         scores.append(float(report.get("score", 0.0)))
@@ -77,6 +103,15 @@ def evaluate_one_example(
     l2_mode: str,
     allow_install: str,
     install_env: str | None,
+    create_conda_env: bool,
+    python_version: str,
+    env_rebuilder: str,
+    target_env_mode: str,
+    allow_github_install: str,
+    gpu_policy: str,
+    torch_backend: str,
+    repair_attempts: int,
+    export_lock: bool,
 ) -> dict[str, Any]:
     expected_status = str((example.get("expected_run") or {}).get("expected_status") or "")
     mode = str(example.get("execution_mode") or "blocked_expected")
@@ -139,7 +174,22 @@ def evaluate_one_example(
         actual_status = "input_validation_failed"
         mismatches.append({"field": "input_manifest", "errors": input_validation["errors"]})
     else:
-        execution_report = run_generated_skill(example, skill_dir, l2_mode=l2_mode, allow_install=allow_install, install_env=install_env)
+        execution_report = run_generated_skill(
+            example,
+            skill_dir,
+            l2_mode=l2_mode,
+            allow_install=allow_install,
+            install_env=install_env,
+            create_conda_env=create_conda_env,
+            python_version=python_version,
+            env_rebuilder=env_rebuilder,
+            target_env_mode=target_env_mode,
+            allow_github_install=allow_github_install,
+            gpu_policy=gpu_policy,
+            torch_backend=torch_backend,
+            repair_attempts=repair_attempts,
+            export_lock=export_lock,
+        )
         if expected_status in {"blocked_by_policy_or_success", "success_or_blocked_by_policy"} and execution_report["status"] == "blocked_by_policy":
             output_report = {"passed": True, "missing": []}
             passed = download_report.get("status") != "failed"
@@ -189,10 +239,22 @@ def evaluate_one_example(
     }
 
 
+def selected_examples(examples: list[dict[str, Any]], l2_mode: str) -> list[dict[str, Any]]:
+    if l2_mode == "live_execute":
+        live = [example for example in examples if str(example.get("execution_mode") or "") in {"live_execute", "full"}]
+        return live or examples
+    if l2_mode == "data_smoke":
+        smoke = [example for example in examples if str(example.get("execution_mode") or "") in {"smoke", "data_smoke"}]
+        return smoke or examples
+    return examples
+
+
 def score_l2_example(*, actual_status: str, expected_status: str, mode: str, requested_l2_mode: str) -> tuple[float, str, str]:
     if actual_status == "success":
-        if requested_l2_mode == "live_execute" or mode in {"full", "live_execute"}:
+        if mode in {"full", "live_execute"}:
             return 1.0, "live_execute_success", "live_execute"
+        if requested_l2_mode == "live_execute":
+            return 0.5, "data_smoke_success_when_live_execute_requested", "data_smoke"
         return 1.0, "data_smoke_success", "data_smoke"
     if actual_status == "blocked_by_policy" and expects_policy_block(expected_status):
         return 1.0, "expected_policy_block", "dry_run_policy_block"
@@ -341,6 +403,15 @@ def run_generated_skill(
     l2_mode: str,
     allow_install: str,
     install_env: str | None,
+    create_conda_env: bool,
+    python_version: str,
+    env_rebuilder: str = "legacy",
+    target_env_mode: str = "new",
+    allow_github_install: str = "ask",
+    gpu_policy: str = "optional",
+    torch_backend: str = "auto",
+    repair_attempts: int = 0,
+    export_lock: bool = False,
 ) -> dict[str, Any]:
     if skill_dir is None:
         return {"status": "execution_failed", "reason": "skill_dir missing"}
@@ -352,7 +423,38 @@ def run_generated_skill(
     run_dir.mkdir(parents=True, exist_ok=True)
     try:
         manifest_path = materialize_input_manifest(example.get("input_manifest"), skill_path, run_dir)
-        preflight_report = run_preflight(skill_path, manifest_path, run_dir)
+        install_report = None
+        if allow_install == "approved":
+            declared_request = declared_install_request(example, install_env)
+            install_report = install_approved_dependencies(
+                declared_request,
+                install_env=install_env,
+                skill_dir=skill_path,
+                run_dir=run_dir,
+                create_conda_env=create_conda_env,
+                python_version=python_version,
+                env_rebuilder=env_rebuilder,
+                target_env_mode=target_env_mode,
+                allow_github_install=allow_github_install,
+                gpu_policy=gpu_policy,
+                torch_backend=torch_backend,
+                repair_attempts=repair_attempts,
+                export_lock=export_lock,
+            )
+            if install_report.get("status") in {"approval_required", "blocked_manual"}:
+                return {
+                    "status": "install_approval_required",
+                    "run_dir": str(run_dir),
+                    "install_report": install_report,
+                }
+            if install_report.get("status") != "executed":
+                return {
+                    "status": "install_failed",
+                    "run_dir": str(run_dir),
+                    "install_report": install_report,
+                }
+        runner = command_runner(allow_install=allow_install, install_env=install_env, install_report=install_report)
+        preflight_report = run_preflight(skill_path, manifest_path, run_dir, runner=runner)
         install_request = build_install_request(preflight_report, example, l2_mode, allow_install, install_env)
         if install_request:
             return {
@@ -362,18 +464,29 @@ def run_generated_skill(
                 "install_request": install_request,
             }
         if preflight_report and preflight_report.get("status") == "blocked_by_policy":
+            payload = parse_preflight_stdout(preflight_report.get("stdout"))
+            if allow_install == "approved" and payload.get("status") == "blocked_dependencies_missing":
+                return {
+                    "status": "dependencies_missing_after_install",
+                    "run_dir": str(run_dir),
+                    "preflight": preflight_report,
+                    "install_report": install_report,
+                    "missing_dependencies": dependency_summary(payload),
+                }
             return {
                 "status": "blocked_by_policy",
                 "run_dir": str(run_dir),
                 "preflight": preflight_report,
+                "install_report": install_report,
             }
         if preflight_report and preflight_report.get("status") != "success":
             return {
                 "status": "preflight_failed",
                 "run_dir": str(run_dir),
                 "preflight": preflight_report,
+                "install_report": install_report,
             }
-        command = [sys.executable, str(run_script), "--manifest", str(manifest_path), "--out", str(run_dir)]
+        command = runner([str(run_script), "--manifest", str(manifest_path), "--out", str(run_dir)])
         completed = subprocess.run(command, cwd=skill_path, text=True, capture_output=True, timeout=float(example.get("timeout_seconds") or 600), check=False)
     except subprocess.TimeoutExpired as exc:
         return {"status": "execution_timeout", "run_dir": str(run_dir), "stdout": truncate(exc.stdout), "stderr": truncate(exc.stderr)}
@@ -388,12 +501,264 @@ def run_generated_skill(
     }
     if preflight_report:
         report["preflight"] = preflight_report
-    validator_report = run_output_validator(skill_path, run_dir)
+    if install_report:
+        report["install_report"] = install_report
+    validator_report = run_output_validator(skill_path, run_dir, runner=runner)
     if validator_report:
         report["output_validator"] = validator_report
         if report["status"] == "success" and validator_report.get("status") != "success":
             report["status"] = "output_validation_failed"
     return report
+
+
+def command_runner(*, allow_install: str, install_env: str | None, install_report: dict[str, Any] | None = None):
+    if allow_install == "approved" and install_env:
+        if (install_report or {}).get("env_rebuilder") == "bio":
+            manager = str((install_report or {}).get("manager") or "")
+            python_executable = (install_report or {}).get("python_executable")
+            if manager == "uv" and python_executable:
+                def run_in_uv_env(args: list[str]) -> list[str]:
+                    return [str(python_executable), *args]
+
+                return run_in_uv_env
+
+        def run_in_env(args: list[str]) -> list[str]:
+            return ["conda", "run", *conda_env_args(install_env), "python", *args]
+
+        return run_in_env
+
+    def run_current(args: list[str]) -> list[str]:
+        return [sys.executable, *args]
+
+    return run_current
+
+def install_approved_dependencies(
+    install_request: dict[str, Any],
+    *,
+    install_env: str | None,
+    skill_dir: Path | None = None,
+    run_dir: Path | None = None,
+    create_conda_env: bool,
+    python_version: str,
+    env_rebuilder: str = "legacy",
+    target_env_mode: str = "new",
+    allow_github_install: str = "ask",
+    gpu_policy: str = "optional",
+    torch_backend: str = "auto",
+    repair_attempts: int = 0,
+    export_lock: bool = False,
+) -> dict[str, Any]:
+    if not install_env:
+        return {"status": "invalid", "errors": ["install_env is required for approved installation"]}
+    if env_rebuilder == "bio":
+        try:
+            resolved_env_path = resolve_env_path(install_env, skill_dir)
+            plan = plan_from_install_request(
+                install_request,
+                target=target_env_mode,
+                env=install_env,
+                env_path=resolved_env_path,
+                allow_github_install=allow_github_install,
+                gpu_policy=gpu_policy,
+                torch_backend=torch_backend,
+                python_version=python_version,
+            )
+            if plan.get("status") not in {"ready", "blocked_manual"}:
+                write_bio_install_reports(run_dir, plan=plan, report=plan, repair_attempts=[])
+                return plan
+            if plan.get("status") == "blocked_manual":
+                report = {
+                    "status": "approval_required",
+                    "env_rebuilder": "bio",
+                    "manager": plan.get("manager"),
+                    "resolved_env_path": resolved_env_path,
+                    "python_executable": bio_python_executable(plan, resolved_env_path, install_env),
+                    "install_plan": plan,
+                    "manual_approval_required": True,
+                    "errors": ["BioEnvRebuilder plan contains manual/GitHub steps that are not approved for execution"],
+                }
+                write_bio_install_reports(run_dir, plan=plan, report=report, repair_attempts=[])
+                return report
+            report = apply_bio_install_plan(plan, yes=True)
+            report["env_rebuilder"] = "bio"
+            report["manager"] = plan.get("manager")
+            report["resolved_env_path"] = resolved_env_path
+            report["python_executable"] = bio_python_executable(plan, resolved_env_path, install_env)
+            report["install_plan"] = plan
+            report["manual_approval_required"] = False
+            report["repair_attempts_requested"] = repair_attempts
+            report["export_lock_requested"] = export_lock
+            report["repair_attempts"] = []
+            if report.get("status") == "failed":
+                report["repair_attempts"] = run_repair_attempts(
+                    report,
+                    plan=plan,
+                    requested_attempts=repair_attempts,
+                )
+                successful_retry = next((item for item in reversed(report["repair_attempts"]) if item.get("status_after_retry") == "executed"), None)
+                if successful_retry:
+                    repair_history = report["repair_attempts"]
+                    report.update(successful_retry["retry_report"])
+                    report["repair_attempts"] = repair_history
+            if export_lock:
+                lock_dir = (run_dir or Path(resolved_env_path)) / "lock"
+                report["lock_outputs"] = export_lock_artifacts(
+                    install_env,
+                    lock_dir,
+                    manager=str(plan.get("manager") or ""),
+                    resolved_env_path=resolved_env_path,
+                    python_executable=report.get("python_executable"),
+                )
+            write_bio_install_reports(run_dir, plan=plan, report=report, repair_attempts=report.get("repair_attempts") or [])
+            return report
+        except Exception as exc:  # noqa: BLE001 - evaluator should report structured install failure.
+            return {"status": "invalid", "errors": [str(exc)], "auto_install_performed": False, "env_rebuilder": "bio"}
+    evaluation_stub = {"execution": {"install_request": install_request}}
+    try:
+        plan = build_install_plan(
+            evaluation_stub,
+            install_env=install_env,
+            create_conda_env=create_conda_env,
+            python_version=python_version,
+            override_request_env=True,
+        )
+        if plan.get("status") != "ready":
+            return plan
+        return execute_install_plan(plan, yes=True)
+    except Exception as exc:  # noqa: BLE001 - evaluator should report structured install failure.
+        return {"status": "invalid", "errors": [str(exc)], "auto_install_performed": False}
+
+
+def declared_install_request(example: dict[str, Any], install_env: str | None) -> dict[str, Any]:
+    spec = example.get("dependencies") if isinstance(example.get("dependencies"), dict) else {}
+    python = list(spec.get("pip") or spec.get("python") or spec.get("required_python_packages") or [])
+    conda = list(spec.get("conda") or [])
+    r_packages = list(spec.get("r") or spec.get("cran") or spec.get("bioconductor") or [])
+    r_github = list(spec.get("r_github") or [])
+    allowed = list(spec.get("allowed_installers") or ["conda", "pip", "BiocManager", "install.packages"])
+    return {
+        "status": "approval_required",
+        "target_environment": install_env,
+        "allowed_installers": allowed,
+        "conda_channels": list(spec.get("conda_channels") or spec.get("channels") or []),
+        "conda_packages": sorted(dict.fromkeys(str(item) for item in conda if str(item).strip())),
+        "missing_python_packages": sorted(dict.fromkeys(str(item) for item in python if str(item).strip())),
+        "missing_r_packages": sorted(dict.fromkeys(str(item) for item in r_packages if str(item).strip())),
+        "r_github_packages": sorted(dict.fromkeys(str(item) for item in r_github if str(item).strip())),
+        "missing_executables": list(spec.get("executables") or []),
+        "required_packages": sorted(dict.fromkeys(str(item) for item in [*conda, *python, *r_packages] if str(item).strip())),
+        "safety": {
+            "auto_install_performed": False,
+            "notebook_execution_performed": False,
+            "requires_explicit_user_approval": False,
+            "approved_by_cli": True,
+        },
+    }
+
+
+def bio_python_executable(plan: dict[str, Any], resolved_env_path: str, install_env: str) -> str:
+    manager = str(plan.get("manager") or "")
+    if manager == "uv":
+        return uv_python_executable(resolved_env_path)
+    return "python"
+
+
+def run_repair_attempts(report: dict[str, Any], *, plan: dict[str, Any], requested_attempts: int) -> list[dict[str, Any]]:
+    if requested_attempts <= 0:
+        diagnosis = diagnose_failure(report)
+        return [{"attempt": 0, "status": "diagnosed_only", "diagnosis": diagnosis}]
+    attempts: list[dict[str, Any]] = []
+    current_report = report
+    for attempt_index in range(1, requested_attempts + 1):
+        diagnosis = diagnose_failure(current_report)
+        repair_plan = safe_repair_plan(diagnosis, plan)
+        if not repair_plan.get("commands"):
+            attempts.append({"attempt": attempt_index, "status": "no_safe_auto_repair", "diagnosis": diagnosis, "repair_plan": repair_plan})
+            break
+        repair_report = apply_bio_install_plan(repair_plan, yes=True)
+        retry_report = apply_bio_install_plan(plan, yes=True) if repair_report.get("status") == "executed" else repair_report
+        attempts.append(
+            {
+                "attempt": attempt_index,
+                "status": "retried_safe_repair",
+                "diagnosis": diagnosis,
+                "repair_plan": repair_plan,
+                "repair_report": repair_report,
+                "retry_report": retry_report,
+                "status_after_retry": retry_report.get("status"),
+            }
+        )
+        current_report = retry_report
+        if retry_report.get("status") == "executed":
+            break
+    return attempts
+
+
+def safe_repair_plan(diagnosis: dict[str, Any], original_plan: dict[str, Any]) -> dict[str, Any]:
+    commands = []
+    env = str(original_plan.get("env") or "")
+    for finding in diagnosis.get("findings") or []:
+        mode = finding.get("failure_mode")
+        if mode == "missing_r_package" and finding.get("package"):
+            from paper2skill.env_rebuilder.planner import resolve_r_packages
+
+            resolved = resolve_r_packages([str(finding["package"])])
+            packages = resolved.get("conda_packages") or []
+            if packages:
+                commands.append(
+                    {
+                        "kind": "conda_packages",
+                        "tier": 3,
+                        "installer": "mamba_or_conda",
+                        "packages": packages,
+                        "command": ["mamba", "install", "-y", *conda_env_args(env), "-c", "conda-forge", "-c", "bioconda", *packages],
+                        "fallback_command": ["conda", "install", "-y", *conda_env_args(env), "-c", "conda-forge", "-c", "bioconda", *packages],
+                    }
+                )
+        elif mode == "python_source_build_failure":
+            packages = conda_binary_repair_packages(original_plan)
+            if packages and "conda" in str(original_plan.get("manager") or ""):
+                commands.append(
+                    {
+                        "kind": "conda_packages",
+                        "tier": 3,
+                        "installer": "mamba_or_conda",
+                        "packages": packages,
+                        "command": ["mamba", "install", "-y", *conda_env_args(env), "-c", "conda-forge", *packages],
+                        "fallback_command": ["conda", "install", "-y", *conda_env_args(env), "-c", "conda-forge", *packages],
+                    }
+                )
+    repair_plan = dict(original_plan)
+    repair_plan["status"] = "ready" if commands else "blocked_manual"
+    repair_plan["commands"] = commands
+    repair_plan["repair_of"] = "install_failure"
+    repair_plan["manual_approval_required"] = not bool(commands)
+    return repair_plan
+
+
+def conda_binary_repair_packages(plan: dict[str, Any]) -> list[str]:
+    from paper2skill.env_rebuilder.planner import CONDA_BINARY_PYTHON
+
+    packages: list[str] = []
+    for command in plan.get("commands") or []:
+        if command.get("installer") != "uv":
+            continue
+        for package in command.get("packages") or []:
+            name = re.split(r"[<>=!~]", str(package), maxsplit=1)[0].strip().lower()
+            if name in CONDA_BINARY_PYTHON:
+                packages.append(str(package))
+    return sorted(dict.fromkeys(packages))
+
+
+def write_bio_install_reports(run_dir: Path | None, *, plan: dict[str, Any], report: dict[str, Any], repair_attempts: list[dict[str, Any]]) -> None:
+    if run_dir is None:
+        return
+    try:
+        write_json(run_dir / "install_plan.json", plan)
+        write_json(run_dir / "env_rebuild_report.json", report)
+        write_json(run_dir / "repair_attempts.json", {"status": "recorded", "attempts": repair_attempts})
+    except OSError:
+        return
 
 
 def mode_allowed(example_mode: str, requested_mode: str) -> bool:
@@ -478,13 +843,14 @@ def missing_package_names(packages: Any) -> list[str]:
     )
 
 
-def run_preflight(skill_path: Path, manifest_path: Path, run_dir: Path) -> dict[str, Any] | None:
+def run_preflight(skill_path: Path, manifest_path: Path, run_dir: Path, *, runner=None) -> dict[str, Any] | None:
     preflight = skill_path / "scripts" / "preflight.py"
     if not preflight.exists():
         return None
+    runner = runner or (lambda args: [sys.executable, *args])
     try:
         completed = subprocess.run(
-            [sys.executable, str(preflight), "--manifest", str(manifest_path), "--out", str(run_dir)],
+            runner([str(preflight), "--manifest", str(manifest_path), "--out", str(run_dir)]),
             cwd=skill_path,
             text=True,
             capture_output=True,
@@ -518,13 +884,14 @@ def materialize_input_manifest(input_manifest: Any, skill_path: Path, run_dir: P
     return manifest_path
 
 
-def run_output_validator(skill_path: Path, run_dir: Path) -> dict[str, Any] | None:
+def run_output_validator(skill_path: Path, run_dir: Path, *, runner=None) -> dict[str, Any] | None:
     validator = skill_path / "scripts" / "validate_outputs.py"
     if not validator.exists():
         return None
+    runner = runner or (lambda args: [sys.executable, *args])
     try:
         completed = subprocess.run(
-            [sys.executable, str(validator), "--result", str(run_dir)],
+            runner([str(validator), "--result", str(run_dir)]),
             cwd=skill_path,
             text=True,
             capture_output=True,

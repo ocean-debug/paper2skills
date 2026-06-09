@@ -1,0 +1,197 @@
+{
+  "install_policy": "never",
+  "python": {
+    "packages": []
+  },
+  "r": {
+    "required": true,
+    "packages": [
+      {
+        "name": "Augur",
+        "source": "GitHub",
+        "required": true
+      },
+      {
+        "name": "dplyr",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "purrr",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "tibble",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "magrittr",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "tester",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "Matrix",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "BiocGenerics",
+        "source": "Bioconductor",
+        "required": true
+      },
+      {
+        "name": "MatrixGenerics",
+        "source": "Bioconductor",
+        "required": true
+      },
+      {
+        "name": "sparseMatrixStats",
+        "source": "Bioconductor",
+        "required": true
+      },
+      {
+        "name": "parsnip",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "recipes",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "rsample",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "yardstick",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "pbmcapply",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "lmtest",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "rlang",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "glmnet",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "randomForest",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "tidyselect",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "ggplot2",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "ggrepel",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "pals",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "scales",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "tidyr",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "viridis",
+        "source": "CRAN",
+        "required": true
+      },
+      {
+        "name": "Rdpack",
+        "source": "CRAN",
+        "required": true
+      }
+    ]
+  },
+  "executables": [
+    {
+      "name": "Rscript",
+      "required": true
+    }
+  ],
+  "conda": {
+    "packages": [
+      "r-base",
+      "git",
+      "r-dplyr",
+      "r-purrr",
+      "r-tibble",
+      "r-magrittr",
+      "r-tester",
+      "r-matrix",
+      "bioconductor-biocgenerics",
+      "bioconductor-matrixgenerics",
+      "bioconductor-sparsematrixstats",
+      "r-parsnip",
+      "r-recipes",
+      "r-rsample",
+      "r-yardstick",
+      "r-pbmcapply",
+      "r-lmtest",
+      "r-rlang",
+      "r-glmnet",
+      "r-randomforest",
+      "r-tidyselect",
+      "r-ggplot2",
+      "r-ggrepel",
+      "r-pals",
+      "r-scales",
+      "r-tidyr",
+      "r-viridis",
+      "r-rdpack",
+      "r-remotes"
+    ]
+  },
+  "system_requirements": [],
+  "external_resources": [],
+  "optional_dependencies": {
+    "python": {},
+    "r": {}
+  },
+  "ignored_dependencies": [],
+  "optional": {
+    "cuda": "record_only",
+    "system_libraries": "record_only",
+    "external_databases": "record_only"
+  }
+}

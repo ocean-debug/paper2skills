@@ -69,3 +69,57 @@ official_examples:
     validation: summary_json_exists
   sanity_checks:
   - check: auc_table_has_cell_type_and_auc_columns
+- example_id: augur_readme_live
+  tutorial_id: readme_demonstration
+  workflow_id: main
+  execution_mode: live_execute
+  allow_download: true
+  data_preparation:
+    source: reviewed_minimal_readme_style_scRNA_fixture
+    cache_key: augur_live_minimal_auc
+    performed_by: reviewed_adapter
+    notes:
+    - Reviewed adapter constructs a minimal genes-by-cells matrix and metadata table following the README Usage API.
+  timeout_seconds: 1800
+  dependencies:
+    allowed_installers: [conda, pip, BiocManager, install.packages, remotes]
+    conda_channels: [conda-forge, bioconda]
+    conda: [r-base, git, r-dplyr, r-purrr, r-tibble, r-magrittr, r-tester, r-matrix, bioconductor-biocgenerics, bioconductor-matrixgenerics, bioconductor-sparsematrixstats, r-parsnip, r-recipes, r-rsample, r-yardstick, r-pbmcapply, r-lmtest, r-rlang, r-glmnet, r-randomforest, r-tidyselect, r-ggplot2, r-ggrepel, r-pals, r-scales, r-tidyr, r-viridis, r-rdpack, r-remotes]
+    r: []
+    r_github: [neurorestore/Augur]
+  reviewed_adapter:
+    status: verified
+    adapter_type: cli
+    files:
+    - source: data/official_examples/live/reviewed_cli_adapter.py
+      target: scripts/adapters/cli_adapter.py
+    - source: data/official_examples/live/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: cli
+      status: verified
+      entrypoint: scripts/adapters/cli_adapter.py
+      command: Rscript Augur live README-style example
+    adapter_review:
+      adapter_type: cli
+      status: verified
+      human_approved: true
+  input_manifest:
+    inputs:
+      primary_data:
+        path: assets/demo_input.csv
+        exists: true
+      algorithm:
+        mode: live
+        parameters:
+          cell_type_col: cell.type
+          label_col: condition
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: augur_auc
+    path: results/augur_auc.csv
+    required: true
+  - name: summary
+    path: results/summary.json
+    required: true

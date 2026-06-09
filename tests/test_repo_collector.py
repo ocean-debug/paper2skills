@@ -100,3 +100,45 @@ def test_collect_repo_falls_back_to_github_archive_when_git_missing(tmp_path: Pa
     assert result["manifest"]["clone_status"] == "cloned"
     paths = {item["path"] for item in result["index"]["files"]}
     assert paths == {"README.md", "docs/tutorial.md"}
+
+
+def test_collect_repo_falls_back_to_github_archive_when_git_clone_fails(tmp_path: Path, monkeypatch):
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("demo-main/README.md", "# Demo\n")
+    zip_bytes = zip_buffer.getvalue()
+
+    class FakeResponse:
+        def __init__(self, payload: bytes):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return self.payload
+
+    def fake_urlopen(url: str, timeout: int):
+        if url == "https://codeload.github.com/acme/demo/zip/main":
+            return FakeResponse(zip_bytes)
+        if url.endswith("/repos/acme/demo"):
+            return FakeResponse(json.dumps({"default_branch": "main"}).encode())
+        if url.endswith("/git/ref/heads/main"):
+            return FakeResponse(json.dumps({"object": {"sha": "abc1234"}}).encode())
+        raise AssertionError(url)
+
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 128, stdout="", stderr="clone failed")
+
+    monkeypatch.setattr(repo_collector.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(repo_collector.subprocess, "run", fake_run)
+    monkeypatch.setattr(repo_collector, "urlopen", fake_urlopen)
+
+    result = collect_repo("https://github.com/acme/demo", ref=None, work_dir=tmp_path / "bundle")
+
+    assert result["exists"] is True
+    assert result["manifest"]["commit_sha"] == "abc1234"
+    assert {item["path"] for item in result["index"]["files"]} == {"README.md"}

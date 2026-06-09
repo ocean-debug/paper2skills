@@ -79,3 +79,60 @@ official_examples:
     validation: summary_json_exists
   sanity_checks:
   - check: prediction_table_has_gene_and_predicted_expression_columns
+- example_id: gears_package_live
+  tutorial_id: demo_index
+  workflow_id: gears_pipeline
+  execution_mode: live_execute
+  allow_download: true
+  data_preparation:
+    source: reviewed_tiny_perturbseq_fixture
+    cache_key: gears_live_tiny_perturbseq
+    performed_by: reviewed_adapter
+    notes:
+    - Reviewed adapter constructs a tiny perturb-seq-like AnnData fixture and imports installed GEARS classes.
+  timeout_seconds: 2400
+  dependencies:
+    allowed_installers: [conda, pip]
+    conda: [numpy, pandas]
+    pip: [scanpy, anndata, torch, cell-gears]
+  reviewed_adapter:
+    status: verified
+    adapter_type: python_api
+    files:
+    - source: data/official_examples/live/reviewed_python_api_adapter.py
+      target: scripts/adapters/python_api_adapter.py
+    - source: data/official_examples/live/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: python_api
+      status: verified
+      entrypoint: scripts/adapters/python_api_adapter.py
+      module: scripts.adapters.python_api_adapter
+      function: run
+      caveats:
+      - Reviewed live adapter imports installed GEARS classes and produces a deterministic tiny perturbation prediction table.
+    adapter_review:
+      adapter_type: python_api
+      status: verified
+      human_approved: true
+      entrypoint: scripts/adapters/python_api_adapter.py
+      module: scripts.adapters.python_api_adapter
+      function: run
+  input_manifest:
+    inputs:
+      primary_data:
+        path: assets/demo_input.csv
+        exists: true
+      algorithm:
+        mode: live
+        parameters:
+          perturbation_query: [CBL, CNN1]
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: perturbation_prediction
+    path: results/perturbation_prediction.csv
+    required: true
+  - name: summary
+    path: results/summary.json
+    required: true

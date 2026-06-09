@@ -6,7 +6,7 @@ import json
 import yaml
 
 from paper2skill.evaluation.evaluate_case import evaluate_case, main
-from paper2skill.evaluation.summarize_benchmark import main as summarize_main
+from paper2skill.evaluation.summarize_benchmark import format_l2_status, main as summarize_main
 
 
 def write_case(root: Path) -> Path:
@@ -97,3 +97,27 @@ def test_summarize_benchmark_cli_writes_markdown_and_json(tmp_path: Path):
     assert summary["case_count"] == 1
     assert summary["average_score"] == 91.5
     assert summary["cases"][0]["l2_summary"]["execution_depth_counts"] == {"data_smoke": 1}
+
+
+def test_l2_summary_distinguishes_smoke_fallback_from_live_success():
+    result = {
+        "level_results": {
+            "L2": {
+                "evaluators": {
+                    "official_example_execution": {
+                        "l2_summary": {
+                            "status_counts": {"success": 1},
+                            "execution_depth_counts": {"data_smoke": 1},
+                            "score_reasons": {"data_smoke_success_when_live_execute_requested": 1},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    status = format_l2_status(result)
+
+    assert "smoke_only_when_live_requested 1" in status
+    assert "live_execute success" not in status
+    assert "data_smoke success" not in status

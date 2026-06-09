@@ -112,6 +112,8 @@ def legacy_l1_score(item: dict[str, Any]) -> float:
     levels = item.get("level_results") or {}
     if "L1" in levels:
         return float(levels["L1"].get("score", 0.0))
+    if "score_by_level" in item:
+        return 0.0
     return float(item.get("score", 0.0))
 
 
@@ -128,17 +130,25 @@ def format_l2_status(item: dict[str, Any]) -> str:
         return "n/a"
     counts = summary.get("execution_depth_counts") or {}
     status_counts = summary.get("status_counts") or {}
+    reason_counts = summary.get("score_reasons") or {}
     parts = []
     if counts.get("live_execute"):
         parts.append(f"live_execute success {counts['live_execute']}")
-    if counts.get("data_smoke"):
-        parts.append(f"data_smoke success {counts['data_smoke']}")
+    smoke_fallback = int(reason_counts.get("data_smoke_success_when_live_execute_requested") or 0)
+    if smoke_fallback:
+        parts.append(f"smoke_only_when_live_requested {smoke_fallback}")
+    data_smoke = max(0, int(counts.get("data_smoke") or 0) - smoke_fallback)
+    if data_smoke:
+        parts.append(f"data_smoke success {data_smoke}")
     if counts.get("dry_run_policy_block"):
         parts.append(f"policy_block {counts['dry_run_policy_block']}")
     if counts.get("dry_run_skip"):
         parts.append(f"dry_run skip {counts['dry_run_skip']}")
     if status_counts.get("install_approval_required"):
         parts.append(f"install_approval {status_counts['install_approval_required']}")
+    for status in ["install_failed", "dependencies_missing_after_install", "preflight_failed", "execution_failed", "execution_timeout", "output_validation_failed"]:
+        if status_counts.get(status):
+            parts.append(f"{status} {status_counts[status]}")
     if not parts:
         parts.extend(f"{key} {value}" for key, value in sorted(status_counts.items()))
     return ", ".join(parts) if parts else "n/a"

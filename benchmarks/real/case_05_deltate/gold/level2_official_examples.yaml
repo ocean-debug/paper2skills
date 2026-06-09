@@ -75,3 +75,56 @@ official_examples:
     path: results/summary.json
     required: true
     validation: result_directory_exists
+- example_id: deltate_sample_data_live
+  tutorial_id: readme
+  workflow_id: dteg_cli
+  execution_mode: live_execute
+  allow_download: true
+  data_preparation:
+    source: https://github.com/SGDDNB/translational_regulation/tree/master/sample_data
+    cache_key: translational_regulation_sample_data
+    performed_by: reviewed_adapter
+    notes:
+    - Reviewed adapter clones the official repository and runs DTEG.R on official sample_data; no notebook execution.
+  timeout_seconds: 2400
+  dependencies:
+    allowed_installers: [conda, pip, BiocManager, install.packages]
+    conda_channels: [conda-forge, bioconda]
+    conda: [r-base, git, bioconductor-deseq2, bioconductor-apeglm, r-ggplot2]
+    r: []
+  reviewed_adapter:
+    status: verified
+    adapter_type: cli
+    files:
+    - source: data/official_examples/live/reviewed_cli_adapter.py
+      target: scripts/adapters/cli_adapter.py
+    - source: data/official_examples/live/reviewed_environment_spec.json
+      target: assets/environment_spec.yaml
+    adapter_spec:
+      adapter_type: cli
+      status: verified
+      entrypoint: scripts/adapters/cli_adapter.py
+      command: Rscript --vanilla DTEG.R official sample_data
+    adapter_review:
+      adapter_type: cli
+      status: verified
+      human_approved: true
+  input_manifest:
+    inputs:
+      primary_data:
+        path: assets/demo_input.csv
+        exists: true
+      algorithm:
+        mode: live
+        parameters:
+          condition_col: Condition
+          seq_type_col: SeqType
+  expected_run:
+    expected_status: success
+  expected_outputs:
+  - name: deltaTE results
+    path: Results
+    required: true
+  - name: summary
+    path: results/summary.json
+    required: true

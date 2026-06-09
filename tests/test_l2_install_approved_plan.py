@@ -20,7 +20,8 @@ def evaluation_with_install_request() -> dict:
                                     "install_request": {
                                         "status": "approval_required",
                                         "target_environment": "paper2skill-l2-demo",
-                                        "allowed_installers": ["pip", "BiocManager"],
+                                        "allowed_installers": ["conda", "pip", "BiocManager"],
+                                        "conda_packages": ["numpy"],
                                         "missing_python_packages": ["anndata"],
                                         "missing_r_packages": ["DESeq2"],
                                         "missing_executables": [],
@@ -42,9 +43,47 @@ def test_build_install_plan_requires_matching_user_environment():
     assert plan["status"] == "ready"
     assert plan["dry_run"] is True
     assert plan["auto_install_performed"] is False
-    assert len(plan["commands"]) == 2
-    assert plan["commands"][0]["command"][:4] == ["conda", "run", "-n", "paper2skill-l2-demo"]
-    assert plan["commands"][1]["installer"] == "BiocManager"
+    assert len(plan["commands"]) == 3
+    assert plan["commands"][0]["kind"] == "conda_packages"
+    assert plan["commands"][1]["command"][:4] == ["conda", "run", "-n", "paper2skill-l2-demo"]
+    assert plan["commands"][2]["installer"] == "BiocManager"
+
+
+def test_build_install_plan_can_create_conda_env():
+    plan = build_install_plan(evaluation_with_install_request(), install_env="paper2skill-l2-demo", create_conda_env=True, python_version="3.11")
+
+    assert plan["status"] == "ready"
+    assert plan["commands"][0]["kind"] == "conda_env_create"
+    assert plan["commands"][0]["command"] == ["conda", "create", "-y", "-n", "paper2skill-l2-demo", "python=3.11", "pip", "r-base"]
+    assert not any(command["kind"] == "conda_packages" and "r-base" in command["packages"] for command in plan["commands"])
+
+
+def test_build_install_plan_accepts_r_github_packages():
+    evaluation = evaluation_with_install_request()
+    request = evaluation["level_results"]["L2"]["evaluators"]["official_example_execution"]["examples"][0]["execution"]["install_request"]
+    request["allowed_installers"].append("remotes")
+    request["r_github_packages"] = ["neurorestore/Augur"]
+
+    plan = build_install_plan(evaluation, install_env="paper2skill-l2-demo")
+
+    assert plan["status"] == "ready"
+    github_commands = [command for command in plan["commands"] if command["kind"] == "r_github_packages"]
+    assert github_commands
+    assert github_commands[0]["packages"] == ["neurorestore/Augur"]
+
+
+def test_build_install_plan_supports_conda_channels():
+    evaluation = evaluation_with_install_request()
+    request = evaluation["level_results"]["L2"]["evaluators"]["official_example_execution"]["examples"][0]["execution"]["install_request"]
+    request["conda_channels"] = ["conda-forge", "bioconda"]
+
+    plan = build_install_plan(evaluation, install_env="paper2skill-l2-demo", create_conda_env=True)
+
+    assert plan["status"] == "ready"
+    assert plan["conda_channels"] == ["conda-forge", "bioconda"]
+    assert "-c" in plan["commands"][0]["command"]
+    assert "conda-forge" in plan["commands"][0]["command"]
+    assert "bioconda" in plan["commands"][1]["command"]
 
 
 def test_build_install_plan_rejects_shared_env_by_default():

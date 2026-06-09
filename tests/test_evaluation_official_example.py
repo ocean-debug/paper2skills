@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
+import paper2skill.evaluation.execution.run_official_example as official_example
 from paper2skill.evaluation.execution.data_manager import prepare_download
 from paper2skill.evaluation.execution.run_official_example import evaluate_official_examples
 
@@ -367,3 +369,327 @@ def test_l2_live_execute_missing_dependencies_returns_install_request(tmp_path: 
     assert request["target_environment"] == "paper2skill-l2-demo"
     assert request["required_packages"] == ["DESeq2"]
     assert request["safety"]["auto_install_performed"] is False
+
+
+def test_l2_live_execute_selects_live_entries_only(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    run_script = scripts / "run.py"
+    run_script.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import argparse",
+                "from pathlib import Path",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--manifest', required=True)",
+                "parser.add_argument('--out', required=True)",
+                "args = parser.parse_args()",
+                "out = Path(args.out)",
+                "out.mkdir(parents=True, exist_ok=True)",
+                "(out / 'live.txt').write_text('ok', encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "smoke",
+                "execution_mode": "smoke",
+                "expected_run": {"expected_status": "success"},
+                "expected_outputs": [{"name": "smoke.txt", "path": "smoke.txt", "required": True}],
+            },
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "expected_run": {"expected_status": "success"},
+                "expected_outputs": [{"name": "live.txt", "path": "live.txt", "required": True}],
+            },
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(gold, generated, skill_dir=tmp_path, l2_mode="live_execute")
+
+    assert result["passed"] is True
+    assert len(result["examples"]) == 1
+    assert result["examples"][0]["example_id"] == "live"
+    assert result["examples"][0]["execution_depth"] == "live_execute"
+
+
+def test_l2_live_request_does_not_count_smoke_fallback_as_live_success(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "run.py").write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "import argparse",
+                "from pathlib import Path",
+                "parser = argparse.ArgumentParser()",
+                "parser.add_argument('--manifest', required=True)",
+                "parser.add_argument('--out', required=True)",
+                "args = parser.parse_args()",
+                "out = Path(args.out)",
+                "out.mkdir(parents=True, exist_ok=True)",
+                "(out / 'smoke.txt').write_text('ok', encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "smoke_only",
+                "execution_mode": "smoke",
+                "expected_run": {"expected_status": "success"},
+                "expected_outputs": [{"name": "smoke", "path": "smoke.txt", "required": True}],
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(gold, generated, skill_dir=tmp_path, l2_mode="live_execute")
+
+    example = result["examples"][0]
+    assert result["passed"] is False
+    assert example["actual_status"] == "success"
+    assert example["execution_depth"] == "data_smoke"
+    assert example["score"] == 0.5
+    assert example["score_reason"] == "data_smoke_success_when_live_execute_requested"
+
+
+def test_l2_live_execute_approved_install_uses_conda_env_runner(tmp_path: Path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "validate_outputs.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    seen_commands = []
+
+    def fake_install(*args, **kwargs):
+        return {"status": "executed", "execution_results": [{"kind": "conda_env_create", "exit_code": 0, "skipped": True}]}
+
+    def fake_run(command, **kwargs):
+        seen_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(official_example, "install_approved_dependencies", fake_install)
+    monkeypatch.setattr(official_example.subprocess, "run", fake_run)
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["conda", "pip"], "conda": ["numpy"], "pip": ["scanpy"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        create_conda_env=True,
+    )
+
+    assert result["passed"] is True
+    assert seen_commands
+    assert all(command[:5] == ["conda", "run", "-n", "p2s_l2_case_demo", "python"] for command in seen_commands)
+    assert result["examples"][0]["execution"]["install_report"]["status"] == "executed"
+
+
+def test_l2_live_execute_approved_install_reports_remaining_missing_dependencies(tmp_path: Path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(2)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit('should not run')\n", encoding="utf-8")
+
+    def fake_install(*args, **kwargs):
+        return {"status": "executed", "execution_results": [{"kind": "python_packages", "exit_code": 0}]}
+
+    def fake_run(command, **kwargs):
+        stdout = (
+            '{"status":"blocked_dependencies_missing",'
+            '"environment":{"python":{"packages":[{"name":"scanpy","required":true,"installed":false}]},'
+            '"r":{"packages":[]},"executables":[]}}'
+        )
+        return subprocess.CompletedProcess(command, 2, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(official_example, "install_approved_dependencies", fake_install)
+    monkeypatch.setattr(official_example.subprocess, "run", fake_run)
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["pip"], "pip": ["scanpy"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+    )
+
+    example = result["examples"][0]
+    assert result["passed"] is False
+    assert example["actual_status"] == "dependencies_missing_after_install"
+    assert example["execution"]["missing_dependencies"]["missing_python_packages"] == ["scanpy"]
+
+
+def test_l2_live_execute_can_use_bio_env_rebuilder(tmp_path: Path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    seen_plan = {}
+    seen_commands = []
+
+    def fake_apply(plan, *, yes):
+        seen_plan.update(plan)
+        return {"status": "executed", "manager": plan["manager"], "execution_results": [{"kind": "uv_venv_create", "exit_code": 0}], "auto_install_performed": True}
+
+    def fake_run(command, **kwargs):
+        seen_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(official_example, "apply_bio_install_plan", fake_apply)
+    monkeypatch.setattr(official_example.subprocess, "run", fake_run)
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["pip"], "pip": ["torch"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        env_rebuilder="bio",
+        torch_backend="cu128",
+        export_lock=True,
+    )
+
+    assert result["passed"] is True
+    assert seen_plan["manager"] == "uv"
+    assert seen_plan["torch_backend"] == "cu128"
+    assert seen_plan["resolved_env_path"] == str(tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo")
+    assert seen_commands
+    expected_python = tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo"
+    assert any(str(command[0]).startswith(str(expected_python)) for command in seen_commands)
+    install_report = result["examples"][0]["execution"]["install_report"]
+    assert install_report["env_rebuilder"] == "bio"
+    assert install_report["resolved_env_path"] == str(expected_python)
+    assert install_report["python_executable"].startswith(str(expected_python))
+    assert install_report["export_lock_requested"] is True
+
+
+def test_l2_bio_env_github_install_unapproved_is_approval_required(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["conda", "remotes"], "r_github": ["owner/pkg"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        env_rebuilder="bio",
+        allow_github_install="ask",
+    )
+
+    example = result["examples"][0]
+    assert result["passed"] is False
+    assert example["actual_status"] == "install_approval_required"
+    assert example["execution"]["install_report"]["status"] == "approval_required"
+    assert example["execution"]["install_report"]["manual_approval_required"] is True
+    assert example["execution"]["install_report"]["resolved_env_path"] == str(tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo")
+
+
+def test_l2_bio_env_failed_install_records_repair_attempt_and_retries(tmp_path: Path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    calls = []
+
+    def fake_apply(plan, *, yes):
+        calls.append(plan)
+        if len(calls) == 1:
+            return {
+                "status": "failed",
+                "execution_results": [{"kind": "conda_packages", "exit_code": 1, "stderr": "there is no package called 'DESeq2'"}],
+            }
+        return {"status": "executed", "execution_results": [{"kind": "conda_packages", "exit_code": 0}]}
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(official_example, "apply_bio_install_plan", fake_apply)
+    monkeypatch.setattr(official_example.subprocess, "run", fake_run)
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["conda"], "r": ["DESeq2"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        env_rebuilder="bio",
+        repair_attempts=1,
+    )
+
+    report = result["examples"][0]["execution"]["install_report"]
+    assert result["passed"] is True
+    assert report["status"] == "executed"
+    assert report["repair_attempts"][0]["status"] == "retried_safe_repair"
+    assert len(calls) == 3
+    assert (tmp_path / ".benchmark" / "l2" / "live" / "repair_attempts.json").exists()
