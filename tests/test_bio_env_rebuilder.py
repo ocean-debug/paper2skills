@@ -261,6 +261,7 @@ def test_cli_scan_plan_repair_and_export_lock_write_json(tmp_path: Path, monkeyp
     assert main(["plan", "--scan", str(scan_out), "--target", "new", "--env", ".venv", "--out", str(plan_out)]) == 0
     assert main(["repair", "--failure-report", str(failure), "--out", str(repair_out)]) == 0
     assert main(["export-lock", "--env", "p2s_l2_demo", "--out", str(tmp_path / "lock"), "--plan-out", str(lock_out)]) == 0
+    assert json.loads(scan_out.read_text(encoding="utf-8"))["status"] == "scanned"
     assert json.loads(plan_out.read_text(encoding="utf-8"))["status"] == "ready"
     assert json.loads(repair_out.read_text(encoding="utf-8"))["status"] == "repair_plan_available"
     assert json.loads(lock_out.read_text(encoding="utf-8"))["status"] == "partial"

@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     out = output_path(args)
     write_json(out, result)
     print(json.dumps({"status": result.get("status"), "out": str(out)}, ensure_ascii=False))
-    return 0 if result.get("status") in {"ready", "blocked_manual", "executed", "exported", "partial", "repair_plan_available", "no_known_repair"} else 1
+    return 0 if result.get("status") in {"scanned", "ready", "blocked_manual", "executed", "exported", "partial", "repair_plan_available", "no_known_repair"} else 1
 
 
 def output_path(args: argparse.Namespace) -> Path:

@@ -54,6 +54,7 @@ def scan_repo(repo: str | Path) -> dict[str, Any]:
     doc_commands = discover_install_commands(root)
     return {
         "schema_version": 1,
+        "status": "scanned",
         "repo": str(root),
         "environment_files": [file_record(path, root) for path in files],
         "lockfiles": [file_record(path, root) for path in files if path.name in LOCKFILE_NAMES],
