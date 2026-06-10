@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+#PBS -N {{ skill_name }}-l2
+#PBS -l nodes=1:ppn=16
+#PBS -j oe
+
+set -euo pipefail
+
+ROOT="${PBS_O_WORKDIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+ENV_NAME="${PAPER2SKILL_ENV_NAME:-{{ skill_name }}-env}"
+MANIFEST="${PAPER2SKILL_MANIFEST:-$ROOT/assets/demo_input_manifest.yaml}"
+OUT="${PAPER2SKILL_OUT:-$ROOT/result}"
+
+if [ -n "${CONDA_SH:-}" ] && [ -f "$CONDA_SH" ]; then
+  # shellcheck source=/dev/null
+  source "$CONDA_SH"
+  conda activate "$ENV_NAME"
+  python "$ROOT/scripts/run.py" --manifest "$MANIFEST" --out "$OUT"
+elif command -v conda >/dev/null 2>&1; then
+  conda run -n "$ENV_NAME" python "$ROOT/scripts/run.py" --manifest "$MANIFEST" --out "$OUT"
+else
+  echo "conda activation failed: set CONDA_SH or put conda on PATH" >&2
+  exit 2
+fi

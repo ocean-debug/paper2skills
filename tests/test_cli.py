@@ -27,6 +27,25 @@ def test_cli_build_toy_python(tmp_path: Path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert (out / "SKILL.md").exists()
     assert (out / "scripts" / "preflight.py").exists()
+    validation = json.loads((out / "build_validation" / "build_validation.json").read_text(encoding="utf-8"))
+    assert validation["validation_depth"] == "dry_run"
+    assert validation["benchmark_score"] is None
+    assert validation["diagnostic_only"] is True
+
+
+def test_cli_build_live_execute_validation_depth_is_nonzero_until_supported(tmp_path: Path):
+    out = tmp_path / "toy-python-skill"
+    result = subprocess.run(
+        [sys.executable, "-m", "paper2skill.cli", "build", "--example", "toy_python", "--out", str(out), "--validation-depth", "live_execute"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    validation = json.loads((out / "build_validation" / "build_validation.json").read_text(encoding="utf-8"))
+    assert validation["status"] == "unsupported"
+    assert "validation_depth_unsupported" in validation["errors"]
 
 
 def test_cli_build_skip_repo_clone_records_warning(tmp_path: Path):
@@ -103,12 +122,12 @@ def test_cli_repo_ref_is_used_for_file_remote_repo(tmp_path: Path):
     repo = tmp_path / "source"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True, text=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, text=True, capture_output=True)
     (repo / "pyproject.toml").write_text("[project]\nname='demo'\nversion='0.1.0'\ndependencies=['scanpy']\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True, text=True, capture_output=True)
-    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, text=True, capture_output=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True).stdout.strip()
     out = tmp_path / "ref-skill"
     result = subprocess.run(
         [

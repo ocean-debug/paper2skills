@@ -12,11 +12,6 @@
         "required": true
       },
       {
-        "name": "apeglm",
-        "source": "Bioconductor",
-        "required": true
-      },
-      {
         "name": "ggplot2",
         "source": "CRAN",
         "required": true
@@ -38,7 +33,6 @@
       "r-base",
       "git",
       "bioconductor-deseq2",
-      "bioconductor-apeglm",
       "r-ggplot2"
     ]
   },

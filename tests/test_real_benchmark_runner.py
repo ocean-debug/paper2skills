@@ -100,6 +100,28 @@ def test_runner_uses_case_specific_l2_env_when_install_env_omitted(tmp_path: Pat
     assert install_envs == {"case_a": "p2s_l2_case_a", "case_b": "p2s_l2_case_b"}
 
 
+def test_runner_defaults_l2_to_live_execute(tmp_path: Path):
+    cases_root = tmp_path / "cases"
+    write_case(cases_root, "case_live")
+    seen = {}
+
+    def fake_builder(**kwargs):
+        return {"skill_name": kwargs["skill_name"]}
+
+    def fake_generator(_context, out_dir):
+        Path(out_dir).mkdir(parents=True)
+        return Path(out_dir)
+
+    def fake_evaluator(case_dir, generated_dir, **kwargs):
+        seen["l2_mode"] = kwargs.get("l2_mode")
+        return {"case_id": Path(case_dir).name, "score": 88.0, "grade": "strong", "passed": True, "generated_dir": str(generated_dir), "category_scores": {}}
+
+    result = run_real_benchmark(cases_root=cases_root, out_root=tmp_path / "generated", builder=fake_builder, generator=fake_generator, evaluator=fake_evaluator)
+
+    assert seen["l2_mode"] == "live_execute"
+    assert result["benchmark_policy"]["l2_requires_live_execute"] is True
+
+
 def test_runner_writes_fail_evaluation_when_build_fails(tmp_path: Path):
     cases_root = tmp_path / "cases"
     write_case(cases_root, "case_fail")

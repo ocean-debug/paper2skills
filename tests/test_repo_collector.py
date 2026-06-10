@@ -14,7 +14,7 @@ from paper2skill.collectors.repo_collector import collect_repo
 
 
 def _git(repo: Path, *args: str) -> None:
-    subprocess.run(["git", "-C", str(repo), *args], check=True, text=True, capture_output=True)
+    subprocess.run(["git", *args], cwd=repo, check=True, text=True, capture_output=True)
 
 
 def test_collect_repo_indexes_local_directory_without_git(tmp_path: Path):
@@ -55,7 +55,7 @@ def test_collect_repo_can_clone_local_remote_and_pin_sha(tmp_path: Path):
     (source / "README.md").write_text("# Demo\n", encoding="utf-8")
     _git(source, "add", ".")
     _git(source, "commit", "-m", "initial")
-    sha = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=source, check=True, text=True, capture_output=True).stdout.strip()
     result = collect_repo(source.as_uri(), work_dir=tmp_path / "bundle", ref=sha)
     assert result["manifest"]["is_remote"] is True
     assert result["manifest"]["commit_sha"] == sha

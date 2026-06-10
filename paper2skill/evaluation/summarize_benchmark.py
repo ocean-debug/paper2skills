@@ -40,7 +40,7 @@ def summarize_results(paths: list[str | Path]) -> str:
     lines.append("")
     lines.append("## L1 Static Components")
     lines.append("")
-    lines.append("| Case | Source | Dependency | Tutorial/Workflow | IO/Bio | Evidence | Adapter | Validation |")
+    lines.append("| Case | Source | Dependency | Tutorial/Workflow | IO/Bio | Evidence | Adapter | Execution Safety |")
     lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
     for item in sorted(results, key=lambda value: str(value.get("case_id", ""))):
         scores = item.get("category_scores") or {}
@@ -53,7 +53,7 @@ def summarize_results(paths: list[str | Path]) -> str:
                 io=float(scores.get("io_bio_contract", 0.0)),
                 ev=float(scores.get("evidence_graph_correctness", 0.0)),
                 ad=float(scores.get("adapter_safety_behavior", 0.0)),
-                val=float(scores.get("generated_skill_validation", 0.0)),
+                val=float(scores.get("execution_safety_plan", scores.get("generated_skill_validation", 0.0))),
             )
         )
     warnings = []
@@ -132,16 +132,25 @@ def format_l2_status(item: dict[str, Any]) -> str:
     status_counts = summary.get("status_counts") or {}
     reason_counts = summary.get("score_reasons") or {}
     parts = []
+    if reason_counts.get("missing_live_official_example_gold"):
+        parts.append(f"missing_live_gold {reason_counts['missing_live_official_example_gold']}")
+    if reason_counts.get("missing_official_example_gold"):
+        parts.append(f"missing_official_gold {reason_counts['missing_official_example_gold']}")
+    if reason_counts.get("missing_selected_official_example_gold"):
+        parts.append(f"missing_selected_official_gold {reason_counts['missing_selected_official_example_gold']}")
     if counts.get("live_execute"):
         parts.append(f"live_execute success {counts['live_execute']}")
-    smoke_fallback = int(reason_counts.get("data_smoke_success_when_live_execute_requested") or 0)
+    smoke_fallback = int(reason_counts.get("data_smoke_success_when_live_execute_requested") or reason_counts.get("data_smoke_success_is_not_live_execute") or 0)
     if smoke_fallback:
         parts.append(f"smoke_only_when_live_requested {smoke_fallback}")
-    data_smoke = max(0, int(counts.get("data_smoke") or 0) - smoke_fallback)
+    diagnostic_smoke = int(reason_counts.get("diagnostic_data_smoke_success_not_benchmark_scoring") or 0)
+    if diagnostic_smoke:
+        parts.append(f"diagnostic_data_smoke {diagnostic_smoke}")
+    data_smoke = max(0, int(counts.get("data_smoke") or 0) - smoke_fallback - diagnostic_smoke)
     if data_smoke:
-        parts.append(f"data_smoke success {data_smoke}")
+        parts.append(f"data_smoke_not_live {data_smoke}")
     if counts.get("dry_run_policy_block"):
-        parts.append(f"policy_block {counts['dry_run_policy_block']}")
+        parts.append(f"policy_block_l4_only {counts['dry_run_policy_block']}")
     if counts.get("dry_run_skip"):
         parts.append(f"dry_run skip {counts['dry_run_skip']}")
     if status_counts.get("install_approval_required"):

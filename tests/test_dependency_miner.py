@@ -284,7 +284,7 @@ stats::p.adjust(res$pvalue)
     assert "stats" not in deps["r"]
 
 
-def test_install_commands_are_recorded_as_optional_dependency_hints(tmp_path):
+def test_install_commands_record_optional_hints_and_explicit_apeglm_requirement(tmp_path):
     (tmp_path / "README.md").write_text(
         """
 # Install
@@ -310,6 +310,7 @@ install.packages("ggplot2")
     assert python_names["scgen"]["required"] is False
     assert r_names["DESeq2"]["required"] is False
     assert r_names["apeglm"]["source"] == "Bioconductor_or_unknown"
+    assert r_names["apeglm"]["required"] is True
     assert r_names["ggplot2"]["required"] is False
 
 
@@ -332,7 +333,7 @@ This method can use PyTorch and FAISS-GPU. AnnData input is supported.
     assert records["anndata"]["required"] is False
 
 
-def test_r_script_qualified_calls_and_apeglm_type_are_dependencies(tmp_path):
+def test_r_script_qualified_calls_are_required_and_apeglm_type_is_optional(tmp_path):
     (tmp_path / "DTEG.R").write_text(
         """
 library(data.table)
@@ -347,6 +348,27 @@ stats::p.adjust(res$pvalue)
     deps = mine_dependencies(tmp_path)
 
     assert "DESeq2" in deps["r"]
-    assert "apeglm" in deps["r"]
     assert "data.table" in deps["r"]
     assert "stats" not in deps["r"]
+    assert "apeglm" not in deps["r"]
+    records = {record["name"]: record for record in deps["r_records"]}
+    assert records["apeglm"]["required"] is False
+    assert records["apeglm"]["category"] == "parameter_hint"
+
+
+def test_required_r_evidence_wins_over_optional_apeglm_parameter_hint(tmp_path):
+    (tmp_path / "a_optional_hint.R").write_text(
+        'res <- lfcShrink(dds, coef = 2, type = "apeglm")\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "z_required_call.R").write_text(
+        "fit <- apeglm::apeglm(...)\n",
+        encoding="utf-8",
+    )
+
+    deps = mine_dependencies(tmp_path)
+
+    assert "apeglm" in deps["r"]
+    records = {record["name"]: record for record in deps["r_records"]}
+    assert records["apeglm"]["required"] is True
+    assert records["apeglm"]["category"] == "runtime"

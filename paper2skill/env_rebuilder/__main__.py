@@ -33,6 +33,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--torch-backend", default="auto", choices=["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128"])
     plan.add_argument("--manager-preference", default="auto", choices=["auto", "uv", "conda"])
     plan.add_argument("--env-base-dir", help="Base directory for resolving bare uv environment names")
+    plan.add_argument("--r-mode", default="conda", choices=["conda", "renv"], help="R resolver mode; renv restore requires --allow-renv-lock")
+    plan.add_argument("--allow-renv-lock", action="store_true", help="Allow renv.lock restore in r-mode=renv")
 
     apply = sub.add_parser("apply", help="Execute an approved BioEnvRebuilder install plan")
     apply.add_argument("--plan", required=True)
@@ -89,6 +91,8 @@ def dispatch(args: argparse.Namespace) -> dict[str, Any]:
             torch_backend=args.torch_backend,
             manager_preference=args.manager_preference,
             env_path=resolve_env_path(args.env, args.env_base_dir) if args.env_base_dir else None,
+            r_mode=args.r_mode,
+            allow_renv=args.allow_renv_lock,
         )
     if args.command == "apply":
         return apply_install_plan(read_json(Path(args.plan)), yes=args.yes)

@@ -98,19 +98,17 @@ leakage.
 
 L1 compares static generated references against gold YAML: source collection,
 dependencies, tutorial/workflow, IO/Bio contracts, evidence, adapter behavior,
-and generated reference presence.
+and execution safety plan. Environment repair plans are build-validation or
+BioEnvRebuilder diagnostics, not L1 score items.
 
-L2 evaluates official examples in explicit depths. `dry_run` is the default and
-does not download data, install packages, or run full example workflows.
-`data_smoke` may use small declared official/minimal data, with downloads still
-guarded by `--allow-download`. `live_execute` is for reviewed full example
-execution. Missing dependencies produce an install approval request; the
-evaluator does not silently install packages. A mode-appropriate dry-run skip is
-reported as safe policy behavior, but it is not scored the same as real
-execution. Example-level reports include `actual_status`, `execution_depth`,
-`score`, and `score_reason` so `skipped_by_l2_mode`, `data_smoke` success, and
-`live_execute` success stay distinct. Correctly blocking execution is a valid
-full-score L2 result only when gold expects a policy block.
+L2 evaluates official examples as real benchmark execution. The benchmark
+default is `live_execute`, and a real L2 pass requires `live_execute_success` on
+an official full example. `dry_run` and `data_smoke` remain useful build-time
+validation or diagnostic modes, but they do not contribute L2 benchmark credit.
+Missing dependencies produce an install approval request; the evaluator does not
+silently install packages. `blocked_by_policy` is evaluated in L4 safety/refusal
+contexts, not as L2 execution success. If a case lacks a live official example
+gold entry, L2 reports `missing_live_official_example_gold`.
 
 L3 evaluates valid new-data behavior and invalid-input rejection. Invalid inputs
 must be blocked before execution and should mention the violated contract field.
@@ -132,15 +130,26 @@ L2/L3 may explicitly download official example data, but downloads are opt-in:
 Downloads are cached and can be size/checksum checked. Unit tests must remain
 offline. Unknown notebooks and install scripts must not execute automatically.
 
-Execution policy is explicit:
+Build-time validation uses explicit self-check depth:
+
+```bash
+python -m paper2skill.cli build \
+  --paper-url ... \
+  --repo ... \
+  --validation-depth dry_run
+```
+
+These self-check depths are not benchmark scoring. Benchmark execution policy is
+explicit and defaults to live official execution:
 
 ```bash
 --l2-mode dry_run|data_smoke|live_execute
 --allow-execution none|reviewed_only|all
 ```
 
-Candidate, blocked, and demo-only adapters are not executable. Correct blocking
-is a valid benchmark success when gold expects blocked behavior.
+Candidate, blocked, and demo-only adapters are not executable. Correct refusal
+is assessed by L4 agentic safety tasks, while L2 remains focused on reviewed
+official example execution.
 
 Dependency installation is separate from downloads and execution:
 
@@ -153,6 +162,14 @@ Dependency installation is separate from downloads and execution:
 `--allow-install ask` returns a structured install approval request with missing
 packages, allowed installers, and the target environment. It does not install
 into the shared environment.
+
+BioEnvRebuilder is the preferred installer for real L2 live execution. It treats
+official `environment.yml` files as upstream evidence, derives
+`assets/env/paper2skill.environment.yml`, keeps lockfile scopes explicit, and
+uses conda/bioconda for compiled Python, R/Bioconductor, CLI, and workflow
+engine packages. `uv` is limited to the pip/PyPI segment. Repair attempts are
+additive or route migrations only, default to three attempts, and only run for
+known route-table or case-gold allowlisted packages.
 
 ## Commands
 
@@ -200,6 +217,22 @@ python -m paper2skill.evaluation.evaluate_case \
   --out generated/real/case_05_deltate/l2_live_execute.json
 ```
 
+Run reviewed live execution with BioEnvRebuilder:
+
+```bash
+python -m paper2skill.evaluation.run_real_benchmark \
+  --cases benchmarks/real/case_05_deltate \
+  --out-root generated/real_live_deltate \
+  --levels L2 \
+  --l2-mode live_execute \
+  --allow-download \
+  --allow-install approved \
+  --env-rebuilder bio \
+  --target-env-mode new \
+  --repair-attempts 3 \
+  --export-lock
+```
+
 Create an approved install plan from that evaluation:
 
 ```bash
@@ -225,7 +258,7 @@ The install command refuses shared environments such as `base` and `skill` by
 default. Use a case-specific isolated environment unless there is a reviewed
 reason to override that guard.
 
-Build and evaluate all real cases:
+Build and evaluate all real cases with benchmark L2 live execution:
 
 ```bash
 python -m paper2skill.evaluation.run_real_benchmark \
@@ -233,7 +266,8 @@ python -m paper2skill.evaluation.run_real_benchmark \
   --out-root generated/real \
   --strict-evidence \
   --levels L0,L1,L2,L3,L4 \
-  --l2-mode dry_run
+  --l2-mode live_execute \
+  --allow-download
 ```
 
 Summarize results:

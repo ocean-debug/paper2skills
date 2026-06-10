@@ -443,7 +443,7 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
         "python": sorted(dict.fromkeys(python_packages)),
         "python_records": sorted(python_records, key=lambda item: item["spec"]),
         "python_optional": {key.removeprefix("project:"): value for key, value in optional["python"].items() if key.startswith("project:")},
-        "r": sorted(dict.fromkeys(r_packages)),
+        "r": sorted(dict.fromkeys(record["name"] for record in r_records if record.get("required", True))),
         "r_records": sorted(r_records, key=lambda item: item["name"]),
         "optional": optional,
         "ignored": ignored,
@@ -532,8 +532,7 @@ def r_script_dependency_records(root: Path) -> list[dict[str, Any]]:
         text = path.read_text(encoding="utf-8", errors="replace")
         packages = set(R_LIBRARY_RE.findall(text))
         packages.update(r_package_qualified_calls(text))
-        if re.search(r"\bapeglm\b", text, flags=re.I):
-            packages.add("apeglm")
+        public = public_local_path(path, root)
         for name in packages:
             if name in R_BASE_PACKAGES:
                 continue
@@ -541,9 +540,19 @@ def r_script_dependency_records(root: Path) -> list[dict[str, Any]]:
                 {
                     "name": name,
                     "source": "Bioconductor_or_unknown" if name in BIOCONDUCTOR_HINTS else "R_script",
-                    "evidence": public_local_path(path, root),
+                    "evidence": public,
                     "required": True,
                     "category": "runtime",
+                }
+            )
+        if r_apeglm_type_hint(text):
+            records.append(
+                {
+                    "name": "apeglm",
+                    "source": "R_script_parameter_hint",
+                    "evidence": public,
+                    "required": False,
+                    "category": "parameter_hint",
                 }
             )
     return _dedupe_records(records, "name")
@@ -551,6 +560,10 @@ def r_script_dependency_records(root: Path) -> list[dict[str, Any]]:
 
 def r_package_qualified_calls(text: str) -> set[str]:
     return set(re.findall(r"\b([A-Za-z][A-Za-z0-9_.]*):::{0,1}[A-Za-z][A-Za-z0-9_.]*\s*\(", text))
+
+
+def r_apeglm_type_hint(text: str) -> bool:
+    return re.search(r"\btype\s*=\s*['\"]apeglm['\"]", text, flags=re.I) is not None
 
 
 def install_command_dependency_records(root: Path) -> dict[str, list[dict[str, Any]]]:
@@ -568,13 +581,14 @@ def install_command_dependency_records(root: Path) -> dict[str, list[dict[str, A
         for name in r_install_packages(text):
             if name in R_BASE_PACKAGES:
                 continue
+            required = name.lower() == "apeglm"
             r_records.append(
                 {
                     "name": name,
                     "source": "Bioconductor_or_unknown" if name in BIOCONDUCTOR_HINTS else "install_command",
                     "evidence": public or path.name,
-                    "required": False,
-                    "category": "install_hint",
+                    "required": required,
+                    "category": "runtime" if required else "install_hint",
                 }
             )
     return {
@@ -662,5 +676,11 @@ def _namespace_record(package: str, evidence: str) -> dict[str, Any] | None:
 def _dedupe_records(records: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
     deduped: dict[str, dict[str, Any]] = {}
     for record in records:
-        deduped.setdefault(str(record[key]), record)
+        dedupe_key = str(record[key])
+        existing = deduped.get(dedupe_key)
+        if existing is None:
+            deduped[dedupe_key] = record
+            continue
+        if record.get("required", True) and not existing.get("required", True):
+            deduped[dedupe_key] = record
     return list(deduped.values())

@@ -18,7 +18,7 @@ from paper2skill.evaluation.compare_workflow_dag import compare_workflow_dag
 from paper2skill.evaluation.execution.run_new_data_validation import evaluate_new_data
 from paper2skill.evaluation.execution.run_official_example import evaluate_official_examples
 from paper2skill.evaluation.load_gold import evaluation_result, finish_result, load_generated_bundle, load_gold
-from paper2skill.evaluation.schemas import LEVEL_WEIGHTS, STATIC_L1_WEIGHTS, VALID_INSTALL_POLICIES, VALID_L2_MODES, VALID_LEVELS
+from paper2skill.evaluation.schemas import BENCHMARK_L2_MODE, LEVEL_WEIGHTS, STATIC_L1_WEIGHTS, VALID_INSTALL_POLICIES, VALID_L2_MODES, VALID_LEVELS
 from paper2skill.evaluation.validate_skill_package import validate_skill_package
 
 
@@ -31,7 +31,7 @@ def evaluate_case(
     download_cache: str | Path = "benchmarks/data_cache",
     max_download_mb: float = 0.0,
     allow_execution: str = "reviewed_only",
-    l2_mode: str = "dry_run",
+    l2_mode: str = BENCHMARK_L2_MODE,
     allow_install: str = "none",
     install_env: str | None = None,
     create_conda_env: bool = False,
@@ -41,7 +41,7 @@ def evaluate_case(
     allow_github_install: str = "ask",
     gpu_policy: str = "optional",
     torch_backend: str = "auto",
-    repair_attempts: int = 0,
+    repair_attempts: int = 3,
     export_lock: bool = False,
 ) -> dict[str, Any]:
     selected_levels = normalize_levels(levels)
@@ -111,6 +111,11 @@ def evaluate_case(
         "category_scores": legacy_category_scores(level_results),
         "level_results": level_results,
         "evaluators": evaluators,
+        "benchmark_policy": {
+            "build_validation_is_scoring": False,
+            "l2_requires_live_execute": True,
+            "requested_l2_mode": l2_mode,
+        },
         "missing_gold_files": gold_bundle["missing_files"],
         "missing_generated_files": generated_bundle["missing_files"],
         "warnings": sorted(dict.fromkeys(warnings)),
@@ -132,7 +137,7 @@ def evaluate_l1(gold: dict[str, Any], generated: dict[str, Any], generated_bundl
     bio_contract = compare_bio_contract(gold.get("bio_contract", {}), generated)
     adapter = compare_adapter_behavior(gold.get("adapter_behavior", {}), generated)
     evidence = compare_evidence_expectations(gold.get("evidence_expectations", {}), generated)
-    validation = generated_reference_validation(generated_bundle)
+    execution_safety = execution_safety_plan(generated)
     scores = {
         "source_collection": source["score"],
         "dependency_mining": dependencies["score"],
@@ -140,7 +145,7 @@ def evaluate_l1(gold: dict[str, Any], generated: dict[str, Any], generated_bundl
         "io_bio_contract": round((io_contract["score"] + bio_contract["score"]) / 2, 2),
         "evidence_graph_correctness": evidence["score"],
         "adapter_safety_behavior": adapter["score"],
-        "generated_skill_validation": validation["score"],
+        "execution_safety_plan": execution_safety["score"],
     }
     total = round(sum(scores[key] * weight / 100.0 for key, weight in STATIC_L1_WEIGHTS.items()), 2)
     evaluators = {
@@ -152,7 +157,7 @@ def evaluate_l1(gold: dict[str, Any], generated: dict[str, Any], generated_bundl
         "bio_contract": bio_contract,
         "evidence_expectations": evidence,
         "adapter_behavior": adapter,
-        "generated_skill_validation": validation,
+        "execution_safety_plan": execution_safety,
     }
     return {"level": "L1", "score": total, "passed": total >= 85.0, "category_scores": scores, "evaluators": evaluators}
 
@@ -215,14 +220,31 @@ def evaluate_l4(gold: dict[str, Any], generated: dict[str, Any]) -> dict[str, An
     return {"level": "L4", "score": evaluator["score"], "passed": evaluator["passed"], "evaluators": {"agentic_usage": evaluator}}
 
 
-def generated_reference_validation(generated_bundle: dict[str, Any]) -> dict[str, Any]:
-    result = evaluation_result("generated_skill_validation")
-    required = ["source_manifest", "workflow_dag", "io_contract", "bio_contract", "adapter_spec", "evidence_graph"]
-    files = generated_bundle.get("files") or {}
-    present = {key for key in required if files.get(key)}
-    missing = sorted(set(required) - present)
-    result["missing_items"].extend(missing)
-    return finish_result(result, {"required_reference_files_present": len(present) / len(required)})
+def execution_safety_plan(generated: dict[str, Any]) -> dict[str, Any]:
+    result = evaluation_result("execution_safety_plan")
+    adapter_spec = generated.get("adapter_spec") if isinstance(generated.get("adapter_spec"), dict) else {}
+    adapter_review = generated.get("adapter_review") if isinstance(generated.get("adapter_review"), dict) else {}
+    environment_spec = generated.get("environment_spec") if isinstance(generated.get("environment_spec"), dict) else {}
+    notebook_policy = generated.get("notebook_execution_policy") if isinstance(generated.get("notebook_execution_policy"), dict) else {}
+    adapter_status = str(adapter_spec.get("status") or adapter_review.get("status") or "").lower()
+    notebook_safe = not bool(notebook_policy.get("execute_unknown_notebooks"))
+    install_policy_text = json.dumps(environment_spec, ensure_ascii=False).lower()
+    install_safe = "ask" in install_policy_text or "confirm" in install_policy_text or "auto_install" not in install_policy_text
+    lifecycle_safe = adapter_status not in {"ready", "reviewed", "verified"} or bool(adapter_review.get("human_approved") or adapter_review.get("dry_run"))
+    if not notebook_safe:
+        result["mismatched_items"].append({"field": "notebook_execution_policy", "expected": "unknown notebooks disabled", "actual": "enabled"})
+    if not install_safe:
+        result["mismatched_items"].append({"field": "install_policy", "expected": "explicit approval", "actual": "unsafe or unclear"})
+    if not lifecycle_safe:
+        result["mismatched_items"].append({"field": "adapter_lifecycle", "expected": "review evidence before executable status", "actual": adapter_status})
+    return finish_result(
+        result,
+        {
+            "notebook_execution_policy_safe": notebook_safe,
+            "install_policy_requires_approval": install_safe,
+            "adapter_lifecycle_evidence_present": lifecycle_safe,
+        },
+    )
 
 
 def normalize_levels(levels: list[str] | None) -> list[str]:
@@ -306,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-cache", default="benchmarks/data_cache", help="Download cache directory")
     parser.add_argument("--max-download-mb", type=float, default=0.0, help="Maximum download size for entries without a tighter limit")
     parser.add_argument("--allow-execution", default="reviewed_only", choices=["none", "reviewed_only", "all"], help="Execution policy for L2/L3")
-    parser.add_argument("--l2-mode", default="dry_run", choices=list(VALID_L2_MODES), help="L2 depth: dry_run, data_smoke, or live_execute")
+    parser.add_argument("--l2-mode", default=BENCHMARK_L2_MODE, choices=list(VALID_L2_MODES), help="Benchmark L2 depth; real benchmark scoring requires live_execute. dry_run/data_smoke are diagnostic-only.")
     parser.add_argument("--allow-install", default="none", choices=list(VALID_INSTALL_POLICIES), help="Dependency install policy; 'ask' returns an install approval request; 'approved' installs into --install-env")
     parser.add_argument("--install-env", help="Target environment name/path to include in L2 install approval requests")
     parser.add_argument("--create-conda-env", action="store_true", help="Create --install-env before approved L2 live execution")
@@ -315,8 +337,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-env-mode", default="new", choices=["new", "existing"], help="BioEnvRebuilder target mode")
     parser.add_argument("--allow-github-install", default="ask", choices=["ask", "approved"], help="Whether BioEnvRebuilder may execute GitHub install steps")
     parser.add_argument("--gpu-policy", default="optional", choices=["required", "optional", "cpu_only"], help="BioEnvRebuilder GPU policy")
-    parser.add_argument("--torch-backend", default="auto", choices=["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128"], help="uv PyTorch backend selection")
-    parser.add_argument("--repair-attempts", type=int, default=0, help="Number of BioEnvRebuilder repair attempts to record/request")
+    parser.add_argument("--torch-backend", default="auto", choices=["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128"], help="PyTorch special-route CPU/CUDA profile")
+    parser.add_argument("--repair-attempts", type=int, default=3, help="Number of BioEnvRebuilder repair attempts to record/request")
     parser.add_argument("--export-lock", action="store_true", help="Request lockfile export artifacts after L2 approved installs")
     parser.add_argument("--out", required=True, help="Path to write evaluation JSON")
     parser.add_argument("--markdown-out", help="Optional per-case Markdown report path")

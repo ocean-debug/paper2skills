@@ -18,12 +18,14 @@ STATIC_L1_WEIGHTS: Final[dict[str, int]] = {
     "io_bio_contract": 25,
     "evidence_graph_correctness": 10,
     "adapter_safety_behavior": 15,
-    "generated_skill_validation": 5,
+    "execution_safety_plan": 5,
 }
 
 VALID_LEVELS: Final[tuple[str, ...]] = ("L0", "L1", "L2", "L3", "L4")
 
 VALID_L2_MODES: Final[tuple[str, ...]] = ("dry_run", "data_smoke", "live_execute")
+BUILD_VALIDATION_DEPTHS: Final[tuple[str, ...]] = VALID_L2_MODES
+BENCHMARK_L2_MODE: Final[str] = "live_execute"
 
 L2_MODE_RANK: Final[dict[str, int]] = {
     "blocked_expected": 0,

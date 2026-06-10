@@ -53,6 +53,8 @@ def test_evaluate_case_supports_all_levels_with_empty_optional_gold(tmp_path: Pa
 
     assert result["levels"] == ["L0", "L1", "L2", "L3", "L4"]
     assert set(result["score_by_level"]) == {"L0", "L1", "L2", "L3", "L4"}
+    assert "execution_safety_plan" in result["level_results"]["L1"]["category_scores"]
+    assert "generated_skill_validation" not in result["level_results"]["L1"]["category_scores"]
 
 
 def test_summarize_benchmark_cli_writes_markdown_and_json(tmp_path: Path):
@@ -92,7 +94,7 @@ def test_summarize_benchmark_cli_writes_markdown_and_json(tmp_path: Path):
     markdown = markdown_out.read_text(encoding="utf-8")
     assert "Average score: 91.50" in markdown
     assert "L2 Status" in markdown
-    assert "data_smoke success 1" in markdown
+    assert "data_smoke_not_live 1" in markdown
     summary = json.loads(json_out.read_text(encoding="utf-8"))
     assert summary["case_count"] == 1
     assert summary["average_score"] == 91.5
@@ -108,7 +110,7 @@ def test_l2_summary_distinguishes_smoke_fallback_from_live_success():
                         "l2_summary": {
                             "status_counts": {"success": 1},
                             "execution_depth_counts": {"data_smoke": 1},
-                            "score_reasons": {"data_smoke_success_when_live_execute_requested": 1},
+                            "score_reasons": {"data_smoke_success_is_not_live_execute": 1},
                         }
                     }
                 }
@@ -121,3 +123,47 @@ def test_l2_summary_distinguishes_smoke_fallback_from_live_success():
     assert "smoke_only_when_live_requested 1" in status
     assert "live_execute success" not in status
     assert "data_smoke success" not in status
+
+
+def test_l2_summary_reports_missing_live_gold():
+    result = {
+        "level_results": {
+            "L2": {
+                "evaluators": {
+                    "official_example_execution": {
+                        "l2_summary": {
+                            "status_counts": {"missing_live_official_example_gold": 1},
+                            "execution_depth_counts": {},
+                            "score_reasons": {"missing_live_official_example_gold": 1},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    status = format_l2_status(result)
+
+    assert "missing_live_gold 1" in status
+
+
+def test_l2_summary_reports_missing_official_gold_for_diagnostic_mode():
+    result = {
+        "level_results": {
+            "L2": {
+                "evaluators": {
+                    "official_example_execution": {
+                        "l2_summary": {
+                            "status_counts": {"missing_official_example_gold": 1},
+                            "execution_depth_counts": {},
+                            "score_reasons": {"missing_official_example_gold": 1},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    status = format_l2_status(result)
+
+    assert "missing_official_gold 1" in status

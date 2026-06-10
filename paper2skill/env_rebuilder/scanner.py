@@ -134,12 +134,52 @@ def classify_install_command(command: str) -> str:
 
 
 def file_record(path: Path, root: Path) -> dict[str, Any]:
-    return {
+    record = {
         "path": relpath_or_value(path, root),
         "name": path.name,
         "kind": file_kind(path.name),
         "priority": file_priority(path.name),
     }
+    if path.name.startswith("conda-lock"):
+        record.update(conda_lock_metadata(path))
+    return record
+
+
+def conda_lock_metadata(path: Path) -> dict[str, Any]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
+    except (OSError, yaml.YAMLError):
+        return {"platforms": [], "channels": [], "lock_parse_status": "failed"}
+    if not isinstance(data, dict):
+        return {"platforms": [], "channels": [], "lock_parse_status": "failed"}
+    platforms = set()
+    channels = []
+    for package in data.get("package") or []:
+        if isinstance(package, dict):
+            if package.get("platform"):
+                platforms.add(str(package["platform"]))
+            if package.get("manager") == "conda" and package.get("url"):
+                channel = conda_channel_from_url(str(package["url"]))
+                if channel:
+                    channels.append(channel)
+    metadata = data.get("metadata") or {}
+    for platform in metadata.get("platforms") or []:
+        if isinstance(platform, str):
+            platforms.add(platform)
+    for channel in metadata.get("channels") or []:
+        if isinstance(channel, str):
+            channels.append(channel.rsplit("/", 1)[-1])
+        elif isinstance(channel, dict) and channel.get("url"):
+            channels.append(str(channel["url"]).rsplit("/", 1)[-1])
+    return {"platforms": sorted(platforms), "channels": sorted(dict.fromkeys(channels)), "lock_parse_status": "parsed"}
+
+
+def conda_channel_from_url(value: str) -> str | None:
+    lowered = value.lower()
+    for channel in ["conda-forge", "bioconda", "defaults", "pytorch"]:
+        if f"/{channel}/" in lowered or lowered.rstrip("/").endswith(f"/{channel}"):
+            return channel
+    return None
 
 
 def file_kind(name: str) -> str:
@@ -294,22 +334,27 @@ def infer_r_metadata(root: Path, files: list[Path]) -> dict[str, Any]:
     namespace = next((path for path in files if path.name == "NAMESPACE"), None)
     install_r = next((path for path in files if path.name == "install.R"), None)
     packages: list[str] = []
+    suggests: list[str] = []
     if description:
-        packages.extend(extract_r_description_packages(safe_read(description)))
+        description_fields = extract_r_description_packages(safe_read(description))
+        packages.extend(description_fields.get("required", []))
+        suggests.extend(description_fields.get("suggests", []))
     namespace_packages = extract_r_namespace_packages(safe_read(namespace)) if namespace else []
     install_packages = extract_r_install_packages(safe_read(install_r)) if install_r else {}
     return {
         "has_r": any(path.name in {"DESCRIPTION", "NAMESPACE", "install.R", "renv.lock"} for path in files),
         "has_renv_lock": any(path.name == "renv.lock" for path in files),
         "description_packages": sorted(dict.fromkeys(packages)),
+        "description_suggests": sorted(dict.fromkeys(suggests)),
         "namespace_packages": namespace_packages,
         "install_r_packages": install_packages.get("packages", []),
         "install_r_github": install_packages.get("github", []),
     }
 
 
-def extract_r_description_packages(text: str) -> list[str]:
-    packages: list[str] = []
+def extract_r_description_packages(text: str) -> dict[str, list[str]]:
+    required: list[str] = []
+    suggests: list[str] = []
     for field in ["Imports", "Depends", "Suggests"]:
         match = re.search(rf"(?ms)^{field}:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9.]*:|\Z)", text)
         if not match:
@@ -317,8 +362,11 @@ def extract_r_description_packages(text: str) -> list[str]:
         for token in re.split(r",|\n", match.group(1)):
             cleaned = re.sub(r"\([^)]*\)", "", token).strip()
             if cleaned and cleaned != "R":
-                packages.append(cleaned)
-    return packages
+                if field == "Suggests":
+                    suggests.append(cleaned)
+                else:
+                    required.append(cleaned)
+    return {"required": required, "suggests": suggests}
 
 
 def extract_r_namespace_packages(text: str) -> list[str]:

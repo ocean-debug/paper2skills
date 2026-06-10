@@ -25,6 +25,13 @@ def test_generator_creates_complete_toy_python_skill(tmp_path: Path):
     assert (out / "references" / "bio_contract.yaml").exists()
     assert (out / "references" / "workflow_dag.json").exists()
     assert (out / "scripts" / "adapters" / "python_api_adapter.py").exists()
+    assert (out / "scripts" / "run_in_env.sh").exists()
+    assert (out / "scripts" / "qsub_template.sh").exists()
+    assert (out / "assets" / "env" / "paper2skill.environment.yml").exists()
+    assert (out / "assets" / "env" / "normalization_report.json").exists()
+    assert "conda run -n" in (out / "scripts" / "run_in_env.sh").read_text(encoding="utf-8")
+    assert "conda activate" in (out / "scripts" / "qsub_template.sh").read_text(encoding="utf-8")
+    assert "activation_failure" in (out / "scripts" / "env_manager.py").read_text(encoding="utf-8")
 
 
 def test_generator_creates_toy_r_skill(tmp_path: Path):
@@ -62,15 +69,50 @@ def test_generated_dependency_assets_redact_local_file_urls(tmp_path: Path):
     assert "localpkg" in public_text
 
 
-def test_generated_environment_yml_uses_pip_section_for_python_specs(tmp_path: Path):
+def test_generated_requirements_txt_uses_pip_segment_only(tmp_path: Path):
     context = build_context(**example_inputs("toy_python"))
-    context["environment_spec"]["python"]["packages"] = [{"spec": "scikit-learn==1.4.0", "required": True}]
+    context["environment_spec"]["python"]["packages"] = [
+        {"spec": "scanpy>=1.10", "required": True},
+        {"spec": "scikit-learn==1.4.0", "required": True},
+        {"spec": "paper-only==1.0", "required": True},
+    ]
     out = generate_skill(context, tmp_path / "toy-python-skill")
     environment_yml = (out / "assets" / "environment.yml").read_text(encoding="utf-8")
     requirements_txt = (out / "assets" / "requirements.txt").read_text(encoding="utf-8")
-    assert "- pip:" in environment_yml
-    assert "  - scikit-learn==1.4.0" in environment_yml
-    assert "scikit-learn==1.4.0" in requirements_txt
+    legacy_env = yaml.safe_load(environment_yml)
+    assert not any(isinstance(item, dict) and "pip" in item for item in legacy_env["dependencies"])
+    assert "scanpy>=1.10" in legacy_env["dependencies"]
+    assert "scikit-learn==1.4.0" in legacy_env["dependencies"]
+    assert "scanpy>=1.10" not in requirements_txt
+    assert "scikit-learn==1.4.0" not in requirements_txt
+    assert "paper-only==1.0" in requirements_txt
+    canonical = yaml.safe_load((out / "assets" / "env" / "paper2skill.environment.yml").read_text(encoding="utf-8"))
+    normalization = json.loads((out / "assets" / "env" / "normalization_report.json").read_text(encoding="utf-8"))
+    assert "channel_priority" not in canonical
+    assert normalization["channel_priority"] == "strict"
+    assert canonical["channels"][:2] == ["conda-forge", "bioconda"]
+    assert not any(isinstance(item, dict) and "pip" in item for item in canonical["dependencies"])
+    assert "scanpy>=1.10" in canonical["dependencies"]
+    assert "scikit-learn==1.4.0" in canonical["dependencies"]
+    assert normalization["pip_segment"] == ["paper-only==1.0"]
+
+
+def test_generated_canonical_environment_routes_r_packages(tmp_path: Path):
+    context = build_context(**example_inputs("toy_r"))
+    context["environment_spec"]["r"]["packages"] = [
+        {"name": "DESeq2", "required": True},
+        {"name": "ggplot2", "required": True},
+    ]
+
+    out = generate_skill(context, tmp_path / "toy-r-skill")
+
+    canonical = yaml.safe_load((out / "assets" / "env" / "paper2skill.environment.yml").read_text(encoding="utf-8"))
+    normalization = json.loads((out / "assets" / "env" / "normalization_report.json").read_text(encoding="utf-8"))
+    deps = json.dumps(canonical["dependencies"])
+    assert "r-base" in deps
+    assert "bioconductor-deseq2" in deps
+    assert "r-ggplot2" in deps
+    assert any(item["name"] == "DESeq2" for item in normalization["additive_dependencies"])
 
 
 def test_plan_outputs_do_not_include_absolute_paths(tmp_path: Path):
@@ -430,8 +472,8 @@ def test_remote_file_repo_build_uses_cloned_path_for_mining(tmp_path: Path):
     repo = tmp_path / "remote-source"
     repo.mkdir()
     subprocess.run(["git", "init", str(repo)], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test User"], check=True, text=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True, text=True, capture_output=True)
     paper = tmp_path / "paper.md"
     paper.write_text("# Methods\n\nWe used scRNA-seq data.\n", encoding="utf-8")
     (repo / "docs").mkdir()
@@ -446,9 +488,9 @@ def test_remote_file_repo_build_uses_cloned_path_for_mining(tmp_path: Path):
     }
     (repo / "docs" / "pbmc.ipynb").write_text(json.dumps(notebook), encoding="utf-8")
     (repo / "pyproject.toml").write_text("[project]\nname='remote-demo'\nversion='0.1.0'\ndependencies=['scanpy']\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True, text=True, capture_output=True)
-    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True, text=True, capture_output=True)
-    sha = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, text=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, text=True, capture_output=True)
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, text=True, capture_output=True).stdout.strip()
 
     context = build_context(
         paper=str(paper),
