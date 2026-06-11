@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+
+
+def adapter_spec() -> dict[str, Any]:
+    return env_manager.load_json_yaml(ROOT / "references" / "adapter_spec.yaml")
+
+
+def adapter_review() -> dict[str, Any]:
+    path = ROOT / "references" / "adapter_review.yaml"
+    if not path.exists():
+        return {}
+    return env_manager.load_json_yaml(path)
+
+
+def command_tokens(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, str) and value.strip():
+        try:
+            return shlex.split(value, posix=os.name != "nt")
+        except ValueError:
+            return []
+    return []
+
+
+def expand_tokens(tokens: list[str], *, manifest_path: Path | None, out: Path) -> list[str]:
+    replacements = {
+        "{manifest}": str(manifest_path) if manifest_path else "",
+        "{out}": str(out),
+        "{root}": str(ROOT),
+    }
+    expanded = []
+    for token in tokens:
+        value = token
+        for key, replacement in replacements.items():
+            value = value.replace(key, replacement)
+        if value:
+            expanded.append(value)
+    return expanded
+
+
+def reviewed_outputs() -> list[str]:
+    review = adapter_review()
+    outputs = review.get("expected_outputs")
+    if isinstance(outputs, list):
+        return [str(item) for item in outputs if str(item)]
+    return []
+
+
+def working_dir() -> Path:
+    source_root = ROOT / "sources" / "repo"
+    return source_root if source_root.exists() else ROOT
+
+
+def blocked(kind: str, message: str, spec: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "blocked",
+        "adapter_type": kind,
+        "adapter_status": spec.get("status"),
+        "entrypoint": spec.get("entrypoint"),
+        "command": env_manager.public_data(spec.get("command")),
+        "message": message,
+        "caveats": spec.get("caveats", []),
+    }
+
+
+def run_reviewed_command(kind: str, manifest: dict[str, Any], out: Path, manifest_path: Path | None = None, default_command: Any = None) -> dict[str, Any]:
+    spec = adapter_spec()
+    if spec.get("status") not in EXECUTABLE_ADAPTER_STATUSES:
+        return blocked(kind, "Adapter status is not executable; reviewed, ready, or verified status is required.", spec)
+    command = spec.get("command") or default_command
+    tokens = expand_tokens(command_tokens(command), manifest_path=manifest_path, out=out)
+    if not tokens:
+        return blocked(kind, "Reviewed adapter command is missing.", spec)
+
+    env = os.environ.copy()
+    if manifest_path:
+        env["PAPER2SKILL_MANIFEST"] = str(manifest_path)
+    env["PAPER2SKILL_OUT"] = str(out)
+    env["PAPER2SKILL_ROOT"] = str(ROOT)
+
+    log_dir = out / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(tokens, cwd=working_dir(), env=env, text=True, capture_output=True, check=False)
+    (log_dir / f"{kind}_adapter.stdout.log").write_text(completed.stdout or "", encoding="utf-8")
+    (log_dir / f"{kind}_adapter.stderr.log").write_text(completed.stderr or "", encoding="utf-8")
+
+    return {
+        "status": "pass" if completed.returncode == 0 else "fail",
+        "adapter_type": kind,
+        "adapter_status": spec.get("status"),
+        "entrypoint": spec.get("entrypoint"),
+        "command": env_manager.public_data(tokens),
+        "returncode": completed.returncode,
+        "outputs": reviewed_outputs(),
+        "message": "Reviewed adapter command executed." if completed.returncode == 0 else "Reviewed adapter command failed.",
+    }

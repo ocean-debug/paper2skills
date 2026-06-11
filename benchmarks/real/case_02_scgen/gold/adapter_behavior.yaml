@@ -1,9 +1,0 @@
-expected_adapter_type: python_api
-expected_initial_status: candidate
-reason: model training and perturbation prediction require explicit review of dataset
-  labels, condition keys, and training time
-non_demo_run:
-  expected_behavior: blocked_until_reviewed
-demo_run:
-  allowed: true
-  expected_behavior: safe_if_uses_small_documented_tutorial_data

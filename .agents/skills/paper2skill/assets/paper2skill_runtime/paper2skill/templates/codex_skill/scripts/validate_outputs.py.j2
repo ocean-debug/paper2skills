@@ -1,0 +1,157 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+REQUIRED = [
+    "result.json",
+    "qc/input_validation.json",
+    "qc/environment_report.json",
+    "qc/missing_dependencies.json",
+    "qc/output_validation.json",
+    "qc/qc_summary.json",
+    "workflow/plan.json",
+    "workflow/plan.md",
+    "workflow/executed_steps.json",
+    "parameters/resolved_parameters.json",
+    "parameters/parameter_sources.json",
+    "results/summary.json",
+    "reproducibility/source_manifest.json",
+    "reproducibility/algorithm_contract.yaml",
+    "reproducibility/bio_contract.yaml",
+    "reproducibility/environment_spec.yaml",
+]
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_json_yaml(path: Path) -> dict:
+    return env_manager.load_json_yaml(path)
+
+
+def load_optional_mapping(path: Path | None) -> dict:
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = load_json_yaml(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_required_mapping(path: Path, label: str) -> tuple[dict, list[dict]]:
+    if not path.exists():
+        return {}, [{"path": str(path), "reason": f"{label}_not_found"}]
+    try:
+        data = load_json_yaml(path)
+    except Exception as exc:
+        return {}, [{"path": str(path), "reason": f"{label}_load_error", "message": str(exc)}]
+    if not isinstance(data, dict):
+        return {}, [{"path": str(path), "reason": f"{label}_must_be_mapping"}]
+    return data, []
+
+
+def expected_contract(validation_manifest: Path | None) -> dict:
+    if validation_manifest is not None:
+        manifest, contract_errors = load_required_mapping(validation_manifest, "validation_manifest")
+        expected_outputs = manifest.get("expected_outputs") if isinstance(manifest.get("expected_outputs"), list) else []
+        expected_values = manifest.get("expected_output_values") if isinstance(manifest.get("expected_output_values"), dict) else {}
+        return {
+            "source": "validation_manifest",
+            "expected_outputs": normalize_expected_outputs(expected_outputs),
+            "expected_output_values": expected_values,
+            "manifest": env_manager.public_data(manifest),
+            "contract_errors": contract_errors,
+        }
+    review = load_optional_mapping(ROOT / "references" / "adapter_review.yaml")
+    review_outputs = review.get("expected_outputs") if isinstance(review.get("expected_outputs"), list) else []
+    review_values = review.get("expected_output_values") if isinstance(review.get("expected_output_values"), dict) else {}
+    return {
+        "source": "adapter_review",
+        "expected_outputs": normalize_expected_outputs(review_outputs),
+        "expected_output_values": review_values,
+        "manifest": {},
+        "contract_errors": [],
+    }
+
+
+def normalize_expected_outputs(values: list) -> list[str]:
+    outputs: list[str] = []
+    for item in values:
+        if isinstance(item, str) and item:
+            outputs.append(item)
+        elif isinstance(item, dict):
+            value = item.get("path") or item.get("file") or item.get("relpath")
+            if isinstance(value, str) and value:
+                outputs.append(value)
+    return sorted(dict.fromkeys(outputs))
+
+
+def compare_expected_output_values(result: Path, expected_values: dict) -> list[dict]:
+    mismatches: list[dict] = []
+    for rel, expected in expected_values.items():
+        path = result / str(rel)
+        actual = load_optional_mapping(path)
+        if not path.exists():
+            mismatches.append({"path": str(rel), "reason": "expected_json_output_missing"})
+            continue
+        if not isinstance(expected, dict):
+            mismatches.append({"path": str(rel), "expected": expected, "actual": actual, "reason": "expected_value_contract_must_be_mapping"})
+            continue
+        for key, expected_value in expected.items():
+            actual_value = nested_get(actual, str(key))
+            if actual_value != expected_value:
+                mismatches.append({"path": str(rel), "field": str(key), "expected": expected_value, "actual": actual_value})
+    return mismatches
+
+
+def nested_get(data: dict, key: str) -> object:
+    current: object = data
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--result", default=str(ROOT / "result"))
+    parser.add_argument("--validation-manifest", default=None)
+    args = parser.parse_args(argv)
+    result = Path(args.result)
+    manifest_path = Path(args.validation_manifest) if args.validation_manifest else None
+    contract = expected_contract(manifest_path)
+    contract_errors = contract.get("contract_errors", [])
+    missing_required = [rel for rel in REQUIRED if not (result / rel).exists() and rel != "qc/output_validation.json"]
+    missing_expected = [rel for rel in contract["expected_outputs"] if not (result / rel).exists()]
+    value_mismatches = compare_expected_output_values(result, contract["expected_output_values"])
+    status = "pass" if not contract_errors and not missing_required and not missing_expected and not value_mismatches else "fail"
+    output = {
+        "status": status,
+        "contract_source": contract["source"],
+        "contract_errors": contract_errors,
+        "missing_required_outputs": missing_required,
+        "missing_expected_outputs": missing_expected,
+        "value_mismatches": value_mismatches,
+        "expected_outputs": contract["expected_outputs"],
+        "expected_output_values_checked": sorted(contract["expected_output_values"].keys()),
+    }
+    write_json(result / "qc" / "output_validation.json", output)
+    print(json.dumps(output, indent=2))
+    return 0 if status == "pass" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

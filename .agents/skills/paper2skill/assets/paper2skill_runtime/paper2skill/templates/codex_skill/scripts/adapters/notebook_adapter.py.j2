@@ -1,0 +1,9 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from adapters.command_adapter import run_reviewed_command
+
+
+def run(manifest: dict, out: Path, manifest_path: Path | None = None) -> dict:
+    return run_reviewed_command("notebook", manifest, out, manifest_path)

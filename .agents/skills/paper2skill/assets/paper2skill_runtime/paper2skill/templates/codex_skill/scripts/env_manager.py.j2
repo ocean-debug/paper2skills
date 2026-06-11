@@ -1,0 +1,589 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import importlib.metadata
+import importlib.util
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from urllib.parse import unquote
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - exercised only in minimal child environments
+    yaml = None
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC_PATH = ROOT / "assets" / "environment_spec.yaml"
+SPEC_SPLIT_RE = re.compile(r"\s*(?:[<>=!~]=?|;)")
+SAFE_PYTHON_SPEC_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?(?:\s*[<>=!~]=?\s*[A-Za-z0-9_.*+!<>=~,-]+)?(?:\s*;\s*[A-Za-z0-9_ .<>=!\"'-]+)?$")
+SAFE_R_PACKAGE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]*$")
+REDACTED_LOCAL_PATH = "<redacted-local-path>"
+URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+FILE_URL_RE = re.compile(r"^file://(?P<path>.+)", re.IGNORECASE)
+WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+UNC_ABSOLUTE_RE = re.compile(r"^\\\\")
+POSIX_ABSOLUTE_RE = re.compile(r"^/(?!/)")
+QUOTED_ABSOLUTE_PATH_RE = re.compile(r"(?P<quote>['\"])(?P<path>(?:file://(?:[A-Za-z]:[\\/]|\\\\|/)|[A-Za-z]:[\\/]|\\\\|/(?!/))[^'\"]+)(?P=quote)", re.IGNORECASE)
+FILE_URL_TOKEN_RE = re.compile(r"file://(?:[A-Za-z]:[\\/]|\\\\|/)[^\s'\"<>`,)]+", re.IGNORECASE)
+WINDOWS_ABSOLUTE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/][^\s'\"<>`,)]+|\\\\[^\s'\"<>`,)]+)")
+POSIX_ABSOLUTE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_:/])/(?!/)[^\s'\"<>`,)]+")
+
+
+def load_json_yaml(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        if yaml is not None:
+            return yaml.safe_load(text) or {}
+        return parse_simple_yaml(text)
+
+
+def parse_simple_yaml(text: str) -> dict:
+    root: dict = {}
+    stack: list[tuple[int, dict | list]] = [(-1, root)]
+    lines = text.splitlines()
+    for index, raw_line in enumerate(lines):
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+        if line.startswith("- "):
+            if not isinstance(parent, list):
+                continue
+            item_value = line[2:].strip()
+            if ":" in item_value and not item_value.startswith(("'", '"')):
+                item_key, item_raw_value = item_value.split(":", 1)
+                item: dict = {}
+                parent.append(item)
+                if item_raw_value.strip():
+                    item[item_key.strip()] = parse_scalar(item_raw_value.strip())
+                else:
+                    child = next_container(lines, index, indent)
+                    item[item_key.strip()] = child
+                    stack.append((indent, child))
+            else:
+                parent.append(parse_scalar(item_value))
+            continue
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if raw_value == "":
+            child = next_container(lines, index, indent)
+            parent[key] = child
+            stack.append((indent, child))
+        else:
+            parent[key] = parse_scalar(raw_value)
+    return root
+
+
+def next_container(lines: list[str], index: int, current_indent: int):
+    for future in lines[index + 1:]:
+        if not future.strip() or future.lstrip().startswith("#"):
+            continue
+        future_indent = len(future) - len(future.lstrip(" "))
+        if future_indent <= current_indent:
+            return {}
+        return [] if future.strip().startswith("- ") else {}
+    return {}
+
+
+def parse_scalar(value: str):
+    value = value.split(" #", 1)[0].strip()
+    if value in {"true", "True"}:
+        return True
+    if value in {"false", "False"}:
+        return False
+    if value in {"null", "None", "~"}:
+        return None
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        return value[1:-1]
+    if value.startswith("[") and value.endswith("]"):
+        inner = value[1:-1].strip()
+        if not inner:
+            return []
+        return [parse_scalar(item.strip()) for item in inner.split(",")]
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def public_path(value: str, root: Path = ROOT) -> str:
+    file_url_path = file_url_local_path(value)
+    if file_url_path is not None:
+        public = public_path(file_url_path, root)
+        if public != file_url_path:
+            return public
+        normalized = file_url_path.rstrip("\\/")
+        name = re.split(r"[\\/]", normalized)[-1]
+        return name or REDACTED_LOCAL_PATH
+    if URL_SCHEME_RE.match(value):
+        return value
+    path = Path(value)
+    if path.is_absolute():
+        try:
+            return str(path.resolve().relative_to(root.resolve())).replace("\\", "/")
+        except (OSError, ValueError):
+            return path.name or REDACTED_LOCAL_PATH
+    if WINDOWS_ABSOLUTE_RE.match(value) or UNC_ABSOLUTE_RE.match(value):
+        normalized = value.rstrip("\\/")
+        name = re.split(r"[\\/]", normalized)[-1]
+        return name or REDACTED_LOCAL_PATH
+    if POSIX_ABSOLUTE_RE.match(value):
+        normalized = value.rstrip("/")
+        name = normalized.rsplit("/", 1)[-1]
+        return name or REDACTED_LOCAL_PATH
+    return value
+
+
+def file_url_local_path(value: str) -> str | None:
+    match = FILE_URL_RE.match(value)
+    if not match:
+        return None
+    path = unquote(match.group("path"))
+    if path.startswith("/") and WINDOWS_ABSOLUTE_RE.match(path[1:]):
+        path = path[1:]
+    return path
+
+
+def public_string(value: str) -> str:
+    if URL_SCHEME_RE.match(value) and file_url_local_path(value) is None:
+        return value
+    stripped = value.strip()
+    if stripped == value and public_path(value) != value:
+        return public_path(value)
+
+    def replace_quoted(match: re.Match[str]) -> str:
+        return "%s%s%s" % (match.group("quote"), public_path(match.group("path")), match.group("quote"))
+
+    def replace_token(match: re.Match[str]) -> str:
+        return public_path(match.group(0))
+
+    value = QUOTED_ABSOLUTE_PATH_RE.sub(replace_quoted, value)
+    value = FILE_URL_TOKEN_RE.sub(replace_token, value)
+    value = WINDOWS_ABSOLUTE_TOKEN_RE.sub(replace_token, value)
+    return POSIX_ABSOLUTE_TOKEN_RE.sub(replace_token, value)
+
+
+def public_data(value):
+    if isinstance(value, dict):
+        return {(public_string(key) if isinstance(key, str) else key): public_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [public_data(item) for item in value]
+    if isinstance(value, tuple):
+        return [public_data(item) for item in value]
+    if isinstance(value, str):
+        return public_string(value)
+    return value
+
+
+def import_name_from_spec(spec: str, explicit_import: str | None = None) -> str:
+    if explicit_import:
+        return explicit_import
+    base = re.split(r"\s+@\s+", spec.strip(), maxsplit=1)[0]
+    base = SPEC_SPLIT_RE.split(base, maxsplit=1)[0]
+    base = base.split("[", 1)[0]
+    return base.replace("-", "_").strip()
+
+
+def forced_missing_packages() -> set[str]:
+    return {item.strip() for item in os.environ.get("PAPER2SKILL_FORCE_MISSING_PACKAGES", "").split(",") if item.strip()}
+
+
+def forced_missing_executables() -> set[str]:
+    return {item.strip() for item in os.environ.get("PAPER2SKILL_FORCE_MISSING_EXECUTABLES", "").split(",") if item.strip()}
+
+
+def effective_policy(policy: str) -> str:
+    if policy == "ask" and (os.environ.get("CI") or not sys.stdin.isatty()):
+        return "never"
+    return policy
+
+
+def probe_python(packages: list[dict]) -> dict:
+    records = []
+    forced = forced_missing_packages()
+    for item in packages:
+        spec = item.get("spec") or item.get("name")
+        import_name = import_name_from_spec(spec, item.get("import_name"))
+        installed = import_name not in forced and spec not in forced and distribution_or_import_available(import_name)
+        records.append({"name": spec, "import_name": import_name, "installed": installed, "required": item.get("required", True)})
+    try:
+        subprocess.run([sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        pip_available = True
+    except Exception:
+        pip_available = False
+    return {
+        "which_python": shutil.which("python"),
+        "executable": sys.executable,
+        "version": sys.version.split()[0],
+        "version_output": command_output([sys.executable, "-V"]),
+        "pip_available": pip_available,
+        "activation_status": python_activation_status(sys.executable, sys.version_info),
+        "packages": records,
+    }
+
+
+def command_output(command: list[str]) -> dict:
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+        return {"command": command, "exit_code": completed.returncode, "stdout": completed.stdout.strip(), "stderr": completed.stderr.strip()}
+    except Exception as exc:
+        return {"command": command, "exit_code": 127, "stdout": "", "stderr": str(exc)}
+
+
+def python_activation_status(executable: str, version_info) -> dict:
+    lowered = executable.lower()
+    if version_info.major < 3:
+        return {"status": "activation_failure", "reason": "python2_detected"}
+    if "/usr/bin/python" in lowered or "\\windows\\" in lowered:
+        return {"status": "activation_failure", "reason": "system_python_detected"}
+    return {"status": "ok"}
+
+
+def distribution_or_import_available(name: str) -> bool:
+    try:
+        importlib.metadata.version(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    return importlib.util.find_spec(name) is not None
+
+
+def probe_r(packages: list[dict], required: bool) -> dict:
+    rscript = None if "Rscript" in forced_missing_executables() else shutil.which("Rscript")
+    records = []
+    forced = forced_missing_packages()
+    for item in packages:
+        name = item.get("name")
+        installed = False
+        if rscript and name not in forced:
+            command = [rscript, "-e", "quit(status = ifelse(requireNamespace('%s', quietly=TRUE), 0, 1))" % name]
+            installed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        records.append({"name": name, "source": item.get("source", "CRAN_or_unknown"), "installed": installed, "required": item.get("required", True)})
+    return {
+        "rscript_available": rscript is not None,
+        "which_rscript": rscript,
+        "rscript": rscript,
+        "rscript_version": command_output([rscript, "--version"]) if rscript else None,
+        "required": required or bool(packages),
+        "activation_status": {"status": "ok"} if rscript or not (required or packages) else {"status": "activation_failure", "reason": "rscript_missing"},
+        "packages": records,
+    }
+
+
+def probe_executables(executables: list[dict]) -> list[dict]:
+    forced = forced_missing_executables()
+    records = []
+    for item in executables:
+        name = item.get("name")
+        path = None if name in forced else shutil.which(name)
+        records.append({"name": name, "path": path, "available": path is not None, "required": item.get("required", True)})
+    return records
+
+
+def inspect_environment(spec: dict) -> dict:
+    policy = spec.get("install_policy", "ask")
+    report = {
+        "status": "pass",
+        "python": probe_python((spec.get("python") or {}).get("packages", [])),
+        "r": probe_r((spec.get("r") or {}).get("packages", []), (spec.get("r") or {}).get("required", False)),
+        "executables": probe_executables(spec.get("executables", [])),
+        "install_policy": policy,
+        "effective_install_policy": effective_policy(policy),
+    }
+    missing_python = [pkg for pkg in report["python"]["packages"] if pkg["required"] and not pkg["installed"]]
+    missing_r = [pkg for pkg in report["r"]["packages"] if pkg["required"] and not pkg["installed"]]
+    missing_execs = [exe for exe in report["executables"] if exe["required"] and not exe["available"]]
+    if report["python"]["activation_status"]["status"] != "ok" or report["r"]["activation_status"]["status"] != "ok":
+        report["status"] = "activation_failure"
+        report["activation_repair_suggestion"] = "Run through scripts/run_in_env.sh with conda run/conda activate instead of bare system python."
+    elif report["r"]["required"] and not report["r"]["rscript_available"]:
+        report["status"] = "blocked_runtime_missing"
+    elif missing_python or missing_r or missing_execs:
+        report["status"] = "blocked_dependencies_missing"
+    return report
+
+
+def public_environment_report(report: dict) -> dict:
+    clean = json.loads(json.dumps(public_data(report)))
+    python = clean.get("python")
+    if isinstance(python, dict) and python.get("executable"):
+        python["executable"] = REDACTED_LOCAL_PATH
+    if isinstance(python, dict) and python.get("which_python"):
+        python["which_python"] = REDACTED_LOCAL_PATH
+    r = clean.get("r")
+    if isinstance(r, dict) and r.get("rscript"):
+        r["rscript"] = REDACTED_LOCAL_PATH
+    if isinstance(r, dict) and r.get("which_rscript"):
+        r["which_rscript"] = REDACTED_LOCAL_PATH
+    for item in clean.get("executables", []) or []:
+        if isinstance(item, dict) and item.get("path"):
+            item["path"] = REDACTED_LOCAL_PATH
+    return clean
+
+
+def build_install_plan(report: dict, spec: dict | None = None) -> dict:
+    spec = spec or {}
+    missing_python = [pkg for pkg in report["python"]["packages"] if pkg["required"] and not pkg["installed"]]
+    missing_r = [pkg for pkg in report["r"]["packages"] if pkg["required"] and not pkg["installed"]]
+    missing_execs = [exe for exe in report["executables"] if exe["required"] and not exe["available"]]
+    py_specs = " ".join(shlex.quote(pkg["name"]) for pkg in missing_python)
+    r_specs = ", ".join(repr(pkg["name"]) for pkg in missing_r)
+    env_name = spec.get("environment_name") or spec.get("name") or "{{ skill_name }}-env"
+    current = []
+    isolated = []
+    conda = []
+    manual = []
+    if py_specs:
+        current.append("python -m pip install %s" % py_specs)
+        isolated.extend(["python -m venv .venv", ". .venv/bin/activate", "python -m pip install %s" % py_specs])
+        conda.extend(["conda create -y -n %s python>=3.10 pip" % env_name, "conda run -n %s python -m pip install %s" % (env_name, py_specs)])
+        manual.append("python -m pip install %s" % py_specs)
+    if r_specs:
+        r_command = "Rscript -e \"install.packages(c(%s), repos='https://cloud.r-project.org')\"" % r_specs
+        current.append(r_command)
+        if not conda:
+            conda.append("conda create -y -n %s python>=3.10 pip r-base" % env_name)
+        else:
+            conda[0] = conda[0] + " r-base"
+        conda.append("conda run -n %s %s" % (env_name, r_command))
+        manual.append(r_command)
+    return {
+        "status": "blocked" if missing_python or missing_r or missing_execs else "ready",
+        "effective_install_policy": report["effective_install_policy"],
+        "missing": {"python": missing_python, "r": missing_r, "executables": missing_execs},
+        "options": [
+            {"id": "A", "strategy": "current_env", "commands": current},
+            {"id": "B", "strategy": "isolated_env", "commands": isolated},
+            {"id": "C", "strategy": "conda_env", "commands": conda},
+            {"id": "D", "strategy": "manual", "commands": manual},
+            {"id": "E", "strategy": "cancel", "commands": []},
+        ],
+    }
+
+
+def validate_python_specs(specs: list[str]) -> list[str]:
+    invalid = [spec for spec in specs if not SAFE_PYTHON_SPEC_RE.match(spec)]
+    if invalid:
+        raise ValueError("Unsafe or unsupported Python package specs: %s" % ", ".join(invalid))
+    return specs
+
+
+def validate_r_packages(packages: list[str]) -> list[str]:
+    invalid = [pkg for pkg in packages if not SAFE_R_PACKAGE_RE.match(pkg)]
+    if invalid:
+        raise ValueError("Unsafe or unsupported R package names: %s" % ", ".join(invalid))
+    return packages
+
+
+def missing_python_specs(plan: dict) -> list[str]:
+    return validate_python_specs([pkg["name"] for pkg in plan["missing"]["python"]])
+
+
+def missing_r_packages(plan: dict) -> list[str]:
+    return validate_r_packages([pkg["name"] for pkg in plan["missing"]["r"]])
+
+
+def install_python_current(specs: list[str]) -> None:
+    if specs:
+        subprocess.run([sys.executable, "-m", "pip", "install", *specs], check=True)
+
+
+def install_python_isolated(specs: list[str]) -> None:
+    if not specs:
+        return
+    venv_dir = ROOT / ".venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
+    python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    subprocess.run([str(python), "-m", "pip", "install", *specs], check=True)
+
+
+def install_r_packages(packages: list[str]) -> None:
+    if not packages:
+        return
+    rscript = shutil.which("Rscript")
+    if not rscript:
+        raise RuntimeError("Rscript is required to install R packages")
+    package_vector = ", ".join(json.dumps(pkg) for pkg in packages)
+    expression = "install.packages(c(%s), repos='https://cloud.r-project.org')" % package_vector
+    subprocess.run([rscript, "-e", expression], check=True)
+
+
+def conda_manager() -> str | None:
+    return shutil.which("mamba") or shutil.which("conda")
+
+
+def conda_env_name(spec: dict) -> str:
+    return spec.get("environment_name") or spec.get("name") or "{{ skill_name }}-env"
+
+
+def install_conda_env(python_specs: list[str], r_packages: list[str], spec: dict) -> None:
+    manager = conda_manager()
+    if not manager:
+        raise RuntimeError("conda_env strategy requires conda or mamba on PATH")
+    env_name = conda_env_name(spec)
+    create_args = [manager, "create", "-y", "-n", env_name, "python>=3.10", "pip"]
+    if r_packages:
+        create_args.append("r-base")
+    subprocess.run(create_args, check=True)
+    if python_specs:
+        subprocess.run([manager, "run", "-n", env_name, "python", "-m", "pip", "install", *python_specs], check=True)
+    if r_packages:
+        package_vector = ", ".join(json.dumps(pkg) for pkg in r_packages)
+        expression = "install.packages(c(%s), repos='https://cloud.r-project.org')" % package_vector
+        subprocess.run([manager, "run", "-n", env_name, "Rscript", "-e", expression], check=True)
+
+
+def inspect_conda_env(args: argparse.Namespace, spec: dict) -> int:
+    manager = conda_manager()
+    if not manager:
+        print("conda_env strategy requires conda or mamba on PATH", file=sys.stderr)
+        return 2
+    command = [
+        manager,
+        "run",
+        "-n",
+        conda_env_name(spec),
+        "python",
+        str(Path(__file__).resolve()),
+        "inspect",
+        "--spec",
+        str(args.spec),
+        "--out",
+        str(args.out),
+    ]
+    result = subprocess.run(command, text=True, check=False)
+    return result.returncode
+
+
+def run_install_strategy(strategy: str, plan: dict, spec: dict) -> None:
+    python_specs = missing_python_specs(plan)
+    r_packages = missing_r_packages(plan)
+    if strategy == "current_env":
+        install_python_current(python_specs)
+        install_r_packages(r_packages)
+    elif strategy == "isolated_env":
+        install_python_isolated(python_specs)
+        install_r_packages(r_packages)
+    elif strategy == "conda_env":
+        install_conda_env(python_specs, r_packages, spec)
+    else:
+        raise ValueError("Unsupported install strategy: %s" % strategy)
+
+
+def render_plan_md(plan: dict) -> str:
+    lines = ["# Install Plan", "", "Status: `%s`" % plan["status"], "Effective install policy: `%s`" % plan["effective_install_policy"], ""]
+    for option in plan["options"]:
+        lines.append("## Option %s: %s" % (option["id"], option["strategy"]))
+        if option["commands"]:
+            lines.append("```bash")
+            lines.extend(option["commands"])
+            lines.append("```")
+        else:
+            lines.append("No commands.")
+        lines.append("")
+    lines.append("Installation must not run unless the user explicitly passes `--confirm yes`.")
+    return "\n".join(lines) + "\n"
+
+
+def write_outputs(report: dict, plan: dict, out: Path) -> None:
+    public_plan = public_data(plan)
+    write_json(out / "qc" / "environment_report.json", public_environment_report(report))
+    write_json(out / "qc" / "missing_dependencies.json", public_plan["missing"])
+    write_json(out / "qc" / "install_plan.json", public_plan)
+    (out / "references").mkdir(parents=True, exist_ok=True)
+    (out / "references" / "install_plan.md").write_text(render_plan_md(public_plan), encoding="utf-8")
+
+
+def inspect_command(args: argparse.Namespace) -> int:
+    spec = load_json_yaml(Path(args.spec))
+    report = inspect_environment(spec)
+    plan = build_install_plan(report, spec)
+    write_outputs(report, plan, Path(args.out))
+    print(json.dumps(public_environment_report(report), indent=2))
+    return 0 if report["status"] == "pass" else 2
+
+
+def plan_command(args: argparse.Namespace) -> int:
+    spec = load_json_yaml(Path(args.spec))
+    report = inspect_environment(spec)
+    plan = build_install_plan(report, spec)
+    write_outputs(report, plan, Path(args.out))
+    print(render_plan_md(public_data(plan)))
+    return 0
+
+
+def install_command(args: argparse.Namespace) -> int:
+    if args.confirm != "yes":
+        print("Refusing to install without --confirm yes", file=sys.stderr)
+        return 2
+    spec = load_json_yaml(Path(args.spec))
+    report = inspect_environment(spec)
+    plan = build_install_plan(report, spec)
+    option = next((item for item in plan["options"] if item["strategy"] == args.strategy), None)
+    if not option:
+        print("Unknown strategy: %s" % args.strategy, file=sys.stderr)
+        return 2
+    if args.strategy in {"manual", "cancel"}:
+        print(render_plan_md(public_data(plan)))
+        return 0
+    if plan["effective_install_policy"] == "never":
+        write_outputs(report, plan, Path(args.out))
+        print("Refusing to install because effective install policy is never", file=sys.stderr)
+        return 2
+    run_install_strategy(args.strategy, plan, spec)
+    if args.strategy == "conda_env":
+        return inspect_conda_env(args, spec)
+    return inspect_command(args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command", required=True)
+    for name in ["inspect", "plan"]:
+        p = sub.add_parser(name)
+        p.add_argument("--spec", default=str(SPEC_PATH))
+        p.add_argument("--manifest", default=None)
+        p.add_argument("--out", default=str(ROOT / "result"))
+    install = sub.add_parser("install")
+    install.add_argument("--spec", default=str(SPEC_PATH))
+    install.add_argument("--manifest", default=None)
+    install.add_argument("--out", default=str(ROOT / "result"))
+    install.add_argument("--strategy", choices=["current_env", "isolated_env", "conda_env", "manual", "cancel"], required=True)
+    install.add_argument("--confirm", default="no")
+    args = parser.parse_args(argv)
+    if args.command == "inspect":
+        return inspect_command(args)
+    if args.command == "plan":
+        return plan_command(args)
+    if args.command == "install":
+        return install_command(args)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
