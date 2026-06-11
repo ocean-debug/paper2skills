@@ -90,7 +90,7 @@ official_examples:
   dependencies:
     allowed_installers: [conda, pip, BiocManager, install.packages]
     conda_channels: [conda-forge, bioconda]
-    conda: [r-base, git, bioconductor-deseq2, bioconductor-apeglm, r-ggplot2]
+    conda: [r-base, git, bioconductor-deseq2, r-ggplot2]
     r: []
   reviewed_adapter:
     status: verified

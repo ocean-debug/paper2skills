@@ -11,6 +11,7 @@ import yaml
 
 from paper2skill.common import ensure_dir, write_json, write_text
 from paper2skill.evaluation.evaluate_case import evaluate_case
+from paper2skill.evaluation.schemas import BENCHMARK_L2_MODE
 from paper2skill.evaluation.summarize_benchmark import summarize_data, summarize_results
 from paper2skill.generators.codex_skill_generator import build_context, generate_skill
 
@@ -67,7 +68,7 @@ def run_real_benchmark(
     download_cache: str | Path = "benchmarks/data_cache",
     max_download_mb: float = 0.0,
     allow_execution: str = "reviewed_only",
-    l2_mode: str = "dry_run",
+    l2_mode: str = BENCHMARK_L2_MODE,
     allow_install: str = "none",
     install_env: str | None = None,
     create_conda_env: bool = False,
@@ -77,7 +78,7 @@ def run_real_benchmark(
     allow_github_install: str = "ask",
     gpu_policy: str = "optional",
     torch_backend: str = "auto",
-    repair_attempts: int = 0,
+    repair_attempts: int = 3,
     export_lock: bool = False,
     builder: Builder = build_context,
     generator: Generator = generate_skill,
@@ -128,6 +129,11 @@ def run_real_benchmark(
         "summary_json_path": str(summary_json_path),
         "case_count": len(results),
         "failed_case_count": sum(1 for item in results if item.get("status") != "evaluated"),
+        "benchmark_policy": {
+            "build_validation_is_scoring": False,
+            "l2_requires_live_execute": True,
+            "requested_l2_mode": l2_mode,
+        },
         "cases": results,
     }
     write_json(out_base / "run_real_benchmark.json", run_result)
@@ -269,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--download-cache", default="benchmarks/data_cache", help="Download cache directory")
     parser.add_argument("--max-download-mb", type=float, default=0.0, help="Maximum download size for entries without a tighter limit")
     parser.add_argument("--allow-execution", default="reviewed_only", choices=["none", "reviewed_only", "all"], help="Execution policy for L2/L3")
-    parser.add_argument("--l2-mode", default="dry_run", choices=["dry_run", "data_smoke", "live_execute"], help="L2 depth: dry_run, data_smoke, or live_execute")
+    parser.add_argument("--l2-mode", default=BENCHMARK_L2_MODE, choices=["dry_run", "data_smoke", "live_execute"], help="Benchmark L2 depth; live_execute is required for real L2 scoring. dry_run/data_smoke are diagnostic-only.")
     parser.add_argument("--allow-install", default="none", choices=["none", "ask", "approved"], help="Dependency install policy; 'approved' installs into the case env")
     parser.add_argument("--install-env", help="Target environment name/path; omitted means p2s_l2_<case_id>")
     parser.add_argument("--create-conda-env", action="store_true", help="Create the target conda env before approved live execution")
@@ -278,8 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-env-mode", default="new", choices=["new", "existing"], help="BioEnvRebuilder target mode")
     parser.add_argument("--allow-github-install", default="ask", choices=["ask", "approved"], help="Whether BioEnvRebuilder may execute GitHub install steps")
     parser.add_argument("--gpu-policy", default="optional", choices=["required", "optional", "cpu_only"], help="BioEnvRebuilder GPU policy")
-    parser.add_argument("--torch-backend", default="auto", choices=["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128"], help="uv PyTorch backend selection")
-    parser.add_argument("--repair-attempts", type=int, default=0, help="Number of BioEnvRebuilder repair attempts to record/request")
+    parser.add_argument("--torch-backend", default="auto", choices=["auto", "cpu", "cu118", "cu121", "cu124", "cu126", "cu128"], help="PyTorch special-route CPU/CUDA profile")
+    parser.add_argument("--repair-attempts", type=int, default=3, help="Number of BioEnvRebuilder repair attempts to record/request")
     parser.add_argument("--export-lock", action="store_true", help="Request lockfile export artifacts after L2 approved installs")
     return parser
 

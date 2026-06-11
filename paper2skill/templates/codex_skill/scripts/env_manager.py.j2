@@ -236,7 +236,32 @@ def probe_python(packages: list[dict]) -> dict:
         pip_available = True
     except Exception:
         pip_available = False
-    return {"executable": sys.executable, "version": sys.version.split()[0], "pip_available": pip_available, "packages": records}
+    return {
+        "which_python": shutil.which("python"),
+        "executable": sys.executable,
+        "version": sys.version.split()[0],
+        "version_output": command_output([sys.executable, "-V"]),
+        "pip_available": pip_available,
+        "activation_status": python_activation_status(sys.executable, sys.version_info),
+        "packages": records,
+    }
+
+
+def command_output(command: list[str]) -> dict:
+    try:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+        return {"command": command, "exit_code": completed.returncode, "stdout": completed.stdout.strip(), "stderr": completed.stderr.strip()}
+    except Exception as exc:
+        return {"command": command, "exit_code": 127, "stdout": "", "stderr": str(exc)}
+
+
+def python_activation_status(executable: str, version_info) -> dict:
+    lowered = executable.lower()
+    if version_info.major < 3:
+        return {"status": "activation_failure", "reason": "python2_detected"}
+    if "/usr/bin/python" in lowered or "\\windows\\" in lowered:
+        return {"status": "activation_failure", "reason": "system_python_detected"}
+    return {"status": "ok"}
 
 
 def distribution_or_import_available(name: str) -> bool:
@@ -259,7 +284,15 @@ def probe_r(packages: list[dict], required: bool) -> dict:
             command = [rscript, "-e", "quit(status = ifelse(requireNamespace('%s', quietly=TRUE), 0, 1))" % name]
             installed = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
         records.append({"name": name, "source": item.get("source", "CRAN_or_unknown"), "installed": installed, "required": item.get("required", True)})
-    return {"rscript_available": rscript is not None, "rscript": rscript, "required": required or bool(packages), "packages": records}
+    return {
+        "rscript_available": rscript is not None,
+        "which_rscript": rscript,
+        "rscript": rscript,
+        "rscript_version": command_output([rscript, "--version"]) if rscript else None,
+        "required": required or bool(packages),
+        "activation_status": {"status": "ok"} if rscript or not (required or packages) else {"status": "activation_failure", "reason": "rscript_missing"},
+        "packages": records,
+    }
 
 
 def probe_executables(executables: list[dict]) -> list[dict]:
@@ -285,7 +318,10 @@ def inspect_environment(spec: dict) -> dict:
     missing_python = [pkg for pkg in report["python"]["packages"] if pkg["required"] and not pkg["installed"]]
     missing_r = [pkg for pkg in report["r"]["packages"] if pkg["required"] and not pkg["installed"]]
     missing_execs = [exe for exe in report["executables"] if exe["required"] and not exe["available"]]
-    if report["r"]["required"] and not report["r"]["rscript_available"]:
+    if report["python"]["activation_status"]["status"] != "ok" or report["r"]["activation_status"]["status"] != "ok":
+        report["status"] = "activation_failure"
+        report["activation_repair_suggestion"] = "Run through scripts/run_in_env.sh or qsub_template.sh with conda run/conda activate instead of bare system python."
+    elif report["r"]["required"] and not report["r"]["rscript_available"]:
         report["status"] = "blocked_runtime_missing"
     elif missing_python or missing_r or missing_execs:
         report["status"] = "blocked_dependencies_missing"
@@ -297,9 +333,13 @@ def public_environment_report(report: dict) -> dict:
     python = clean.get("python")
     if isinstance(python, dict) and python.get("executable"):
         python["executable"] = REDACTED_LOCAL_PATH
+    if isinstance(python, dict) and python.get("which_python"):
+        python["which_python"] = REDACTED_LOCAL_PATH
     r = clean.get("r")
     if isinstance(r, dict) and r.get("rscript"):
         r["rscript"] = REDACTED_LOCAL_PATH
+    if isinstance(r, dict) and r.get("which_rscript"):
+        r["which_rscript"] = REDACTED_LOCAL_PATH
     for item in clean.get("executables", []) or []:
         if isinstance(item, dict) and item.get("path"):
             item["path"] = REDACTED_LOCAL_PATH

@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RESULT = ROOT / "result"
-ENVIRONMENT_BLOCKED_STATUSES = {"blocked_runtime_missing", "blocked_dependencies_missing"}
+ENVIRONMENT_BLOCKED_STATUSES = {"activation_failure", "blocked_runtime_missing", "blocked_dependencies_missing"}
 
 
 def _load_json(path: Path) -> dict:

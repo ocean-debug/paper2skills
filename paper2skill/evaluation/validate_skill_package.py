@@ -14,6 +14,9 @@ from paper2skill.evaluation.schemas import EXECUTABLE_ADAPTER_STATUSES, VALID_AD
 REQUIRED_SKILL_FILES = [
     "SKILL.md",
     "scripts/preflight.py",
+    "scripts/env_manager.py",
+    "scripts/run_in_env.sh",
+    "scripts/qsub_template.sh",
     "scripts/plan.py",
     "scripts/run.py",
     "scripts/validate_outputs.py",
@@ -24,6 +27,9 @@ REQUIRED_SKILL_FILES = [
     "references/adapter_review.yaml",
     "references/notebook_execution_policy.json",
     "references/evidence_graph.json",
+    "assets/environment_spec.yaml",
+    "assets/env/paper2skill.environment.yml",
+    "assets/env/normalization_report.json",
 ]
 
 REQUIRED_DIRS = ["scripts/adapters"]

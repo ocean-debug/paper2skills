@@ -7,7 +7,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from paper2skill.build_validation import VALIDATION_DEPTHS, validate_build
 from paper2skill.common import slugify
+from paper2skill.common import write_json
 from paper2skill.generators.codex_skill_generator import build_context, example_inputs, generate_skill, plan_outputs
 from paper2skill.runtime.env_manager import inspect_environment, load_environment_spec, public_environment_report
 from paper2skill.validators.skill_validator import validate_skill
@@ -28,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--algorithm-name", default=None)
     build.add_argument("--task", default=None)
     build.add_argument("--out", default=None)
+    build.add_argument("--validation-depth", default="dry_run", choices=list(VALIDATION_DEPTHS), help="Build-time self-check depth; not benchmark scoring.")
 
     validate = sub.add_parser("validate", help="Validate a generated skill.")
     validate.add_argument("--skill", required=True)
@@ -36,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     test = sub.add_parser("test", help="Run tests for a generated skill.")
     test.add_argument("--skill", required=True)
     test.add_argument("--mode", choices=["preflight", "environment", "plan", "demo", "all"], default="all")
+    test.add_argument("--validation-depth", default=None, choices=list(VALIDATION_DEPTHS), help="Run Paper2Skill build-time self-check instead of pytest mode.")
 
     inspect = sub.add_parser("inspect-env", help="Inspect a generated skill environment.")
     inspect.add_argument("--skill", required=True)
@@ -114,8 +118,10 @@ def command_build(args: argparse.Namespace) -> int:
     values["collection_dir"] = out_dir.parent / ".paper2skill_collection" / out_dir.name
     context = build_context(**values)
     generate_skill(context, out_dir)
+    validation = validate_build(out_dir, validation_depth=args.validation_depth)
+    write_json(out_dir / "build_validation" / "build_validation.json", validation)
     print(f"Generated skill at {out_dir}")
-    return 0
+    return 0 if validation["passed"] else 2
 
 
 def command_validate(args: argparse.Namespace) -> int:
@@ -133,6 +139,10 @@ def command_validate(args: argparse.Namespace) -> int:
 
 def command_test(args: argparse.Namespace) -> int:
     skill = Path(args.skill)
+    if args.validation_depth:
+        result = validate_build(skill, validation_depth=args.validation_depth)
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result["passed"] else 2
     test_map = {
         "preflight": ["tests/test_preflight.py"],
         "environment": ["tests/test_environment.py"],

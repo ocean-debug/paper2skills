@@ -95,7 +95,7 @@ def clone_repo(repo: str, work_dir: Path, ref: str | None = None) -> Path:
     if result.returncode != 0 and ref:
         retry = subprocess.run(["git", "clone", repo, str(dest)], text=True, capture_output=True, check=False)
         if retry.returncode == 0:
-            checkout = subprocess.run(["git", "-C", str(dest), "checkout", ref], text=True, capture_output=True, check=False)
+            checkout = subprocess.run(["git", "checkout", ref], cwd=dest, text=True, capture_output=True, check=False)
             if checkout.returncode == 0:
                 return dest
         if github_parts(repo):
@@ -224,7 +224,7 @@ def git_rev_parse(path: Path) -> str | None:
     if archive_sha.exists():
         return archive_sha.read_text(encoding="utf-8").strip() or None
     try:
-        result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, capture_output=True, check=False)
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=path, text=True, capture_output=True, check=False)
     except FileNotFoundError:
         return None
     if result.returncode != 0:

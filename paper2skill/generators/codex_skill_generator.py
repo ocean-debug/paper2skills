@@ -16,6 +16,8 @@ from paper2skill.collectors.repo_collector import collect_repo
 from paper2skill.collectors.tutorial_collector import collect_tutorials
 from paper2skill.common import PROJECT_ROOT, ensure_dir, slugify, write_json, write_text, write_yaml
 from paper2skill.evidence.evidence_graph import build_evidence_graph
+from paper2skill.env_rebuilder.canonical_env import CANONICAL_ENV_RELATIVE_PATH
+from paper2skill.env_rebuilder.routes import DEFAULT_BIOCONDA_CHANNELS, route_python_packages, route_r_packages
 from paper2skill.inference.classify_algorithm import classify_algorithm
 from paper2skill.inference.infer_bio_contract import infer_bio_contract
 from paper2skill.inference.infer_environment import infer_environment_spec
@@ -599,6 +601,8 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
         "SKILL.md.j2": "SKILL.md",
         "scripts/preflight.py.j2": "scripts/preflight.py",
         "scripts/env_manager.py.j2": "scripts/env_manager.py",
+        "scripts/run_in_env.sh.j2": "scripts/run_in_env.sh",
+        "scripts/qsub_template.sh.j2": "scripts/qsub_template.sh",
         "scripts/plan.py.j2": "scripts/plan.py",
         "scripts/run.py.j2": "scripts/run.py",
         "scripts/validate_outputs.py.j2": "scripts/validate_outputs.py",
@@ -644,8 +648,12 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_text(root / "references" / "install_plan.md", public_context["install_plan_markdown"])
     write_text(root / "assets" / "environment_spec.yaml", json.dumps(public_context["environment_spec"], indent=2) + "\n")
     write_text(root / "assets" / "demo_input_manifest.yaml", json.dumps(public_data(_demo_manifest(context), PROJECT_ROOT), indent=2) + "\n")
-    write_text(root / "assets" / "requirements.txt", "\n".join(_python_specs(public_context["environment_spec"])) + "\n")
-    write_text(root / "assets" / "environment.yml", _conda_environment(public_context))
+    canonical_env, normalization_report = _canonical_environment(public_context)
+    pip_segment = normalization_report.get("pip_segment") or []
+    write_text(root / "assets" / "requirements.txt", ("\n".join(pip_segment) + "\n") if pip_segment else "")
+    write_text(root / "assets" / "environment.yml", yaml.safe_dump(canonical_env, sort_keys=False))
+    write_text(root / CANONICAL_ENV_RELATIVE_PATH, yaml.safe_dump(canonical_env, sort_keys=False))
+    write_json(root / "assets" / "env" / "normalization_report.json", normalization_report)
     write_text(root / "assets" / "renv.lock.placeholder", "{}\n")
     write_text(root / "assets" / "demo_input.csv", context["demo_data"])
     write_source_snapshot(context, root)
@@ -858,14 +866,57 @@ def _python_specs(environment_spec: dict[str, Any]) -> list[str]:
     return specs
 
 
+def _r_specs(environment_spec: dict[str, Any]) -> list[str]:
+    specs = []
+    for item in environment_spec.get("r", {}).get("packages", []):
+        required = item.get("required", True) if isinstance(item, dict) else True
+        if required:
+            specs.append(item["name"] if isinstance(item, dict) else str(item))
+    return specs
+
+
 def _conda_environment(context: dict[str, Any]) -> str:
-    deps = ["python>=3.10", "pip"]
-    if context["environment_spec"].get("r", {}).get("required"):
+    env, _report = _canonical_environment(context)
+    return yaml.safe_dump(env, sort_keys=False)
+
+
+def _canonical_environment(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    env_spec = context["environment_spec"]
+    python_specs = _python_specs(env_spec)
+    routed = route_python_packages(python_specs)
+    r_specs = _r_specs(env_spec)
+    r_routed = route_r_packages(r_specs)
+    deps: list[Any] = ["python>=3.10", "pip", "uv"]
+    if env_spec.get("r", {}).get("required"):
         deps.append("r-base")
-    python_specs = _python_specs(context["environment_spec"])
-    if python_specs:
-        deps.append({"pip": python_specs})
-    return yaml.safe_dump({"name": f"{context['skill_name']}-env", "channels": ["conda-forge"], "dependencies": deps}, sort_keys=False)
+    for item in (env_spec.get("conda") or {}).get("packages") or []:
+        package = item.get("package") if isinstance(item, dict) else item
+        if package:
+            deps.append(str(package))
+    deps.extend(routed["conda"])
+    deps.extend(r_routed["conda_packages"])
+    for route in routed.get("special") or []:
+        deps.extend(route.get("conda_packages") or [])
+    deps = sorted(dict.fromkeys(str(item) for item in deps if str(item).strip()))
+    env = {
+        "name": f"{context['skill_name']}-env",
+        "channels": DEFAULT_BIOCONDA_CHANNELS,
+        "dependencies": deps,
+    }
+    report = {
+        "status": "derived",
+        "upstream": "generated_environment_spec",
+        "canonical_path": CANONICAL_ENV_RELATIVE_PATH,
+        "route_migrations": routed.get("migrations") or [],
+        "special_routes": routed.get("special") or [],
+        "additive_dependencies": r_routed.get("routes") or [],
+        "manual_blocks": [*(routed.get("manual") or []), *(r_routed.get("manual") or [])],
+        "pip_segment": sorted(dict.fromkeys(routed["uv"])),
+        "conflicts": [],
+        "channel_priority": "strict",
+        "patch_policy": "additive_or_route_migration",
+    }
+    return env, report
 
 
 def _build_plan_markdown(context: dict[str, Any]) -> str:

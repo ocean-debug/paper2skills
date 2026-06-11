@@ -41,6 +41,9 @@ Benchmark-driven development for real-world cases is documented in
 [`docs/benchmark.md`](docs/benchmark.md). The benchmark framework is organized as
 a five-level pyramid: L0 package/safety validation, L1 static extraction, L2
 official examples, L3 new-data validation, and L4 agentic safe-use tasks.
+Build-time validation is separate: `paper2skill.cli build` defaults to
+`--validation-depth dry_run` for fast self-checks, while real benchmark L2
+requires full official example `live_execute` success.
 
 Minimal end-to-end build from paper and repository inputs:
 

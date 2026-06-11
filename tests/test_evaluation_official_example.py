@@ -1,21 +1,26 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import paper2skill.evaluation.execution.run_official_example as official_example
 from paper2skill.evaluation.execution.data_manager import prepare_download
 from paper2skill.evaluation.execution.run_official_example import evaluate_official_examples
+from paper2skill.evaluation.execution.run_official_example import run_repair_attempts
+from paper2skill.evaluation.execution.run_official_example import safe_repair_plan
 
 
-def test_l2_blocked_expected_passes_for_candidate_adapter():
+def test_l2_policy_block_is_diagnostic_not_l2_success():
     gold = {"official_examples": [{"example_id": "demo", "execution_mode": "blocked_expected", "expected_run": {"expected_status": "blocked_by_policy"}}]}
     generated = {"adapter_review": {"status": "candidate"}}
 
-    result = evaluate_official_examples(gold, generated)
+    result = evaluate_official_examples(gold, generated, l2_mode="dry_run")
 
-    assert result["passed"] is True
+    assert result["passed"] is False
     assert result["examples"][0]["actual_status"] == "blocked_by_policy"
+    assert result["examples"][0]["score_reason"] == "expected_policy_block_is_l4_not_l2"
+    assert result["examples"][0]["execution_passed"] is False
 
 
 def test_l2_download_skipped_without_allow_download(tmp_path: Path):
@@ -114,11 +119,16 @@ def test_l2_verified_adapter_invokes_generated_run_script(tmp_path: Path):
     result = evaluate_official_examples(gold, generated, skill_dir=tmp_path, l2_mode="data_smoke")
 
     example = result["examples"][0]
-    assert result["passed"] is True
-    assert result["score"] == 100.0
+    assert result["passed"] is False
+    assert result["score"] == 0.0
+    assert example["passed"] is False
+    assert example["execution_passed"] is True
     assert example["actual_status"] == "success"
     assert example["execution_depth"] == "data_smoke"
-    assert example["score_reason"] == "data_smoke_success"
+    assert example["score_reason"] == "diagnostic_data_smoke_success_not_benchmark_scoring"
+    assert example["diagnostic_only"] is True
+    assert result["l2_summary"]["diagnostic_only"] is True
+    assert result["l2_summary"]["benchmark_policy"] == "diagnostic_only"
     assert example["execution"]["exit_code"] == 0
     assert (tmp_path / ".benchmark" / "l2" / "demo" / "result.txt").exists()
 
@@ -196,8 +206,9 @@ def test_l2_preflight_policy_block_is_reported_without_running_adapter(tmp_path:
     result = evaluate_official_examples(gold, generated, skill_dir=tmp_path, l2_mode="data_smoke")
 
     example = result["examples"][0]
-    assert result["passed"] is True
+    assert result["passed"] is False
     assert example["actual_status"] == "blocked_by_policy"
+    assert example["score_reason"] == "expected_policy_block_is_l4_not_l2"
     assert example["execution"]["preflight"]["exit_code"] == 2
     assert not (tmp_path / ".benchmark" / "l2" / "demo" / "should_not_exist.txt").exists()
 
@@ -257,14 +268,15 @@ def test_l2_reviewed_adapter_overlay_copies_fixture_and_executes(tmp_path: Path)
     result = evaluate_official_examples(gold, generated, skill_dir=skill, case_dir=case_dir, l2_mode="data_smoke")
 
     example = result["examples"][0]
-    assert result["passed"] is True
+    assert result["passed"] is False
     assert example["adapter_status"] == "verified"
     assert example["actual_status"] == "success"
+    assert example["diagnostic_only"] is True
     assert example["reviewed_adapter"]["status"] == "applied"
     assert example["fixtures"]["status"] == "ready"
 
 
-def test_l2_default_dry_run_skips_data_smoke_without_side_effects(tmp_path: Path):
+def test_l2_default_benchmark_requires_live_execute_gold(tmp_path: Path):
     gold = {
         "official_examples": [
             {
@@ -279,16 +291,30 @@ def test_l2_default_dry_run_skips_data_smoke_without_side_effects(tmp_path: Path
 
     result = evaluate_official_examples(gold, generated, skill_dir=tmp_path)
 
-    example = result["examples"][0]
     assert result["passed"] is False
-    assert result["score"] == 25.0
-    assert example["actual_status"] == "skipped_by_l2_mode"
-    assert example["execution_depth"] == "dry_run_skip"
-    assert example["score"] == 0.25
-    assert example["score_reason"] == "dry_run_skip_no_example_execution"
-    assert example["download"]["status"] == "not_applicable"
-    assert example["execution"]["status"] == "not_applicable"
-    assert result["l2_summary"]["execution_depth_counts"] == {"dry_run_skip": 1}
+    assert result["score"] == 0.0
+    assert "level2_official_examples.live_execute" in result["missing_items"]
+    assert result["l2_summary"]["status_counts"] == {"missing_live_official_example_gold": 1}
+    assert result["l2_summary"]["benchmark_policy"] == "live_execute_required"
+
+
+def test_l2_empty_gold_is_not_scored_as_success(tmp_path: Path):
+    result = evaluate_official_examples({}, {"adapter_review": {"status": "verified"}}, skill_dir=tmp_path)
+
+    assert result["passed"] is False
+    assert result["score"] == 0.0
+    assert "level2_official_examples.official_examples" in result["missing_items"]
+    assert result["l2_summary"]["score_reasons"] == {"missing_live_official_example_gold": 1}
+
+
+def test_l2_empty_gold_in_diagnostic_mode_is_still_zero_score(tmp_path: Path):
+    result = evaluate_official_examples({}, {"adapter_review": {"status": "verified"}}, skill_dir=tmp_path, l2_mode="data_smoke")
+
+    assert result["passed"] is False
+    assert result["score"] == 0.0
+    assert result["diagnostic_only"] is True
+    assert result["l2_summary"]["benchmark_policy"] == "diagnostic_only"
+    assert result["l2_summary"]["score_reasons"] == {"missing_official_example_gold": 1}
 
 
 def test_l2_data_smoke_requires_explicit_download(tmp_path: Path):
@@ -363,7 +389,7 @@ def test_l2_live_execute_missing_dependencies_returns_install_request(tmp_path: 
     example = result["examples"][0]
     assert result["passed"] is False
     assert example["actual_status"] == "install_approval_required"
-    assert example["score"] == 0.5
+    assert example["score"] == 0.0
     assert example["execution_depth"] == "install_approval_required"
     request = example["execution"]["install_request"]
     assert request["target_environment"] == "paper2skill-l2-demo"
@@ -416,9 +442,11 @@ def test_l2_live_execute_selects_live_entries_only(tmp_path: Path):
     assert len(result["examples"]) == 1
     assert result["examples"][0]["example_id"] == "live"
     assert result["examples"][0]["execution_depth"] == "live_execute"
+    assert result["examples"][0]["passed"] is True
+    assert result["examples"][0]["execution_passed"] is True
 
 
-def test_l2_live_request_does_not_count_smoke_fallback_as_live_success(tmp_path: Path):
+def test_l2_live_request_requires_live_gold_instead_of_smoke_fallback(tmp_path: Path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     (scripts / "run.py").write_text(
@@ -452,12 +480,10 @@ def test_l2_live_request_does_not_count_smoke_fallback_as_live_success(tmp_path:
 
     result = evaluate_official_examples(gold, generated, skill_dir=tmp_path, l2_mode="live_execute")
 
-    example = result["examples"][0]
     assert result["passed"] is False
-    assert example["actual_status"] == "success"
-    assert example["execution_depth"] == "data_smoke"
-    assert example["score"] == 0.5
-    assert example["score_reason"] == "data_smoke_success_when_live_execute_requested"
+    assert result["score"] == 0.0
+    assert "level2_official_examples.live_execute" in result["missing_items"]
+    assert result["l2_summary"]["score_reasons"] == {"missing_live_official_example_gold": 1}
 
 
 def test_l2_live_execute_approved_install_uses_conda_env_runner(tmp_path: Path, monkeypatch):
@@ -574,6 +600,184 @@ def test_l2_live_execute_can_use_bio_env_rebuilder(tmp_path: Path, monkeypatch):
             {
                 "example_id": "live",
                 "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["pip"], "pip": ["paper-only"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        env_rebuilder="bio",
+        export_lock=True,
+    )
+
+    assert result["passed"] is True
+    assert seen_plan["manager"] == "uv"
+    assert seen_plan["torch_backend"] == "auto"
+    assert seen_plan["resolved_env_path"] == str(tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo")
+    assert seen_commands
+    expected_python = tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo"
+    assert any(str(command[0]).startswith(str(expected_python)) for command in seen_commands)
+    install_report = result["examples"][0]["execution"]["install_report"]
+    assert install_report["env_rebuilder"] == "bio"
+    assert install_report["resolved_env_path"] == str(expected_python)
+    assert install_report["python_executable"].startswith(str(expected_python))
+    assert install_report["export_lock_requested"] is True
+
+
+def test_l2_bio_env_scans_skill_lockfile_for_frozen_restore(tmp_path: Path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    lock_dir = tmp_path / "assets" / "env"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "conda-lock.yml").write_text(
+        """
+metadata:
+  platforms:
+    - linux-64
+  channels:
+    - conda-forge
+    - bioconda
+package:
+  - name: python
+    platform: linux-64
+    manager: conda
+    url: https://conda.anaconda.org/conda-forge/linux-64/python.tar.bz2
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    seen_plan = {}
+    seen_commands = []
+
+    def fake_apply(plan, *, yes):
+        seen_plan.update(plan)
+        return {"status": "executed", "manager": plan["manager"], "execution_results": [{"kind": command["kind"], "exit_code": 0} for command in plan["commands"]], "auto_install_performed": True}
+
+    def fake_run(command, **kwargs):
+        seen_commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(official_example, "apply_bio_install_plan", fake_apply)
+    monkeypatch.setattr(official_example.subprocess, "run", fake_run)
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"allowed_installers": ["pip"], "pip": ["paper-only"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+    generated = {"adapter_review": {"status": "verified"}}
+
+    result = evaluate_official_examples(
+        gold,
+        generated,
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        env_rebuilder="bio",
+    )
+
+    assert result["passed"] is True
+    assert seen_plan["mode"] == "lockfile_restore"
+    assert seen_plan["frozen"] is True
+    assert [command["kind"] for command in seen_plan["commands"]] == ["restore_conda_lock", "environment_probe"]
+    install_report = result["examples"][0]["execution"]["install_report"]
+    assert install_report["plan_source"] == "lockfile_restore"
+    assert install_report["install_plan_path"].endswith("install_plan.json")
+    assert install_report["env_rebuild_report_path"].endswith("env_rebuild_report.json")
+    assert any(item["name"] == "conda-lock.yml" for item in install_report["scanned_artifacts"])
+
+
+def test_l2_bio_env_scans_source_manifest_repo_lockfile(tmp_path: Path, monkeypatch):
+    scripts = tmp_path / "scripts"
+    refs = tmp_path / "references"
+    scripts.mkdir()
+    refs.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    repo = tmp_path / "cloned_repo"
+    repo.mkdir()
+    (repo / "conda-lock.yml").write_text(
+        """
+metadata:
+  platforms:
+    - linux-64
+  channels:
+    - conda-forge
+    - bioconda
+package:
+  - name: python
+    platform: linux-64
+    manager: conda
+    url: https://conda.anaconda.org/conda-forge/linux-64/python.tar.bz2
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (refs / "source_manifest.json").write_text(json.dumps({"repo": {"resolved_path": str(repo)}}), encoding="utf-8")
+    seen_plan = {}
+
+    def fake_apply(plan, *, yes):
+        seen_plan.update(plan)
+        return {"status": "executed", "manager": plan["manager"], "execution_results": [{"kind": command["kind"], "exit_code": 0} for command in plan["commands"]]}
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(official_example, "apply_bio_install_plan", fake_apply)
+    monkeypatch.setattr(official_example.subprocess, "run", fake_run)
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
+                "dependencies": {"pip": ["paper-only"]},
+                "expected_run": {"expected_status": "success"},
+            }
+        ]
+    }
+
+    result = evaluate_official_examples(
+        gold,
+        {"adapter_review": {"status": "verified"}},
+        skill_dir=tmp_path,
+        l2_mode="live_execute",
+        allow_install="approved",
+        install_env="p2s_l2_case_demo",
+        env_rebuilder="bio",
+    )
+
+    assert result["passed"] is True
+    assert seen_plan["mode"] == "lockfile_restore"
+    assert seen_plan["allow_install"] == "approved"
+    sources = [item["source"] for item in result["examples"][0]["execution"]["install_report"]["scanned_artifacts"]]
+    assert str(repo / "conda-lock.yml") in sources
+
+
+def test_l2_bio_env_torch_cuda_requires_manual_special_route(tmp_path: Path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "preflight.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (scripts / "run.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    gold = {
+        "official_examples": [
+            {
+                "example_id": "live",
+                "execution_mode": "live_execute",
                 "dependencies": {"allowed_installers": ["pip"], "pip": ["torch"]},
                 "expected_run": {"expected_status": "success"},
             }
@@ -589,22 +793,17 @@ def test_l2_live_execute_can_use_bio_env_rebuilder(tmp_path: Path, monkeypatch):
         allow_install="approved",
         install_env="p2s_l2_case_demo",
         env_rebuilder="bio",
+        gpu_policy="required",
         torch_backend="cu128",
-        export_lock=True,
     )
 
-    assert result["passed"] is True
-    assert seen_plan["manager"] == "uv"
-    assert seen_plan["torch_backend"] == "cu128"
-    assert seen_plan["resolved_env_path"] == str(tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo")
-    assert seen_commands
-    expected_python = tmp_path / ".benchmark" / "envs" / "p2s_l2_case_demo"
-    assert any(str(command[0]).startswith(str(expected_python)) for command in seen_commands)
-    install_report = result["examples"][0]["execution"]["install_report"]
-    assert install_report["env_rebuilder"] == "bio"
-    assert install_report["resolved_env_path"] == str(expected_python)
-    assert install_report["python_executable"].startswith(str(expected_python))
-    assert install_report["export_lock_requested"] is True
+    example = result["examples"][0]
+    assert result["passed"] is False
+    assert example["actual_status"] == "install_approval_required"
+    commands = example["execution"]["install_report"]["install_plan"]["commands"]
+    special = next(command for command in commands if command["kind"] == "manual_special_route")
+    assert special["kind"] == "manual_special_route"
+    assert special["special_route"]["route"] == "special_torch"
 
 
 def test_l2_bio_env_github_install_unapproved_is_approval_required(tmp_path: Path):
@@ -693,3 +892,86 @@ def test_l2_bio_env_failed_install_records_repair_attempt_and_retries(tmp_path: 
     assert report["repair_attempts"][0]["status"] == "retried_safe_repair"
     assert len(calls) == 3
     assert (tmp_path / ".benchmark" / "l2" / "live" / "repair_attempts.json").exists()
+
+
+def test_safe_repair_plan_limits_repeated_failure_modes_and_requires_known_route():
+    diagnosis = {
+        "findings": [
+            {"failure_mode": "missing_r_package", "package": "DESeq2"},
+            {"failure_mode": "missing_r_package", "package": "DESeq2"},
+            {"failure_mode": "missing_r_package", "package": "DESeq2"},
+            {"failure_mode": "missing_executable", "executable": "unknowncmd"},
+        ]
+    }
+    counts = {}
+    plan = safe_repair_plan(diagnosis, {"env": "p2s_l2_case", "manager": "conda"}, failure_mode_counts=counts)
+
+    assert len(plan["commands"]) == 2
+    assert all(command["repair_patch_type"] == "additive" for command in plan["commands"])
+    assert all("--strict-channel-priority" in command["command"] for command in plan["commands"])
+    assert any(item["reason"] == "same failure repair limit exceeded" for item in plan["blocked_repairs"])
+    assert any(item.get("executable") == "unknowncmd" for item in plan["blocked_repairs"])
+
+
+def test_safe_repair_plan_allows_multiple_packages_in_one_repair_round():
+    diagnosis = {
+        "findings": [
+            {"failure_mode": "missing_r_package", "package": "DESeq2"},
+            {"failure_mode": "missing_r_package", "package": "ggplot2"},
+            {"failure_mode": "missing_executable", "executable": "Rscript"},
+        ]
+    }
+    counts = {}
+
+    plan = safe_repair_plan(diagnosis, {"env": "p2s_l2_case", "manager": "conda"}, failure_mode_counts=counts)
+
+    packages = [package for command in plan["commands"] for package in command["packages"]]
+    assert "bioconductor-deseq2" in packages
+    assert "r-ggplot2" in packages
+    assert "r-base" in packages
+    assert not any(item["reason"] == "same failure repair limit exceeded" for item in plan["blocked_repairs"])
+
+
+def test_frozen_lockfile_probe_failure_is_diagnosed_without_repair(monkeypatch):
+    calls = []
+
+    def fake_apply(plan, yes):
+        calls.append([command.get("kind") for command in plan.get("commands") or []])
+        return {
+            "status": "failed",
+            "execution_results": [
+                {"kind": "environment_probe", "exit_code": 1, "stderr": "executable not found: python"}
+            ],
+        }
+
+    monkeypatch.setattr("paper2skill.evaluation.execution.run_official_example.apply_bio_install_plan", fake_apply)
+    attempts = run_repair_attempts(
+        {"status": "failed", "stderr": "executable not found: python"},
+        plan={
+            "mode": "lockfile_restore",
+            "frozen": True,
+            "repair_policy": "suggestion_only",
+            "commands": [{"kind": "restore_conda_lock"}, {"kind": "environment_probe"}],
+        },
+        requested_attempts=3,
+    )
+
+    assert attempts[0]["status"] == "diagnosed_only_frozen_lockfile"
+    assert calls == []
+
+
+def test_safe_repair_plan_allows_case_gold_allowlist_for_unknown_package():
+    diagnosis = {
+        "findings": [
+            {"failure_mode": "missing_r_package", "package": "knownByGold", "manual_block": True},
+        ]
+    }
+
+    plan = safe_repair_plan(
+        diagnosis,
+        {"env": "p2s_l2_case", "manager": "conda", "repair_allowlist": ["r-knownbygold"]},
+    )
+
+    assert plan["status"] == "ready"
+    assert plan["commands"][0]["packages"] == ["r-knownbygold"]
+    assert plan["commands"][0]["repair_filter"] == "case_gold_allowlist"

@@ -3,9 +3,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from paper2skill.env_rebuilder.routes import route_cli_executables, route_r_packages, safe_executable_name, safe_package_name
+
 
 MESON_RE = re.compile(r"\bmeson\b|metadata-generation-failed|failed building wheel|subprocess-exited-with-error", re.I)
 MISSING_R_RE = re.compile(r"there is no package called ['\"](?P<package>[^'\"]+)['\"]|package ['\"](?P<package2>[^'\"]+)['\"] is not available", re.I)
+MISSING_EXEC_RE = re.compile(r"(?P<executable>[A-Za-z0-9_.+-]+): command not found|executable not found: (?P<executable2>[A-Za-z0-9_.+-]+)", re.I)
 CUDA_RE = re.compile(r"cuda|cudart|driver version|torch.*compiled|no kernel image|nvidia", re.I)
 PYG_RE = re.compile(r"torch_geometric|pyg|flash-attn|flash_attn|xformers", re.I)
 PYTHON_VERSION_RE = re.compile(r"requires python (?P<constraint>[^;\n]+)|python_requires", re.I)
@@ -27,13 +30,31 @@ def diagnose_failure(failure: dict[str, Any] | str) -> dict[str, Any]:
             }
         )
     for package in missing_r_packages(text):
+        routed = route_r_packages([package])
+        manual = not routed.get("conda_packages")
         findings.append(
             {
                 "failure_mode": "missing_r_package",
                 "severity": "high",
                 "package": package,
-                "repair": "try_bioconda_or_conda_forge_r_package",
-                "commands": [["mamba", "install", "-y", "-c", "conda-forge", "-c", "bioconda", conda_r_name(package)]],
+                "repair": "try_bioconda_or_conda_forge_r_package" if not manual else "manual_block_unknown_r_package",
+                "commands": [["mamba", "install", "-y", "--strict-channel-priority", "-c", "conda-forge", "-c", "bioconda", routed["conda_packages"][0]]] if not manual else [],
+                "manual_block": manual,
+                "repair_patch_type": "additive",
+            }
+        )
+    for executable in missing_executables(text):
+        routed_cli = route_cli_executables([executable])
+        manual = not routed_cli.get("conda_packages")
+        findings.append(
+            {
+                "failure_mode": "missing_executable",
+                "severity": "high",
+                "executable": executable,
+                "repair": "try_conda_cli_package" if not manual else "manual_block_unknown_executable",
+                "commands": [["mamba", "install", "-y", "--strict-channel-priority", "-c", "conda-forge", "-c", "bioconda", routed_cli["conda_packages"][0]]] if not manual else [],
+                "manual_block": manual,
+                "repair_patch_type": "additive",
             }
         )
     if CUDA_RE.search(text):
@@ -42,10 +63,9 @@ def diagnose_failure(failure: dict[str, Any] | str) -> dict[str, Any]:
                 "failure_mode": "cuda_mismatch",
                 "severity": "high",
                 "repair": "switch_torch_backend_or_cpu_fallback",
-                "commands": [
-                    ["uv", "pip", "install", "torch", "--torch-backend=auto"],
-                    ["env", "UV_TORCH_BACKEND=cpu", "uv", "pip", "install", "torch"],
-                ],
+                "commands": [],
+                "manual_block": True,
+                "notes": ["CUDA driver/profile repair requires explicit reviewed CPU/GPU profile."],
             }
         )
     if PYG_RE.search(text):
@@ -54,7 +74,9 @@ def diagnose_failure(failure: dict[str, Any] | str) -> dict[str, Any]:
                 "failure_mode": "gpu_extension_or_pyg_wheel_failure",
                 "severity": "medium",
                 "repair": "prefer_official_wheel_or_conda_package_else_manual_block",
-                "commands": [["uv", "pip", "install", "<official-wheel-url-or-package>"], ["mamba", "install", "-y", "-c", "pyg", "-c", "conda-forge", "pyg"]],
+                "commands": [],
+                "manual_block": True,
+                "notes": ["PyG repair requires torch ABI compatibility check."],
             }
         )
     if PYTHON_VERSION_RE.search(text):
@@ -72,7 +94,8 @@ def diagnose_failure(failure: dict[str, Any] | str) -> dict[str, Any]:
                 "failure_mode": "pypi_package_unavailable",
                 "severity": "medium",
                 "repair": "try_git_url_then_local_install",
-                "commands": [["uv", "pip", "install", "git+<official-repo-url>"], ["uv", "pip", "install", "."]],
+                "commands": [],
+                "manual_block": True,
             }
         )
     if GITHUB_RE.search(text):
@@ -81,14 +104,15 @@ def diagnose_failure(failure: dict[str, Any] | str) -> dict[str, Any]:
                 "failure_mode": "github_network_or_ssl_failure",
                 "severity": "medium",
                 "repair": "try_git_clone_or_archive_fallback",
-                "commands": [["git", "clone", "<official-repo-url>"], ["python", "-m", "paper2skill.collectors.github_archive_fallback"]],
+                "commands": [],
+                "manual_block": True,
             }
         )
     return {
         "status": "repair_plan_available" if findings else "no_known_repair",
         "finding_count": len(findings),
         "findings": findings,
-        "manual_block": not findings,
+        "manual_block": not findings or all(item.get("manual_block") for item in findings),
     }
 
 
@@ -113,7 +137,17 @@ def missing_r_packages(text: str) -> list[str]:
     return sorted(dict.fromkeys(item for item in packages if item))
 
 
+def missing_executables(text: str) -> list[str]:
+    executables = []
+    for match in MISSING_EXEC_RE.finditer(text):
+        value = match.group("executable") or match.group("executable2")
+        if value and safe_executable_name(value):
+            executables.append(value)
+    return sorted(dict.fromkeys(executables))
+
+
 def conda_r_name(package: str) -> str:
-    lowered = package.lower()
-    bioc = {"deseq2": "bioconductor-deseq2", "apeglm": "bioconductor-apeglm", "sparsematrixstats": "bioconductor-sparsematrixstats"}
-    return bioc.get(lowered, f"r-{lowered}")
+    if not safe_package_name(package):
+        return package
+    routed = route_r_packages([package])
+    return (routed.get("conda_packages") or [package])[0]
