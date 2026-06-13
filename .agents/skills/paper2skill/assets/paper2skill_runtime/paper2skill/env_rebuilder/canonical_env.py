@@ -117,14 +117,16 @@ def derive_canonical_environment(
     generated_pip_routes = route_generated_pip_segment(generated_skill_pip_segment(scan), install_approval=install_approval)
     dependencies.extend(py_routes["conda"])
     dependencies.extend(str(item) for item in scan.get("generated_requirements_conda_segment") or [])
+    special_pip_segment: list[str] = []
     for route in py_routes["special"]:
         if route.get("manual_approval_required"):
             continue
         dependencies.extend(str(item) for item in route.get("conda_packages") or [])
+        special_pip_segment.extend(str(item) for item in route.get("pip_packages") or [])
         upstream_channels.extend(str(item) for item in route.get("channels") or [])
     report["route_migrations"].extend(migration_with_source(item, "upstream_pip_or_python_metadata") for item in py_routes["migrations"])
     report["route_migrations"].extend(migration_with_source(item, "generated_skill_requirements") for item in scan.get("generated_requirements_route_migrations") or [])
-    pip_segment = [*py_routes["uv"], *generated_pip_routes["uv"]]
+    pip_segment = [*py_routes["uv"], *generated_pip_routes["uv"], *special_pip_segment]
     r_routes = route_r_packages(r_dependencies(scan))
     dependencies.extend(r_routes["conda_packages"])
     report["additive_dependencies"].extend(additive_records(r_routes["routes"], source="r_dependency_evidence"))

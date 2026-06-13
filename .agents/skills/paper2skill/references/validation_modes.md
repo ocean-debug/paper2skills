@@ -20,23 +20,25 @@ It must not execute a real algorithm reproduction.
 
 ## data_smoke
 
-Use `data_smoke` only when a reviewed small official or minimal data manifest is
-available.
+Use `data_smoke` only when a small official or minimal data manifest and output
+contract are available.
 
 It runs:
 
 - preflight
 - plan
-- reviewed adapter smoke path
+- selected adapter smoke path
 - output validation
 
-It must block when the reviewed runner, validation manifest, adapter approval,
-or expected outputs are missing. The validation manifest is required and must
-use `data_kind: minimal` or `data_kind: official_minimal`.
+It must block when the runner, validation manifest, selected example, or
+expected outputs are missing. The validation manifest is required and must use
+`data_kind: minimal` or `data_kind: official_minimal`. The selected example
+adapter can become `verified` only after output validation passes.
 
 ## live_execute
 
-Use `live_execute` only for reviewed official example data.
+Use `live_execute` only for official example data with a validation manifest
+and output contract.
 
 It runs the complete child skill flow and records:
 
@@ -48,12 +50,12 @@ It runs the complete child skill flow and records:
 - failure reason if execution fails
 
 It must block unless the validation manifest uses
-`data_kind: official_example` and `official_example.reviewed: true`.
+`data_kind: official_example` and declares expected outputs.
 
 ## Validation Manifest Contract
 
-`data_smoke` and `live_execute` require `--validation-manifest`. This file is a
-review gate and output contract for build-time self-check execution, not a
+`data_smoke` and `live_execute` require `--validation-manifest`. This file is an
+execution gate and output contract for build-time self-check execution, not a
 benchmark case.
 
 Required fields:
@@ -61,7 +63,6 @@ Required fields:
 ```yaml
 validation_type: build_time_self_check
 data_kind: minimal
-reviewed: true
 manifest_path: assets/demo_input_manifest.yaml
 expected_outputs:
   - results/summary.json
@@ -69,19 +70,18 @@ expected_output_values:
   results/summary.json:
     rows: 3
 official_example:
-  reviewed: false
+  source: official tutorial or package test data
 ```
 
 Rules:
 
 - `data_smoke` accepts only `data_kind: minimal` or `official_minimal`.
-- `live_execute` accepts only `data_kind: official_example` and requires
-  `official_example.reviewed: true`.
+- `live_execute` accepts only `data_kind: official_example`.
 - `manifest_path` points to the child skill input manifest and is resolved
   relative to the validation manifest, then the child skill root.
 - `expected_outputs` are paths relative to the result directory.
 - `expected_output_values` maps JSON output paths to exact field values.
-- Missing or unreviewed manifests return `blocked_review_required`.
+- Missing manifests or output contracts return `blocked_verification_required`.
 
 ## Report Contract
 
@@ -91,7 +91,7 @@ Rules:
 - `diagnostic_only: true`
 - `validation_depth`
 - package, policy, preflight, install, and execution-plan status
-- review gate status for `data_smoke` and `live_execute`
+- execution gate status for `data_smoke` and `live_execute`
 - execution records when execution is allowed
 - repair actions when regeneration is attempted
 
@@ -100,6 +100,5 @@ It must not include `benchmark_score`.
 ## Repair Boundary
 
 Repair is finite and deterministic. Paper2Skill may regenerate a package when
-required files or install artifacts are missing. It must not invent review
-approval, fabricate expected outputs, or alter output contracts to make a run
-pass.
+required files or install artifacts are missing. It must not fabricate expected
+outputs or alter output contracts to make a run pass.

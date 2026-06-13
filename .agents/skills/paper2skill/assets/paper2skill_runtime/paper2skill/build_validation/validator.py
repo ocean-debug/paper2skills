@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import platform
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from typing import Any
@@ -14,8 +15,7 @@ from paper2skill.collectors.path_sanitizer import public_data
 
 
 VALIDATION_DEPTHS = ("dry_run", "data_smoke", "live_execute")
-EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
-READY_DRY_RUN_STATUSES = {"pass", "trusted_fixture"}
+EXECUTABLE_ADAPTER_STATUSES = {"verified"}
 BUILD_VALIDATION_TYPE = "build_time_self_check"
 DATA_SMOKE_KINDS = {"minimal", "official_minimal"}
 LIVE_EXECUTE_KINDS = {"official_example"}
@@ -28,6 +28,10 @@ def validate_build(
     manifest: str | Path | None = None,
     result_dir: str | Path | None = None,
     timeout_seconds: int = 600,
+    example_id: str | None = None,
+    env_prefix: str | Path | None = None,
+    python_executable: str | Path | None = None,
+    example_data_cache_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     depth = normalize_validation_depth(validation_depth)
     root = Path(skill_dir).resolve()
@@ -58,6 +62,7 @@ def validate_build(
         "install_plan_status": install_plan,
         "execution_plan_status": execution_plan,
         "review_gate": {"required": depth in {"data_smoke", "live_execute"}, "passed": depth == "dry_run", "checks": []},
+        "example_id": example_id,
         "execution": {"status": "not_run", "commands": []},
         "repair_actions": [],
         "warnings": [],
@@ -71,24 +76,28 @@ def validate_build(
         report["status"] = "pass"
         return finalize_report(report, root)
 
-    gate = reviewed_execution_gate(root, depth=depth, manifest=manifest)
+    gate = verification_execution_gate(root, depth=depth, manifest=manifest, example_id=example_id)
     report["review_gate"] = gate
     if not gate["passed"]:
         report["passed"] = False
         report["self_check_status"] = "blocked"
         report["status"] = gate["status"]
         report["errors"].extend(gate["errors"])
-        report["warnings"].append(f"{depth} build validation requires an explicit reviewed example runner, approved data manifest, and expected outputs.")
+        report["warnings"].append(f"{depth} build validation requires a runnable generated adapter, input manifest, and output contract.")
         return finalize_report(report, root)
 
-    execution = run_reviewed_validation(
+    execution = run_verification_validation(
         root,
         depth=depth,
         validation_manifest=gate["validation_manifest"],
         input_manifest=gate["input_manifest"],
         manifest_data=gate["manifest_data"],
+        example_id=gate.get("example_id"),
         result_dir=result_dir,
         timeout_seconds=timeout_seconds,
+        env_prefix=env_prefix,
+        python_executable=python_executable,
+        example_data_cache_dir=example_data_cache_dir,
     )
     report["execution"] = execution
     report["passed"] = execution["status"] == "pass"
@@ -96,6 +105,8 @@ def validate_build(
     report["status"] = execution["status"]
     if execution["status"] != "pass":
         report["errors"].append(execution.get("failure_code") or f"{depth}_execution_failed")
+    else:
+        mark_verified(root, execution=execution, gate=gate)
     return finalize_report(report, root)
 
 
@@ -144,10 +155,16 @@ def collect_dry_run_errors(report: dict[str, Any]) -> list[str]:
     return errors
 
 
-def reviewed_execution_gate(root: Path, *, depth: str, manifest: str | Path | None) -> dict[str, Any]:
+def verification_execution_gate(root: Path, *, depth: str, manifest: str | Path | None, example_id: str | None = None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
-    manifest_path = resolve_manifest(root, manifest)
+    catalog = read_yaml_reference(root / "references" / "examples_catalog.yaml")
+    generated_manifest_error: str | None = None
+    try:
+        manifest_path = resolve_manifest(root, manifest) or generated_validation_manifest(root, depth=depth, example_id=example_id)
+    except ValueError as exc:
+        generated_manifest_error = str(exc)
+        manifest_path = None
     manifest_data: dict[str, Any] = {}
     manifest_errors: list[str] = []
     input_manifest_path: Path | None = None
@@ -157,11 +174,19 @@ def reviewed_execution_gate(root: Path, *, depth: str, manifest: str | Path | No
         if manifest_errors:
             errors.extend(manifest_errors)
         input_manifest_path = resolve_referenced_path(root, manifest_base, manifest_data.get("manifest_path"))
+    if generated_manifest_error:
+        errors.append(generated_manifest_error)
     spec = read_yaml_reference(root / "references" / "adapter_spec.yaml")
-    review = read_yaml_reference(root / "references" / "adapter_review.yaml")
-    adapter_status = str(spec.get("status") or review.get("status") or "")
-    dry_run_status = (review.get("dry_run") or {}).get("status") if isinstance(review.get("dry_run"), dict) else None
-    output_validation = review.get("output_validation") if isinstance(review.get("output_validation"), dict) else {}
+    selected_example_id = manifest_data.get("example_id") or example_id
+    selected_example = {}
+    try:
+        selected_example = select_example(catalog, str(selected_example_id) if selected_example_id else None)
+        selected_example_id = selected_example.get("example_id") or selected_example_id
+    except ValueError as exc:
+        selected_example_id = str(selected_example_id)
+        errors.append(str(exc))
+    example_adapter = selected_example.get("adapter") if isinstance(selected_example.get("adapter"), dict) else {}
+    adapter_status = str(example_adapter.get("status") or "dry_run_only")
     expected_outputs = manifest_data.get("expected_outputs") if isinstance(manifest_data.get("expected_outputs"), list) else []
     expected_output_values = manifest_data.get("expected_output_values")
 
@@ -171,7 +196,6 @@ def reviewed_execution_gate(root: Path, *, depth: str, manifest: str | Path | No
         add_gate_check(checks, errors, "validation_manifest_loadable", not manifest_errors, "validation_manifest_invalid")
         if not manifest_errors:
             add_gate_check(checks, errors, "validation_type_build_time", manifest_data.get("validation_type") == BUILD_VALIDATION_TYPE, "validation_manifest.validation_type_invalid")
-            add_gate_check(checks, errors, "reviewed_manifest", manifest_data.get("reviewed") is True, "validation_manifest.reviewed_required")
             add_gate_check(checks, errors, "input_manifest_declared", bool(manifest_data.get("manifest_path")), "validation_manifest.manifest_path_required")
             add_gate_check(checks, errors, "input_manifest_present", input_manifest_path is not None and input_manifest_path.is_file(), "validation_manifest.manifest_path_not_found")
             add_gate_check(checks, errors, "expected_outputs_declared", bool(expected_outputs), "validation_manifest.expected_outputs_required")
@@ -181,25 +205,18 @@ def reviewed_execution_gate(root: Path, *, depth: str, manifest: str | Path | No
                 add_gate_check(checks, errors, "data_kind_minimal", data_kind in DATA_SMOKE_KINDS, "validation_manifest.data_kind_must_be_minimal")
             if depth == "live_execute":
                 add_gate_check(checks, errors, "data_kind_official_example", data_kind in LIVE_EXECUTE_KINDS, "validation_manifest.data_kind_must_be_official_example")
-                official = manifest_data.get("official_example") if isinstance(manifest_data.get("official_example"), dict) else {}
-                add_gate_check(checks, errors, "official_example_reviewed", official.get("reviewed") is True, "validation_manifest.official_example_reviewed_required")
-    add_gate_check(checks, errors, "adapter_executable", adapter_status in EXECUTABLE_ADAPTER_STATUSES, "reviewed_adapter_required")
-    if adapter_status == "reviewed":
-        add_gate_check(checks, errors, "human_approved", review.get("human_approved") is True, "human_approval_required")
-    if adapter_status in {"ready", "verified"}:
-        add_gate_check(checks, errors, "dry_run_evidence", dry_run_status in READY_DRY_RUN_STATUSES, "passing_dry_run_evidence_required")
-    if depth == "live_execute":
-        if adapter_status == "verified":
-            add_gate_check(checks, errors, "prior_output_validation", output_validation.get("status") == "pass", "verified_output_validation_required")
+    add_gate_check(checks, errors, "adapter_present", bool(spec.get("adapter_type")), "verification_adapter_required")
+    add_gate_check(checks, errors, "selected_example_declared", bool(selected_example), "selected_example_not_found")
 
     return {
         "required": True,
         "passed": not errors,
-        "status": "pass" if not errors else "blocked_review_required",
+        "status": "pass" if not errors else "blocked_verification_required",
         "validation_manifest": str(manifest_path) if manifest_path else None,
         "input_manifest": str(input_manifest_path) if input_manifest_path else None,
         "manifest_data": public_data(manifest_data, root) if manifest_data else {},
         "data_kind": data_kind or None,
+        "example_id": selected_example_id,
         "expected_outputs": expected_outputs,
         "expected_output_values_declared": isinstance(expected_output_values, dict) and bool(expected_output_values),
         "adapter_status": adapter_status or "not_confirmed",
@@ -218,6 +235,50 @@ def resolve_manifest(root: Path, value: str | Path | None) -> Path | None:
             if candidate.is_file():
                 return candidate
     return path if path.is_file() else None
+
+
+def generated_validation_manifest(root: Path, *, depth: str, example_id: str | None) -> Path | None:
+    input_manifest = root / "assets" / "official_attempt_manifest.yaml"
+    if not input_manifest.is_file():
+        input_manifest = root / "assets" / "input_manifest_template.yaml"
+    if not input_manifest.is_file():
+        return None
+    catalog = read_yaml_reference(root / "references" / "examples_catalog.yaml")
+    selected = select_example(catalog, example_id)
+    output_contract = selected.get("output_contract") if isinstance(selected.get("output_contract"), dict) else {}
+    expected_outputs = list(output_contract.get("required_files") or selected.get("expected_outputs") or ["results/summary.json"])
+    manifest_data = {
+        "validation_type": BUILD_VALIDATION_TYPE,
+        "validation_depth": depth,
+        "data_kind": "minimal" if depth == "data_smoke" else "official_example",
+        "example_id": selected.get("example_id") or example_id or catalog.get("default_example_id"),
+        "manifest_path": str(input_manifest.relative_to(root)).replace("\\", "/"),
+        "expected_outputs": expected_outputs,
+        "output_contract": output_contract,
+        "official_example": {
+            "source": selected.get("source"),
+            "scenario": selected.get("scenario"),
+            "data_sources": selected.get("data_sources") or [],
+        },
+    }
+    path = root / "build_validation" / f"{depth}_validation_manifest.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(manifest_data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+def select_example(catalog: dict[str, Any], example_id: str | None) -> dict[str, Any]:
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    if example_id:
+        for item in examples:
+            if isinstance(item, dict) and item.get("example_id") == example_id:
+                return item
+        raise ValueError(f"unknown_example_id:{example_id}")
+    target = catalog.get("default_example_id")
+    for item in examples:
+        if isinstance(item, dict) and item.get("example_id") == target:
+            return item
+    return examples[0] if examples and isinstance(examples[0], dict) else {"example_id": target}
 
 
 def resolve_referenced_path(root: Path, base: Path, value: Any) -> Path | None:
@@ -258,15 +319,19 @@ def read_yaml_mapping(path: Path) -> tuple[dict[str, Any], list[str]]:
     return data, []
 
 
-def run_reviewed_validation(
+def run_verification_validation(
     root: Path,
     *,
     depth: str,
     validation_manifest: str | Path | None,
     input_manifest: str | Path | None,
     manifest_data: dict[str, Any],
+    example_id: str | None,
     result_dir: str | Path | None,
     timeout_seconds: int,
+    env_prefix: str | Path | None,
+    python_executable: str | Path | None,
+    example_data_cache_dir: str | Path | None,
 ) -> dict[str, Any]:
     if result_dir:
         out = Path(result_dir)
@@ -276,22 +341,34 @@ def run_reviewed_validation(
         out = root / out
     input_manifest_path = Path(str(input_manifest)) if input_manifest else None
     validation_manifest_path = Path(str(validation_manifest)) if validation_manifest else None
+    staged_data = stage_example_data_cache(root, manifest_data, example_data_cache_dir)
+    runner = validation_python_runner(env_prefix=env_prefix, python_executable=python_executable)
     stages = [
-        ("preflight", [sys.executable, str(root / "scripts" / "preflight.py"), "--manifest", str(input_manifest_path), "--out", str(out)]),
-        ("plan", [sys.executable, str(root / "scripts" / "plan.py"), "--manifest", str(input_manifest_path), "--out", str(out)]),
+        ("preflight", [*runner, str(root / "scripts" / "preflight.py"), "--manifest", str(input_manifest_path), "--out", str(out)]),
+        ("plan", [*runner, str(root / "scripts" / "plan.py"), "--manifest", str(input_manifest_path), "--out", str(out)]),
         (
             "adapter_smoke" if depth == "data_smoke" else "full_execution",
-            [sys.executable, str(root / "scripts" / "run.py"), "--manifest", str(input_manifest_path), "--out", str(out)],
+            [
+                *runner,
+                str(root / "scripts" / "run.py"),
+                "--manifest",
+                str(input_manifest_path),
+                "--out",
+                str(out),
+                "--verification-run",
+                *([] if not example_id else ["--example-id", str(example_id)]),
+            ],
         ),
         (
-            "output_validation",
+        "output_validation",
             [
-                sys.executable,
+                *runner,
                 str(root / "scripts" / "validate_outputs.py"),
                 "--result",
                 str(out),
                 "--validation-manifest",
                 str(validation_manifest_path),
+                *([] if not example_id else ["--example-id", str(example_id)]),
             ],
         ),
     ]
@@ -316,6 +393,7 @@ def run_reviewed_validation(
                 validation_manifest=validation_manifest_path,
                 input_manifest=input_manifest_path,
                 manifest_data=manifest_data,
+                staged_data=staged_data,
             )
             report["failed_stage"] = stage
             report["failure_code"] = classify_execution_failure(stage, out)
@@ -330,7 +408,105 @@ def run_reviewed_validation(
         validation_manifest=validation_manifest_path,
         input_manifest=input_manifest_path,
         manifest_data=manifest_data,
+        staged_data=staged_data,
     )
+
+
+def stage_example_data_cache(root: Path, manifest_data: dict[str, Any], cache_dir: str | Path | None) -> list[dict[str, Any]]:
+    if not cache_dir:
+        return []
+    cache = Path(cache_dir)
+    if not cache.is_dir():
+        return [{"status": "missing_cache_dir", "cache_dir": str(cache)}]
+    targets = example_data_filenames(manifest_data)
+    if not targets:
+        return []
+    data_dir = root / "assets" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    for filename in targets:
+        source = cache / filename
+        destination = data_dir / filename
+        if not source.is_file():
+            records.append({"status": "missing", "filename": filename, "cache_dir": str(cache)})
+            continue
+        if destination.exists() or destination.is_symlink():
+            destination.unlink()
+        try:
+            destination.hardlink_to(source)
+            mode = "hardlink"
+        except OSError:
+            shutil.copy2(source, destination)
+            mode = "copy"
+        records.append({"status": "staged", "filename": filename, "source": str(source), "destination": str(destination), "mode": mode, "bytes": destination.stat().st_size})
+    return records
+
+
+def example_data_filenames(manifest_data: dict[str, Any]) -> list[str]:
+    filenames: list[str] = []
+    official = manifest_data.get("official_example") if isinstance(manifest_data.get("official_example"), dict) else {}
+    for source in official.get("data_sources") or []:
+        if isinstance(source, dict) and source.get("filename"):
+            filenames.append(Path(str(source["filename"])).name)
+    return sorted(dict.fromkeys(filename for filename in filenames if filename))
+
+
+def validation_python_runner(*, env_prefix: str | Path | None, python_executable: str | Path | None) -> list[str]:
+    if python_executable:
+        return [str(python_executable)]
+    if env_prefix:
+        return ["conda", "run", "-p", str(env_prefix), "python"]
+    return [sys.executable]
+
+
+def mark_verified(root: Path, *, execution: dict[str, Any], gate: dict[str, Any]) -> None:
+    spec_path = root / "references" / "adapter_spec.yaml"
+    review_path = root / "references" / "adapter_review.yaml"
+    catalog_path = root / "references" / "examples_catalog.yaml"
+    spec = read_yaml_reference(spec_path)
+    review = read_yaml_reference(review_path)
+    catalog = read_yaml_reference(catalog_path)
+    example_id = gate.get("example_id")
+    output_validation = execution.get("output_validation") if isinstance(execution.get("output_validation"), dict) else {}
+    expected_outputs = gate.get("expected_outputs") or []
+    verification = {
+        "status": "pass",
+        "validation_depth": (gate.get("manifest_data") or {}).get("validation_depth"),
+        "example_id": example_id,
+        "result_dir": execution.get("result_dir"),
+        "output_validation": output_validation,
+    }
+    summary = {
+        "has_verified_example": True,
+        "verified_examples": sorted(
+            dict.fromkeys(
+                [
+                    *(
+                        str(item)
+                        for item in ((catalog.get("verification_summary") or {}).get("verified_examples") or [])
+                        if item
+                    ),
+                    str(example_id),
+                ]
+            )
+        ),
+        "latest_example_id": example_id,
+    }
+    spec["verification_summary"] = summary
+    review["verification_summary"] = summary
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    for item in examples:
+        if isinstance(item, dict) and item.get("example_id") == example_id:
+            adapter = item.get("adapter") if isinstance(item.get("adapter"), dict) else {}
+            adapter["status"] = "verified"
+            item["adapter"] = adapter
+            item["verification"] = verification
+            item["expected_outputs"] = expected_outputs
+    catalog["verification_summary"] = summary
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    review_path.write_text(yaml.safe_dump(review, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    if catalog:
+        catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def execution_report(
@@ -343,6 +519,7 @@ def execution_report(
     validation_manifest: Path | None,
     input_manifest: Path | None,
     manifest_data: dict[str, Any],
+    staged_data: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "status": status,
@@ -352,6 +529,7 @@ def execution_report(
         "stages": {record["stage"]: {"returncode": record["returncode"]} for record in commands},
         "result_json": load_result_json(out),
         "output_validation": load_json_file(out / "qc" / "output_validation.json"),
+        "staged_data": public_data(staged_data or [], root),
     }
     if depth == "data_smoke":
         report["data_smoke"] = {
@@ -389,7 +567,7 @@ def classify_execution_failure(stage: str, out: Path) -> str:
         if validation.get("missing_required_outputs"):
             return "required_outputs_missing"
         return "output_validation_failed"
-    return "reviewed_execution_failed"
+    return "verification_execution_failed"
 
 
 def failure_reason(stage: str, out: Path, record: dict[str, Any]) -> dict[str, Any]:

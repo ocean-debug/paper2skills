@@ -406,9 +406,9 @@ def validate_inputs(manifest: dict) -> dict:
     errors = []
     primary = ((manifest.get("inputs") or {}).get("primary_data") or {})
     input_path = primary.get("path")
-    if not input_path:
+    if not input_path and not declares_non_file_source(primary):
         errors.append("inputs.primary_data.path is required")
-    else:
+    elif input_path:
         candidate = ROOT / input_path
         if primary.get("exists", True) and not candidate.exists():
             errors.append("primary data does not exist: %s" % env_manager.public_path(str(input_path)))
@@ -419,6 +419,27 @@ def validate_inputs(manifest: dict) -> dict:
     bio_contract = load_optional_contract(ROOT / "references" / "bio_contract.yaml")
     errors.extend(validate_contracts(manifest, io_contract, bio_contract))
     return {"status": "pass" if not errors else "blocked_input_invalid", "errors": errors}
+
+
+def declares_non_file_source(primary: dict) -> bool:
+    source = confirmed_value(primary.get("source")) or confirmed_value(primary.get("data_source"))
+    dataset_name = confirmed_value(primary.get("dataset_name"))
+    package = confirmed_value(primary.get("package"))
+    if dataset_name is not None or package is not None:
+        return True
+    if source is None:
+        return False
+    token = normalize_token(source)
+    return token in {
+        "package_dataset",
+        "scanpy_dataset",
+        "tutorial_dataset",
+        "tutorial_reference",
+        "generated_fixture",
+        "remote_url",
+        "url",
+        "user_provided_or_tutorial_dataset",
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

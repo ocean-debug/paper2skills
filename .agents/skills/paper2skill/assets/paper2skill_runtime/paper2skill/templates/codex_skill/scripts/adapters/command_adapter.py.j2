@@ -12,7 +12,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPT_DIR))
 import env_manager
 
-EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+EXECUTABLE_ADAPTER_STATUSES = {"verified"}
 
 
 def adapter_spec() -> dict[str, Any]:
@@ -26,6 +26,49 @@ def adapter_review() -> dict[str, Any]:
     return env_manager.load_json_yaml(path)
 
 
+def examples_catalog() -> dict[str, Any]:
+    path = ROOT / "references" / "examples_catalog.yaml"
+    if not path.exists():
+        return {}
+    data = env_manager.load_json_yaml(path)
+    return data if isinstance(data, dict) else {}
+
+
+def selected_example(example_id: str | None) -> dict[str, Any]:
+    catalog = examples_catalog()
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    target = example_id or catalog.get("default_example_id")
+    for item in examples:
+        if isinstance(item, dict) and item.get("example_id") == target:
+            return item
+    return {}
+
+
+def explicit_example_missing(example_id: str | None) -> bool:
+    if not example_id:
+        return False
+    catalog = examples_catalog()
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    return not selected_example(example_id)
+
+
+def selected_adapter(example_id: str | None, spec: dict[str, Any]) -> dict[str, Any]:
+    example = selected_example(example_id)
+    adapter = example.get("adapter") if isinstance(example.get("adapter"), dict) else {}
+    merged = dict(spec)
+    merged.update({key: value for key, value in adapter.items() if value is not None})
+    return merged
+
+
+def selected_example_adapter_status(example_id: str | None, spec: dict[str, Any]) -> str:
+    catalog = examples_catalog()
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    if not examples:
+        return str(spec.get("status") or "dry_run_only")
+    adapter = selected_adapter(example_id, spec)
+    return str(adapter.get("status") or "dry_run_only")
+
+
 def command_tokens(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
@@ -37,11 +80,12 @@ def command_tokens(value: Any) -> list[str]:
     return []
 
 
-def expand_tokens(tokens: list[str], *, manifest_path: Path | None, out: Path) -> list[str]:
+def expand_tokens(tokens: list[str], *, manifest_path: Path | None, out: Path, example_id: str | None = None) -> list[str]:
     replacements = {
         "{manifest}": str(manifest_path) if manifest_path else "",
         "{out}": str(out),
         "{root}": str(ROOT),
+        "{example_id}": str(example_id or ""),
     }
     expanded = []
     for token in tokens:
@@ -53,7 +97,15 @@ def expand_tokens(tokens: list[str], *, manifest_path: Path | None, out: Path) -
     return expanded
 
 
-def reviewed_outputs() -> list[str]:
+def verified_outputs(example_id: str | None = None) -> list[str]:
+    example = selected_example(example_id)
+    contract = example.get("output_contract") if isinstance(example.get("output_contract"), dict) else {}
+    required = contract.get("required_files") if isinstance(contract.get("required_files"), list) else None
+    if required:
+        return [str(item) for item in required if str(item)]
+    expected = example.get("expected_outputs") if isinstance(example.get("expected_outputs"), list) else None
+    if expected:
+        return [str(item) for item in expected if str(item)]
     review = adapter_review()
     outputs = review.get("expected_outputs")
     if isinstance(outputs, list):
@@ -78,20 +130,32 @@ def blocked(kind: str, message: str, spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_reviewed_command(kind: str, manifest: dict[str, Any], out: Path, manifest_path: Path | None = None, default_command: Any = None) -> dict[str, Any]:
+def run_reviewed_command(kind: str, manifest: dict[str, Any], out: Path, manifest_path: Path | None = None, default_command: Any = None, example_id: str | None = None, verification_run: bool = False) -> dict[str, Any]:
     spec = adapter_spec()
-    if spec.get("status") not in EXECUTABLE_ADAPTER_STATUSES:
-        return blocked(kind, "Adapter status is not executable; reviewed, ready, or verified status is required.", spec)
-    command = spec.get("command") or default_command
-    tokens = expand_tokens(command_tokens(command), manifest_path=manifest_path, out=out)
+    if explicit_example_missing(example_id):
+        return {
+            "status": "fail",
+            "adapter_type": kind,
+            "adapter_status": "dry_run_only",
+            "example_id": example_id,
+            "message": "Selected example is missing from examples_catalog.yaml.",
+        }
+    adapter = selected_adapter(example_id, spec)
+    adapter_status = str(adapter.get("status") or "dry_run_only")
+    if adapter_status not in EXECUTABLE_ADAPTER_STATUSES and not verification_run:
+        return blocked(kind, "Adapter status is dry_run_only; verification must pass before real execution.", spec)
+    command = adapter.get("command") or default_command
+    tokens = expand_tokens(command_tokens(command), manifest_path=manifest_path, out=out, example_id=example_id)
     if not tokens:
-        return blocked(kind, "Reviewed adapter command is missing.", spec)
+        return blocked(kind, "Verified adapter command is missing.", spec)
 
     env = os.environ.copy()
     if manifest_path:
         env["PAPER2SKILL_MANIFEST"] = str(manifest_path)
     env["PAPER2SKILL_OUT"] = str(out)
     env["PAPER2SKILL_ROOT"] = str(ROOT)
+    if example_id:
+        env["PAPER2SKILL_EXAMPLE_ID"] = example_id
 
     log_dir = out / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -102,10 +166,12 @@ def run_reviewed_command(kind: str, manifest: dict[str, Any], out: Path, manifes
     return {
         "status": "pass" if completed.returncode == 0 else "fail",
         "adapter_type": kind,
-        "adapter_status": spec.get("status"),
-        "entrypoint": spec.get("entrypoint"),
+        "adapter_status": adapter_status,
+        "global_adapter_status": spec.get("status"),
+        "example_id": example_id,
+        "entrypoint": adapter.get("entrypoint"),
         "command": env_manager.public_data(tokens),
         "returncode": completed.returncode,
-        "outputs": reviewed_outputs(),
-        "message": "Reviewed adapter command executed." if completed.returncode == 0 else "Reviewed adapter command failed.",
+        "outputs": verified_outputs(example_id),
+        "message": "Verified adapter command executed." if completed.returncode == 0 else "Verified adapter command failed.",
     }

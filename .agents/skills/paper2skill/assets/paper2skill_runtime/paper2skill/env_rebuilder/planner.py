@@ -586,6 +586,9 @@ def existing_missing_diff_commands(
             commands.append(manual_special_route_command(route, source="existing_missing_diff"))
         elif route.get("conda_packages"):
             commands.append(special_conda_route_command(route, env=env, source="existing_missing_diff"))
+        elif route.get("pip_packages"):
+            command_env = env if layers.get("uses_conda") else env_path
+            commands.append(special_pip_route_command(route, env=command_env, source="existing_missing_diff", torch_backend=torch_backend, inside_conda=bool(layers.get("uses_conda"))))
     if python_resolved["uv"]:
         command_env = env if layers.get("uses_conda") else env_path
         commands.append(uv_pip_command(command_env, python_resolved["uv"], torch_backend=torch_backend, inside_conda=bool(layers.get("uses_conda"))))
@@ -816,6 +819,7 @@ def plan_from_install_request(
     python_resolved = route_python_packages(python_packages, gpu_policy=gpu_policy, torch_backend=torch_backend, install_approval=install_approval)
     conda_packages.extend(python_resolved["conda"])
     special_conda_routes = [route for route in python_resolved.get("special") or [] if not route.get("manual_approval_required") and route.get("conda_packages")]
+    special_pip_routes = [route for route in python_resolved.get("special") or [] if not route.get("manual_approval_required") and route.get("pip_packages")]
     approved_r_github = bool(r_github and allow_github_install == "approved")
     if approved_r_github:
         conda_packages.extend(R_GITHUB_RUNTIME_CONDA_PACKAGES)
@@ -847,13 +851,16 @@ def plan_from_install_request(
             commands.append(manual_special_route_command(route, source="install_request"))
         elif route.get("conda_packages"):
             commands.append(special_conda_route_command(route, env=env, source="install_request"))
+        elif route.get("pip_packages"):
+            commands.append(special_pip_route_command(route, env=env_path if not needs_conda else env, source="install_request", torch_backend=torch_backend, inside_conda=needs_conda))
     for route in python_resolved.get("manual") or []:
         commands.append(manual_special_route_command(route, source="install_request"))
     if r_github:
         commands.append(github_r_command(env, r_github, allow_github_install=allow_github_install))
     commands.extend(manual_r_package_command(package, source="install_request") for package in r_resolved["manual_packages"])
     commands = dedupe_commands(commands)
-    manager = "conda+uv" if needs_conda and uv_python else ("conda" if needs_conda else "uv")
+    needs_uv = bool(uv_python or special_pip_routes)
+    manager = "conda+uv" if needs_conda and needs_uv else ("conda" if needs_conda else "uv")
     probe_layers = {
         "manager": "conda" if needs_conda else "uv",
         "uses_conda": needs_conda,
@@ -1109,6 +1116,8 @@ def spec_install_commands(scan: dict[str, Any], layers: dict[str, Any], *, env: 
                 commands.append(manual_special_route_command(route, source="setup.cfg"))
             elif route.get("conda_packages"):
                 commands.append(special_conda_route_command(route, env=env, source="setup.cfg"))
+            elif route.get("pip_packages"):
+                commands.append(special_pip_route_command(route, env=env if layers.get("uses_conda") else env_path, source="setup.cfg", torch_backend=torch_backend, inside_conda=bool(layers.get("uses_conda"))))
         for route in routed_python.get("manual") or []:
             if not any(command.get("special_route") == route for command in commands):
                 commands.append(manual_special_route_command(route, source="setup.cfg"))
@@ -1680,6 +1689,8 @@ def python_route_commands(routed: dict[str, Any], *, env: str, env_path: str, so
             commands.append(manual_special_route_command(route, source=source))
         elif route.get("conda_packages"):
             commands.append(special_conda_route_command(route, env=env, source=source))
+        elif route.get("pip_packages"):
+            commands.append(special_pip_route_command(route, env=env if inside_conda else env_path, source=source, torch_backend="auto", inside_conda=inside_conda))
     if routed.get("uv"):
         command_env = env if inside_conda else env_path
         command = uv_pip_command(command_env, list(routed["uv"]), torch_backend="auto", inside_conda=inside_conda)
@@ -1719,6 +1730,15 @@ def special_conda_route_command(route: dict[str, Any], *, env: str, source: str)
         "command": ["mamba", "install", "-y", *conda_env_args(env), *channel_args(channels), *packages],
         "fallback_command": ["conda", "install", "-y", *conda_env_args(env), *channel_args(channels), *packages],
     }
+
+
+def special_pip_route_command(route: dict[str, Any], *, env: str, source: str, torch_backend: str, inside_conda: bool) -> dict[str, Any]:
+    packages = [str(item) for item in route.get("pip_packages") or [] if str(item).strip()]
+    command = uv_pip_command(env, packages, torch_backend=torch_backend, inside_conda=inside_conda)
+    command["source"] = source
+    command["scope"] = "special_python_route"
+    command["special_route"] = route
+    return command
 
 
 def parse_install_packages(command: str) -> list[str]:

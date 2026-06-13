@@ -28,10 +28,34 @@ def forced_missing_packages() -> set[str]:
 
 
 def probe_python_package(spec: str, import_name: str | None = None, required: bool = True) -> dict[str, Any]:
+    distribution_name = distribution_name_from_spec(spec)
     probe_name = import_name_from_spec(spec, import_name)
     forced = forced_missing_packages()
-    installed = probe_name not in forced and spec not in forced and _distribution_or_import_available(probe_name)
+    installed = (
+        probe_name not in forced
+        and distribution_name not in forced
+        and spec not in forced
+        and (
+            _distribution_available(distribution_name)
+            or _distribution_or_import_available(probe_name)
+        )
+    )
     return {"name": spec, "import_name": probe_name, "installed": installed, "required": required}
+
+
+def distribution_name_from_spec(spec: str) -> str:
+    base = re.split(r"\s+@\s+", spec.strip(), maxsplit=1)[0]
+    base = SPEC_SPLIT_RE.split(base, maxsplit=1)[0]
+    base = base.split("[", 1)[0]
+    return base.strip()
+
+
+def _distribution_available(name: str) -> bool:
+    try:
+        importlib.metadata.version(name)
+        return True
+    except importlib.metadata.PackageNotFoundError:
+        return False
 
 
 def _distribution_or_import_available(name: str) -> bool:

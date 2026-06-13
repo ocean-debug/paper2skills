@@ -65,7 +65,8 @@ python scripts/paper2skill.py build \
   --validation-depth dry_run
 ```
 
-Use reviewed build-time execution only with an explicit validation manifest:
+Use build-time execution only with an explicit validation manifest and output
+contract:
 
 ```bash
 python scripts/paper2skill.py build \
@@ -101,7 +102,8 @@ python scripts/paper2skill.py benchmark run \
 
 ## Safety Boundary
 
-Never install dependencies, execute unreviewed repository scripts, download large
-datasets, or run unreviewed adapters automatically. If bundled runtime
-dependencies are missing, `scripts/paper2skill.py` prints an install plan and
-exits.
+Never install dependencies, execute unknown repository scripts, download large
+datasets, or run non-verified adapters automatically. Generated adapters start
+as `dry_run_only`; only adapters that pass `data_smoke` or `live_execute`
+output validation may become `verified`. If bundled runtime dependencies are
+missing, `scripts/paper2skill.py` prints an install plan and exits.

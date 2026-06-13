@@ -21,20 +21,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="Analyze inputs and write a build plan without generating a skill.")
     add_input_args(plan)
+    add_generation_metadata_args(plan)
     plan.add_argument("--out", default="paper2skill_plan")
 
     build = sub.add_parser("build", help="Generate a Codex skill.")
     add_input_args(build)
+    add_generation_metadata_args(build)
     build.add_argument("--example", choices=["toy_python", "toy_r"], default=None)
-    build.add_argument("--skill-name", default=None)
-    build.add_argument("--algorithm-name", default=None)
-    build.add_argument("--task", default=None)
     build.add_argument("--out", default=None)
     build.add_argument("--validation-depth", default="dry_run", choices=list(VALIDATION_DEPTHS), help="Build-time self-check depth; not benchmark scoring.")
-    build.add_argument("--validation-manifest", default=None, help="Reviewed manifest used only for data_smoke/live_execute build self-checks.")
-    build.add_argument("--validation-result-dir", default=None, help="Output directory for reviewed build self-check execution.")
-    build.add_argument("--validation-timeout", type=int, default=600, help="Timeout in seconds for reviewed build self-check commands.")
-    build.add_argument("--repair-attempts", type=int, default=1, help="Regenerate and re-check the skill when build-time self-check fails.")
+    build.add_argument("--validation-manifest", default=None, help="Manifest and output contract used only for data_smoke/live_execute build self-checks.")
+    build.add_argument("--validation-result-dir", default=None, help="Output directory for build self-check execution.")
+    build.add_argument("--validation-timeout", type=int, default=600, help="Timeout in seconds for build self-check commands.")
+    build.add_argument("--validation-env-prefix", default=None, help="Existing conda prefix used to run data_smoke/live_execute validation.")
+    build.add_argument("--validation-python", default=None, help="Python executable used to run data_smoke/live_execute validation.")
+    build.add_argument("--example-data-cache-dir", default=None, help="Directory containing pre-downloaded official example data for data_smoke/live_execute validation.")
+    build.add_argument("--repair-attempts", type=int, default=4, help="Regenerate and re-check the skill when build-time self-check fails; capped at 4.")
+    build.add_argument("--example-id", default=None, help="Example id from references/examples_catalog.yaml to verify for data_smoke/live_execute.")
+    build.add_argument("--example-data-url", action="append", default=[], help="Official tutorial data URL to include in the generated examples catalog.")
 
     validate = sub.add_parser("validate", help="Validate a generated skill.")
     validate.add_argument("--skill", required=True)
@@ -72,10 +76,17 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--maturity-target", default=None)
 
 
+def add_generation_metadata_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--skill-name", default=None)
+    parser.add_argument("--algorithm-name", default=None)
+    parser.add_argument("--task", default=None)
+
+
 def command_plan(args: argparse.Namespace) -> int:
     context = build_context(
-        skill_name=args.paper_title,
-        algorithm_name=args.paper_title,
+        skill_name=args.skill_name or args.paper_title,
+        algorithm_name=args.algorithm_name or args.paper_title,
+        task=args.task or "algorithm_execution",
         paper=args.paper,
         repo=args.repo,
         tutorials=args.tutorial,
@@ -120,6 +131,7 @@ def command_build(args: argparse.Namespace) -> int:
         "strict_evidence": args.strict_evidence,
         "tutorial_filter": args.tutorial_filter,
         "adapter_review": args.adapter_review,
+        "example_data_urls": args.example_data_url or None,
     }.items():
         if value is not None and value != "" and value != [] and value is not False:
             values[key] = value
@@ -142,7 +154,11 @@ def command_build(args: argparse.Namespace) -> int:
         validation_manifest=args.validation_manifest,
         validation_result_dir=args.validation_result_dir,
         validation_timeout=args.validation_timeout,
+        validation_env_prefix=args.validation_env_prefix,
+        validation_python=args.validation_python,
+        example_data_cache_dir=args.example_data_cache_dir,
         repair_attempts=args.repair_attempts,
+        example_id=args.example_id,
     )
     write_json(out_dir / "build_validation" / "build_validation.json", validation)
     print(f"Generated skill at {out_dir}")
@@ -253,9 +269,13 @@ def generate_with_build_validation(
     validation_manifest: str | None,
     validation_result_dir: str | None,
     validation_timeout: int,
+    validation_env_prefix: str | None,
+    validation_python: str | None,
+    example_data_cache_dir: str | None,
     repair_attempts: int,
+    example_id: str | None,
 ) -> dict[str, Any]:
-    attempts = max(0, repair_attempts)
+    attempts = min(max(0, repair_attempts), 4)
     repair_actions: list[dict[str, Any]] = []
     validation: dict[str, Any] = {}
     for attempt in range(attempts + 1):
@@ -266,6 +286,10 @@ def generate_with_build_validation(
             manifest=validation_manifest,
             result_dir=validation_result_dir,
             timeout_seconds=validation_timeout,
+            example_id=example_id,
+            env_prefix=validation_env_prefix,
+            python_executable=validation_python,
+            example_data_cache_dir=example_data_cache_dir,
         )
         if validation.get("passed"):
             break
@@ -305,12 +329,12 @@ def classify_repair(
     mismatched_items: list[dict[str, Any]],
     status: str,
 ) -> tuple[bool, str, str]:
-    if status == "blocked_review_required" or any(is_review_or_manifest_gate_error(error) for error in errors):
-        return False, "blocked_review_required", "review gate, manifest, or adapter approval must be supplied by a human reviewer"
+    if any(is_review_or_manifest_gate_error(error) for error in errors):
+        return True, "repair_validation_manifest_or_example_contract", "verification manifest or selected example contract is incomplete"
     if any(error in {"output_contract_mismatch", "expected_outputs_missing", "required_outputs_missing"} for error in errors):
-        return False, "stop_output_contract_mismatch", "output contract mismatch must be reviewed; Paper2Skill will not change expected outputs automatically"
+        return True, "repair_output_contract_or_adapter", "output contract mismatch can be repaired from machine validation evidence"
     if any(error in {"adapter_execution_failed", "preflight_failed", "execution_plan_failed"} for error in errors):
-        return False, "stop_execution_failure", "reviewed execution failed; inspect command records before regenerating"
+        return True, "repair_adapter_or_manifest", "verification execution failed; regenerate with repair context"
     if missing_items or any(error.startswith("missing_required_item:") for error in errors):
         return True, "regenerate_skill_package", "required child skill files are missing"
     if "install_plan_status:missing" in errors:
@@ -330,9 +354,9 @@ def is_review_or_manifest_gate_error(error: str) -> bool:
     exact = {
         "validation_manifest_required",
         "validation_manifest_invalid",
-        "reviewed_adapter_required",
-        "human_approval_required",
-        "passing_dry_run_evidence_required",
+        "verification_manifest_required",
+        "example_contract_required",
+        "verification_adapter_required",
         "verified_output_validation_required",
     }
     return error in exact or error.startswith(prefixes)

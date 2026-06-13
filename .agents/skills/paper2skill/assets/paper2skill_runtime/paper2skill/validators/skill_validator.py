@@ -42,6 +42,7 @@ REQUIRED_FILES = [
     "references/repo_evidence.json",
     "references/adapter_spec.yaml",
     "references/adapter_review.yaml",
+    "references/examples_catalog.yaml",
     "references/notebook_execution_policy.json",
     "references/paper.md",
     "references/paper_sections.json",
@@ -82,9 +83,8 @@ REQUIRED_SKILL_SECTIONS = [
     "## Evidence sources",
 ]
 
-ADAPTER_STATUSES = {"demo_only", "candidate", "blocked", "ready", "reviewed", "verified"}
-EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
-READY_DRY_RUN_STATUSES = {"pass", "trusted_fixture"}
+ADAPTER_STATUSES = {"dry_run_only", "verified"}
+EXECUTABLE_ADAPTER_STATUSES = {"verified"}
 
 
 def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
@@ -178,13 +178,13 @@ def _validate_adapter_spec(path: Path, errors: list[str]) -> None:
         return
     status = spec.get("status")
     adapter_type = spec.get("adapter_type")
-    if status in {"ready", "reviewed", "verified"} and adapter_type == "python_api":
+    if status == "verified" and adapter_type == "python_api":
         if not spec.get("module"):
             errors.append("adapter_spec.module: required when python_api status is executable")
         if not spec.get("function"):
             errors.append("adapter_spec.function: required when python_api status is executable")
-    if status == "demo_only" and adapter_type != "demo_only":
-        errors.append("adapter_spec.status: demo_only status requires demo_only adapter_type")
+    if status not in ADAPTER_STATUSES:
+        errors.append("adapter_spec.status: invalid adapter status")
 
 
 def _validate_adapter_review(path: Path, errors: list[str]) -> None:
@@ -195,16 +195,14 @@ def _validate_adapter_review(path: Path, errors: list[str]) -> None:
     except yaml.YAMLError as exc:
         errors.append(f"adapter_review: invalid YAML: {exc}")
         return
-    for key in ["adapter_type", "status", "entrypoint", "command", "module", "function", "human_approved", "dry_run", "expected_outputs", "evidence", "caveats"]:
+    for key in ["adapter_type", "status", "entrypoint", "command", "module", "function", "verification", "expected_outputs", "evidence", "caveats"]:
         if key not in review:
             errors.append(f"adapter_review: missing required key '{key}'")
     status = review.get("status")
     if status not in ADAPTER_STATUSES:
         errors.append("adapter_review.status: invalid adapter status")
-    if review.get("human_approved") is not None and not isinstance(review.get("human_approved"), bool):
-        errors.append("adapter_review.human_approved: expected boolean")
-    if "dry_run" in review and not isinstance(review.get("dry_run"), dict):
-        errors.append("adapter_review.dry_run: expected mapping")
+    if "verification" in review and not isinstance(review.get("verification"), dict):
+        errors.append("adapter_review.verification: expected mapping")
     for key in ["expected_outputs", "evidence", "caveats"]:
         if key in review and not isinstance(review.get(key), list):
             errors.append(f"adapter_review.{key}: expected list")
@@ -227,16 +225,13 @@ def _validate_adapter_review(path: Path, errors: list[str]) -> None:
     if status in EXECUTABLE_ADAPTER_STATUSES:
         for key in missing_explicit_adapter_mapping(mapping_spec, review):
             errors.append(f"adapter_review.{key}: required when adapter status is executable")
-    if status == "reviewed" and review.get("human_approved") is not True:
-        errors.append("adapter_review.human_approved: required when adapter status is reviewed")
-    if status in {"ready", "verified"}:
-        dry_run = review.get("dry_run") or {}
-        if not isinstance(dry_run, dict) or dry_run.get("status") not in READY_DRY_RUN_STATUSES:
-            errors.append("adapter_review.dry_run.status: ready or verified status requires pass or trusted_fixture")
     if status == "verified":
-        output_validation = review.get("output_validation") or {}
+        verification = review.get("verification") or {}
+        output_validation = verification.get("output_validation") if isinstance(verification, dict) else {}
+        if not isinstance(verification, dict) or verification.get("status") != "pass":
+            errors.append("adapter_review.verification.status: verified status requires pass")
         if not isinstance(output_validation, dict) or output_validation.get("status") != "pass":
-            errors.append("adapter_review.output_validation.status: verified status requires pass")
+            errors.append("adapter_review.verification.output_validation.status: verified status requires pass")
         if not review.get("expected_outputs"):
             errors.append("adapter_review.expected_outputs: verified status requires at least one expected output")
 

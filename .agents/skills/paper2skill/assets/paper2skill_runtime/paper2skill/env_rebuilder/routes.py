@@ -29,22 +29,27 @@ BIOCONDA_R_PREFIX = {
 CRAN_CONDA_PACKAGES = {
     "dplyr",
     "ggplot2",
+    "ggrepel",
     "glmnet",
     "lmtest",
     "magrittr",
     "matrix",
+    "pals",
     "parsnip",
     "pbmcapply",
     "purrr",
     "randomforest",
     "recipes",
+    "rdpack",
     "remotes",
     "rlang",
     "rsample",
+    "scales",
     "tester",
     "tibble",
     "tidyr",
     "tidyselect",
+    "viridis",
     "yardstick",
 }
 R_BASE_PACKAGES = {
@@ -72,15 +77,45 @@ CLI_CONDA_PACKAGES = {
     "star": "star",
 }
 CONDA_BINARY_PYTHON = {
+    "adjusttext",
     "anndata",
+    "faiss-cpu",
     "h5py",
+    "importlib-metadata",
+    "matplotlib",
+    "networkx",
     "numpy",
     "pandas",
+    "requests",
+    "rich",
     "scanpy",
     "scikit-misc",
     "scipy",
+    "seaborn",
     "sklearn",
     "scikit-learn",
+    "tqdm",
+    "typing-extensions",
+    "wandb",
+}
+PIP_FIRST_PYTHON = {
+    "scvi-tools",
+}
+PIP_FIRST_CONDA_PREREQUISITES = {
+    "scvi-tools": ["tensorstore"],
+}
+PIP_FIRST_EXTRA_CONSTRAINTS = {
+    "scvi-tools": [
+        "jax<0.4.24,>=0.4.18",
+        "jaxlib<0.4.24,>=0.4.18",
+        "ml-dtypes<0.3,>=0.2.0",
+        "flax<0.7.1,>=0.6.11",
+        "optax<0.2",
+        "chex<0.1.8",
+        "numpyro<0.13",
+        "scipy<1.13",
+        "pandas<2",
+    ],
 }
 SPECIAL_TORCH_PACKAGES = {"torch", "pytorch", "torchvision", "torchaudio"}
 TORCH_CONDA_PACKAGE_BY_KEY = {
@@ -89,7 +124,18 @@ TORCH_CONDA_PACKAGE_BY_KEY = {
     "torchvision": "torchvision",
     "torchaudio": "torchaudio",
 }
+TORCH_PIP_PACKAGE_BY_KEY = {
+    "torch": "torch",
+    "pytorch": "torch",
+    "torchvision": "torchvision",
+    "torchaudio": "torchaudio",
+}
 SPECIAL_PYG_PACKAGES = {"torch-geometric", "torch_geometric", "pyg"}
+PYG_PIP_PACKAGE_BY_KEY = {
+    "torch-geometric": "torch-geometric",
+    "torch_geometric": "torch-geometric",
+    "pyg": "torch-geometric",
+}
 
 
 def normalize_install_approval(install_approval: dict[str, Any] | None = None, install_allowlist: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -333,16 +379,67 @@ def route_python_packages(
             continue
         if key in SPECIAL_PYG_PACKAGES:
             route = {
-                "name": conda_requirement_spec(parsed),
+                "name": pyg_pip_requirement(parsed),
                 "requirement": str(package),
                 "route": "special_pyg",
-                "manual_approval_required": True,
-                "reason": "torch-geometric requires torch ABI compatibility check",
+                "profile": "pip_default",
+                "pip_packages": [pyg_pip_requirement(parsed)],
+                "manual_approval_required": False,
+                "reason": "torch-geometric is installed in the pip segment and verified by preflight to avoid fragile conda ABI solves",
             }
             if parsed.get("marker") or parsed.get("extras"):
                 route["normalization"] = {"marker": parsed.get("marker"), "extras": parsed.get("extras") or []}
             special.append(route)
-            manual.append(route)
+            continue
+        if key in PIP_FIRST_PYTHON:
+            pip_spec = conda_requirement_spec(parsed)
+            uv.append(pip_spec)
+            extra_constraints = pip_first_extra_constraints(key, parsed)
+            uv.extend(extra_constraints)
+            prerequisites = pip_first_conda_prerequisites(key, parsed)
+            for prerequisite in prerequisites:
+                conda.append(prerequisite)
+            migrations.append(
+                {
+                    "package": pip_spec,
+                    "requirement": str(package),
+                    "evidence": "pip_first_python_stack",
+                    "chosen_route": "pip",
+                    "reason": "package is pip-native and causes slow or fragile conda solves in mixed deep-learning environments",
+                    "source": "route_table",
+                    "patch_type": "route_migration",
+                    "dropped_marker": parsed.get("marker"),
+                    "dropped_extras": parsed.get("extras") or [],
+                }
+            )
+            for prerequisite in prerequisites:
+                migrations.append(
+                    {
+                        "package": prerequisite,
+                        "requirement": str(package),
+                        "evidence": "pip_first_transitive_prerequisite",
+                        "chosen_route": "conda",
+                        "reason": "pip source build requires newer system toolchain; preinstall conda binary before pip package resolution",
+                        "source": "route_table",
+                        "patch_type": "transitive_prerequisite",
+                        "dropped_marker": None,
+                        "dropped_extras": [],
+                    }
+                )
+            for constraint in extra_constraints:
+                migrations.append(
+                    {
+                        "package": constraint,
+                        "requirement": str(package),
+                        "evidence": "pip_first_transitive_constraint",
+                        "chosen_route": "pip",
+                        "reason": "legacy dependency stack needs a bounded transitive dependency to avoid source builds on old system toolchains",
+                        "source": "route_table",
+                        "patch_type": "transitive_constraint",
+                        "dropped_marker": None,
+                        "dropped_extras": [],
+                    }
+                )
             continue
         if key in CONDA_BINARY_PYTHON:
             conda_spec = conda_requirement_spec(parsed)
@@ -396,15 +493,53 @@ def torch_route(package: str, *, gpu_policy: str, torch_backend: str) -> dict[st
             "manual_approval_required": True,
             "reason": "CUDA wheel/conda profile requires reviewed ABI and driver compatibility",
         }
+    if torch_backend in {"conda", "conda_cpu"}:
+        return {
+            "name": package,
+            "route": "special_torch",
+            "profile": "conda_cpu",
+            "conda_packages": conda_packages,
+            "channels": ["pytorch", "conda-forge"],
+            "manual_approval_required": False,
+            "reason": "explicit conda CPU torch profile was requested",
+        }
     return {
         "name": package,
         "route": "special_torch",
-        "profile": "conda_cpu",
-        "conda_packages": conda_packages,
-        "channels": ["pytorch", "conda-forge"],
+        "profile": "pip_cpu",
+        "pip_packages": [torch_pip_requirement(package)],
         "manual_approval_required": False,
-        "reason": "default torch route is conda CPU unless explicit CUDA profile is provided",
+        "reason": "default CPU torch route uses pip wheels to avoid slow conda solves on mixed scientific stacks",
     }
+
+
+def torch_pip_requirement(package: str) -> str:
+    parsed = parse_python_requirement(package)
+    key = package_key(package)
+    name = TORCH_PIP_PACKAGE_BY_KEY.get(key, key)
+    specifier = str(parsed.get("specifier") or "").strip() if parsed.get("valid") else ""
+    return f"{name}{specifier}" if specifier else name
+
+
+def pyg_pip_requirement(parsed: dict[str, Any]) -> str:
+    key = package_key(parsed.get("raw") or parsed.get("name") or "")
+    name = PYG_PIP_PACKAGE_BY_KEY.get(key, "torch-geometric")
+    specifier = str(parsed.get("specifier") or "").strip()
+    return f"{name}{specifier}" if specifier else name
+
+
+def pip_first_conda_prerequisites(key: str, parsed: dict[str, Any]) -> list[str]:
+    specifier = str(parsed.get("specifier") or "")
+    if key == "scvi-tools" and "<1" in specifier.replace(" ", ""):
+        return []
+    return list(PIP_FIRST_CONDA_PREREQUISITES.get(key, []))
+
+
+def pip_first_extra_constraints(key: str, parsed: dict[str, Any]) -> list[str]:
+    specifier = str(parsed.get("specifier") or "")
+    if key == "scvi-tools" and "<1" in specifier.replace(" ", ""):
+        return list(PIP_FIRST_EXTRA_CONSTRAINTS.get(key, []))
+    return []
 
 
 def route_r_packages(packages: list[str]) -> dict[str, Any]:

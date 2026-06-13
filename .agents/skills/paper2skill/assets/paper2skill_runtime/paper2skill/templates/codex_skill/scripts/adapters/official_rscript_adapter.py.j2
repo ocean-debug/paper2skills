@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+FILE_SUFFIXES = {".csv", ".tsv", ".txt", ".rds", ".rda", ".rdata", ".h5", ".h5ad", ".mtx"}
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    data = env_manager.load_json_yaml(path)
+    return data if isinstance(data, dict) else {}
+
+
+def catalog() -> dict[str, Any]:
+    return load_mapping(ROOT / "references" / "examples_catalog.yaml")
+
+
+def adapter_spec() -> dict[str, Any]:
+    return load_mapping(ROOT / "references" / "adapter_spec.yaml")
+
+
+def selected_example(example_id: str | None) -> dict[str, Any]:
+    data = catalog()
+    examples = data.get("examples") if isinstance(data.get("examples"), list) else []
+    if example_id:
+        for item in examples:
+            if isinstance(item, dict) and item.get("example_id") == example_id:
+                return item
+        return {}
+    target = data.get("default_example_id")
+    for item in examples:
+        if isinstance(item, dict) and item.get("example_id") == target:
+            return item
+    return examples[0] if examples and isinstance(examples[0], dict) else {}
+
+
+def selected_adapter(example: dict[str, Any]) -> dict[str, Any]:
+    merged = adapter_spec()
+    adapter = example.get("adapter") if isinstance(example.get("adapter"), dict) else {}
+    merged.update({key: value for key, value in adapter.items() if value is not None})
+    return merged
+
+
+def example_id_from_manifest(manifest: dict[str, Any], cli_value: str | None) -> str | None:
+    if cli_value:
+        return cli_value
+    if os.environ.get("PAPER2SKILL_EXAMPLE_ID"):
+        return os.environ["PAPER2SKILL_EXAMPLE_ID"]
+    algorithm = ((manifest.get("inputs") or {}).get("algorithm") or {})
+    value = algorithm.get("example_id")
+    return str(value) if value else None
+
+
+def source_repo(manifest: dict[str, Any]) -> Path | None:
+    candidates = [ROOT / "sources" / "repo"]
+    source_manifest = load_mapping(ROOT / "references" / "source_manifest.json")
+    repo = source_manifest.get("repo") if isinstance(source_manifest.get("repo"), dict) else {}
+    for key in ["local_path", "resolved_path"]:
+        value = repo.get(key)
+        if isinstance(value, str) and value:
+            candidates.append(Path(value))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def command_tokens(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, str) and value.strip():
+        try:
+            return shlex.split(value)
+        except ValueError:
+            return []
+    return []
+
+
+def official_command(adapter: dict[str, Any]) -> list[str]:
+    return command_tokens(adapter.get("official_command"))
+
+
+def fail(out: Path, code: str, message: str, **extra: Any) -> int:
+    summary = {"status": "fail", "adapter_type": "r_script", "failure_code": code, "message": message, **extra}
+    write_json(out / "results" / "summary.json", env_manager.public_data(summary))
+    print(json.dumps(summary, indent=2))
+    return 2
+
+
+def find_script(repo: Path, token: str) -> Path | None:
+    raw = Path(token)
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    candidates.extend([repo / raw, repo / raw.name])
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    matches = sorted(repo.rglob(raw.name))
+    return matches[0].resolve() if matches else None
+
+
+def split_rscript_command(tokens: list[str]) -> tuple[list[str], str | None, list[str]]:
+    for index, token in enumerate(tokens):
+        if token.lower().endswith(".r"):
+            prefix = tokens[:index]
+            if not prefix or Path(prefix[0]).name.lower() != "rscript":
+                prefix = ["Rscript", *prefix]
+            return prefix, token, tokens[index + 1 :]
+    return [], None, []
+
+
+def manifest_input_candidates(manifest: dict[str, Any]) -> list[tuple[str, Path]]:
+    candidates: list[tuple[str, Path]] = []
+
+    def visit(value: Any, key_hint: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in {"path", "file", "filename"} and isinstance(item, str):
+                    candidates.append((key_hint or key, Path(item)))
+                else:
+                    visit(item, str(key))
+        elif isinstance(value, list):
+            for item in value:
+                visit(item, key_hint)
+
+    visit(manifest.get("inputs") or {})
+    return candidates
+
+
+def looks_like_file_arg(value: str) -> bool:
+    if value.startswith("-"):
+        return False
+    lower = value.lower()
+    if lower in {"arg1", "arg2", "input", "input_file", "file", "data"}:
+        return True
+    suffix = Path(value).suffix.lower()
+    return suffix in FILE_SUFFIXES or "/" in value or "\\" in value
+
+
+def resolve_file_arg(arg: str, *, repo: Path, work_repo: Path, manifest: dict[str, Any]) -> str | None:
+    raw = Path(arg)
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    candidates.extend(
+        [
+            work_repo / raw,
+            repo / raw,
+            repo / raw.name,
+            repo / "sample_data" / raw.name,
+            ROOT / "assets" / "data" / raw.name,
+        ]
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            if is_relative_to(candidate.resolve(), work_repo.resolve()):
+                return str(candidate.resolve().relative_to(work_repo.resolve())).replace("\\", "/")
+            target = work_repo / raw.name
+            shutil.copyfile(candidate, target)
+            return target.name
+    for key_hint, manifest_path in manifest_input_candidates(manifest):
+        if not manifest_candidate_matches(raw, key_hint, manifest_path):
+            continue
+        for candidate in [manifest_path, ROOT / manifest_path, work_repo / manifest_path, repo / manifest_path]:
+            if candidate.is_file():
+                if is_relative_to(candidate.resolve(), work_repo.resolve()):
+                    return str(candidate.resolve().relative_to(work_repo.resolve())).replace("\\", "/")
+                target = work_repo / raw.name
+                shutil.copyfile(candidate, target)
+                return target.name
+    return None
+
+
+def manifest_candidate_matches(raw: Path, key_hint: str, candidate: Path) -> bool:
+    raw_tokens = path_tokens(raw)
+    candidate_tokens = path_tokens(candidate) | {normalize_token(key_hint)}
+    candidate_tokens.discard("")
+    return bool(raw_tokens & candidate_tokens)
+
+
+def path_tokens(path: Path) -> set[str]:
+    return {normalize_token(path.name), normalize_token(path.stem), normalize_token(str(path))}
+
+
+def normalize_token(value: Any) -> str:
+    return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def resolve_command_args(args: list[str], *, repo: Path, work_repo: Path, manifest: dict[str, Any]) -> tuple[list[str], list[str]]:
+    resolved: list[str] = []
+    missing: list[str] = []
+    for arg in args:
+        if looks_like_file_arg(arg):
+            resolved_arg = resolve_file_arg(arg, repo=repo, work_repo=work_repo, manifest=manifest)
+            if resolved_arg is None:
+                missing.append(arg)
+            else:
+                resolved.append(resolved_arg)
+        else:
+            resolved.append(arg)
+    return resolved, missing
+
+
+def summarize_results(work_repo: Path, out: Path, command: list[str], completed: subprocess.CompletedProcess[str]) -> dict[str, Any]:
+    results_dir = work_repo / "Results"
+    target_results = out / "results" / "official_rscript_results"
+    if target_results.exists():
+        shutil.rmtree(target_results)
+    if results_dir.exists():
+        shutil.copytree(results_dir, target_results)
+    files = sorted(str(path.relative_to(target_results)) for path in target_results.rglob("*") if path.is_file()) if target_results.exists() else []
+    summary = {
+        "status": "pass" if completed.returncode == 0 else "fail",
+        "adapter_type": "r_script",
+        "command": env_manager.public_data(command),
+        "returncode": completed.returncode,
+        "results_dir": "results/official_rscript_results" if target_results.exists() else None,
+        "result_files": files[:100],
+        "stdout_tail": (completed.stdout or "")[-4000:],
+        "stderr_tail": (completed.stderr or "")[-4000:],
+    }
+    write_json(out / "results" / "summary.json", summary)
+    return summary
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = argv or sys.argv[1:]
+    if len(argv) not in {2, 3}:
+        print("usage: official_rscript_adapter.py <manifest> <out> [example_id]", file=sys.stderr)
+        return 2
+    manifest_path = Path(argv[0])
+    out = Path(argv[1])
+    manifest = load_mapping(manifest_path)
+    example = selected_example(example_id_from_manifest(manifest, argv[2] if len(argv) == 3 else None))
+    if not example:
+        return fail(out, "selected_example_not_found", "selected example is missing from examples_catalog.yaml")
+    adapter = selected_adapter(example)
+    repo = source_repo(manifest)
+    if repo is None:
+        return fail(out, "source_repo_missing", "source repo not found")
+    tokens = official_command(adapter)
+    if not tokens:
+        return fail(out, "official_rscript_command_missing", "selected example has no official Rscript command")
+    prefix, script_token, command_args = split_rscript_command(tokens)
+    if not script_token:
+        return fail(out, "official_rscript_script_missing", "official command does not contain an R script", official_command=tokens)
+    if not command_args:
+        return fail(out, "official_rscript_args_missing", "official command does not declare required arguments", official_command=tokens)
+    script = find_script(repo, script_token)
+    if script is None:
+        return fail(out, "official_rscript_script_not_found", "official R script not found", script=script_token)
+    work = out / "adapter_work" / "official_rscript"
+    work_repo = work / "repo"
+    if work.exists():
+        shutil.rmtree(work)
+    shutil.copytree(repo, work_repo)
+    local_script = work_repo / script.relative_to(repo) if is_relative_to(script, repo) else work_repo / script.name
+    if not local_script.exists():
+        shutil.copyfile(script, local_script)
+    resolved_args, missing_args = resolve_command_args(command_args, repo=repo, work_repo=work_repo, manifest=manifest)
+    if missing_args:
+        return fail(out, "required_official_input_missing", "official command input arguments were not found", missing_args=missing_args, official_command=tokens)
+    command = [*prefix, str(local_script.relative_to(work_repo)).replace("\\", "/"), *resolved_args]
+    completed = subprocess.run(command, cwd=work_repo, text=True, capture_output=True, check=False)
+    log_dir = out / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "official_rscript.stdout.log").write_text(completed.stdout or "", encoding="utf-8")
+    (log_dir / "official_rscript.stderr.log").write_text(completed.stderr or "", encoding="utf-8")
+    summary = summarize_results(work_repo, out, command, completed)
+    print(json.dumps(summary, indent=2))
+    return completed.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

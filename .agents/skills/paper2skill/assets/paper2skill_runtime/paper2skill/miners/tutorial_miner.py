@@ -33,11 +33,9 @@ def mine_repo_tutorials(repo_root: str | Path, tutorial_filter: str | None = Non
     scan = scan_tutorial_candidates(repo_root)
     candidates = scan["candidates"]
     if tutorial_filter:
-        needle = tutorial_filter.lower()
         filtered = []
         for item in candidates:
-            title = item.title or ""
-            if needle in item.path.lower() or needle in title.lower():
+            if tutorial_filter_matches(item, tutorial_filter):
                 filtered.append(item)
             else:
                 item.include_in_tools = False
@@ -60,6 +58,17 @@ def mine_repo_tutorials(repo_root: str | Path, tutorial_filter: str | None = Non
     report["included_after_filter"] = sum(1 for item in candidates if item.include_in_tools)
     trace["tutorial_scanner_report"] = report
     return trace
+
+
+def tutorial_filter_matches(item: Any, tutorial_filter: str) -> bool:
+    needles = [part.strip().lower() for part in tutorial_filter.split("|") if part.strip()]
+    if not needles:
+        return True
+    title = (item.title or "").lower()
+    path = item.path.lower()
+    source_path = (item.source_path or "").lower()
+    haystack = "\n".join([path, source_path, title])
+    return any(needle in haystack for needle in needles)
 
 
 def _public_tutorial_trace(trace: dict[str, Any], public_path: str | None) -> dict[str, Any]:

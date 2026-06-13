@@ -9,15 +9,11 @@ import yaml
 
 
 VALID_ADAPTER_STATUSES = {
-    "demo_only",
-    "candidate",
-    "blocked",
-    "ready",
-    "reviewed",
+    "dry_run_only",
     "verified",
 }
 
-EXECUTABLE_ADAPTER_STATUSES = {"ready", "reviewed", "verified"}
+EXECUTABLE_ADAPTER_STATUSES = {"verified"}
 
 REQUIRED_SKILL_FILES = [
     "SKILL.md",
@@ -32,6 +28,7 @@ REQUIRED_SKILL_FILES = [
     "references/workflow_dag.json",
     "references/adapter_spec.yaml",
     "references/adapter_review.yaml",
+    "references/examples_catalog.yaml",
     "references/notebook_execution_policy.json",
     "references/evidence_graph.json",
     "assets/environment_spec.yaml",
@@ -40,6 +37,27 @@ REQUIRED_SKILL_FILES = [
 ]
 
 REQUIRED_DIRS = ["scripts/adapters"]
+PACKAGE_SCAN_SKIP_DIRS = {
+    "build_validation",
+    "__pycache__",
+    ".pytest_cache",
+}
+PACKAGE_SCAN_SKIP_PREFIXES = {
+    "sources/repo",
+    "assets/data",
+}
+
+PACKAGE_SCAN_SKIP_SUFFIXES = {
+    ".h5",
+    ".h5ad",
+    ".loom",
+    ".rda",
+    ".rds",
+    ".npz",
+    ".npy",
+    ".parquet",
+    ".feather",
+}
 
 ABSOLUTE_PATH_PATTERNS = [
     re.compile(r"\b[A-Za-z]:\\"),
@@ -153,14 +171,20 @@ def path_leakage(root: Path) -> list[str]:
         return []
     leaked: list[str] = []
     for path in root.rglob("*"):
-        if not path.is_file() or path.suffix.lower() in {".pyc", ".png", ".jpg", ".jpeg", ".pdf"}:
+        rel = path.relative_to(root)
+        rel_posix = rel.as_posix()
+        if any(part in PACKAGE_SCAN_SKIP_DIRS for part in rel.parts):
+            continue
+        if any(rel_posix == prefix or rel_posix.startswith(f"{prefix}/") for prefix in PACKAGE_SCAN_SKIP_PREFIXES):
+            continue
+        if not path.is_file() or path.suffix.lower() in {".pyc", ".png", ".jpg", ".jpeg", ".pdf", *PACKAGE_SCAN_SKIP_SUFFIXES}:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
         if any(pattern.search(text) for pattern in ABSOLUTE_PATH_PATTERNS):
-            leaked.append(str(path.relative_to(root)).replace("\\", "/"))
+            leaked.append(rel_posix)
     return sorted(leaked)
 
 

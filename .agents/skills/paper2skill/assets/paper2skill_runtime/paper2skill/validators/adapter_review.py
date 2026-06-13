@@ -6,7 +6,7 @@ import shlex
 from typing import Any
 
 
-ALLOWED_COMMAND_PLACEHOLDERS = {"manifest", "out", "root"}
+ALLOWED_COMMAND_PLACEHOLDERS = {"manifest", "out", "root", "example_id"}
 COMMAND_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 PYTHON_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 

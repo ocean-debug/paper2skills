@@ -16,6 +16,7 @@ from paper2skill.collectors.path_sanitizer import public_local_path
 from paper2skill.miners.script_miner import R_LIBRARY_RE
 
 R_BASE_PACKAGES = {"base", "compiler", "datasets", "graphics", "grDevices", "grid", "methods", "parallel", "splines", "stats", "tools", "utils"}
+R_INSTALL_TOOL_PACKAGES = {"BiocManager", "devtools", "pak", "remotes", "renv"}
 BIOCONDUCTOR_HINTS = {
     "apeglm",
     "DESeq2",
@@ -33,9 +34,20 @@ BIOCONDUCTOR_HINTS = {
 }
 PYTHON_IMPORT_PACKAGE_ALIASES = {
     "sklearn": "scikit-learn",
+    "scvi": "scvi-tools",
     "yaml": "PyYAML",
     "PIL": "Pillow",
     "cv2": "opencv-python",
+    "faiss": "faiss-cpu",
+}
+PYTHON_PACKAGE_IMPORT_ALIASES = {
+    "pyyaml": "yaml",
+    "scikit-learn": "sklearn",
+    "scikit-misc": "skmisc",
+    "scvi-tools": "scvi",
+    "umap-learn": "umap",
+    "python-igraph": "igraph",
+    "faiss-cpu": "faiss",
 }
 PYTHON_DOCUMENTATION_HINTS = {
     "pytorch": "torch",
@@ -44,6 +56,12 @@ PYTHON_DOCUMENTATION_HINTS = {
     "faiss-cpu": "faiss-cpu",
     "faiss": "faiss-cpu",
     "anndata": "anndata",
+}
+LEGACY_SCVI_IMPORT_TOKENS = {
+    "setup_anndata_dsp",
+    "scvi.data.fields",
+    "scvi.module.base",
+    "scvi.nn",
 }
 
 
@@ -82,12 +100,28 @@ def _python_record(spec: str, source: str, evidence: str, required: bool = True,
     return {
         "spec": spec,
         "name": requirement.name,
-        "import_name": requirement.name.replace("-", "_"),
+        "import_name": PYTHON_PACKAGE_IMPORT_ALIASES.get(requirement.name.lower(), requirement.name.replace("-", "_")),
         "required": required,
         "category": category,
         "source": source,
         "evidence": evidence,
     }
+
+
+def poetry_requirement_spec(name: str, spec: Any) -> str:
+    if isinstance(spec, str):
+        value = spec.strip()
+    elif isinstance(spec, dict):
+        value = str(spec.get("version") or "").strip()
+    else:
+        value = ""
+    if not value or value == "*":
+        return name
+    if value.startswith((">", "<", "=", "!", "~")):
+        return f"{name}{value}"
+    if re.match(r"^\d+(?:[.\w-].*)?$", value):
+        return f"{name}=={value}"
+    return name
 
 
 def parse_requirements_records(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
@@ -147,7 +181,12 @@ def parse_pyproject_records(path: Path) -> tuple[list[dict[str, Any]], dict[str,
     for name, spec in (poetry.get("dependencies", {}) or {}).items():
         if name.lower() == "python":
             continue
-        records.append({"spec": name, "name": name, "import_name": name.replace("-", "_"), "required": True, "category": "runtime", "source": "pyproject.toml", "evidence": "tool.poetry.dependencies"})
+        if isinstance(spec, dict) and spec.get("optional") is True:
+            optional.setdefault("poetry:optional", []).append(name)
+            continue
+        record = _python_record(poetry_requirement_spec(name, spec), "pyproject.toml", "tool.poetry.dependencies")
+        if record:
+            records.append(record)
     for group_name, group in (poetry.get("group", {}) or {}).items():
         deps = (group or {}).get("dependencies", {}) or {}
         optional[f"poetry:{group_name}"] = [name for name in deps if name.lower() != "python"]
@@ -243,6 +282,12 @@ def parse_description_metadata(path: Path) -> dict[str, list[str]]:
     return {key: value for key, value in fields.items() if value}
 
 
+def parse_description_package_name(path: Path) -> str | None:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    match = re.search(r"^Package:\s*([A-Za-z][A-Za-z0-9_.]*)\s*$", text, flags=re.M)
+    return match.group(1) if match else None
+
+
 def parse_environment_yml(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8", errors="replace")) or {}
@@ -320,6 +365,7 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
     optional: dict[str, dict[str, list[str]]] = {"python": {}, "r": {}}
     ignored: list[dict[str, str]] = []
     root = Path(repo_path).resolve() if repo_path else None
+    self_r_packages: set[str] = set()
     if root and root.exists():
         requirement_paths = [root / "requirements.txt"]
         requirements_dir = root / "requirements"
@@ -378,6 +424,8 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
         description = root / "DESCRIPTION"
         if description.exists():
             dependency_files.append(public_local_path(description, root))
+            if package_name := parse_description_package_name(description):
+                self_r_packages.add(package_name)
             required_r_records, optional_r_records = parse_description_field_records(description)
             required_r = [record["name"] for record in required_r_records]
             r_packages.extend(required_r)
@@ -410,6 +458,9 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
         import_records = python_import_dependency_records(root)
         python_records.extend(import_records)
         python_packages.extend(item["spec"] for item in import_records)
+        optional_imports = sorted(dict.fromkeys(record["name"] for record in import_records if not record.get("required", True)))
+        if optional_imports:
+            optional["python"]["function_local_imports"] = optional_imports
         markdown_r_records = markdown_r_dependency_records(root)
         r_packages.extend(record["name"] for record in markdown_r_records)
         r_records.extend(markdown_r_records)
@@ -437,6 +488,12 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
             r_packages.append(name)
             r_records.append({"name": name, "source": "tutorial", "evidence": public_local_path(path, root or Path.cwd()), "required": True, "category": "tutorial_runtime"})
     python_records = _dedupe_records(python_records, "spec")
+    if root and uses_legacy_scvi_api(root):
+        python_records = constrain_legacy_scvi_tools(python_records)
+    python_records = add_scanpy_matplotlib_compatibility(python_records)
+    python_packages = [item["spec"] for item in python_records]
+    apply_self_r_overrides(r_records, self_r_packages)
+    apply_optional_r_overrides(r_records, optional["r"])
     r_records = _dedupe_records(r_records, "name")
     return {
         "dependency_files": dependency_files,
@@ -455,27 +512,213 @@ def mine_dependencies(repo_path: str | Path | None, tutorial_paths: list[str | P
     }
 
 
+def uses_legacy_scvi_api(root: Path) -> bool:
+    for path in root.rglob("*.py"):
+        if any(part.startswith(".") for part in path.parts) or is_non_runtime_python_source(path, root):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if any(token in text for token in LEGACY_SCVI_IMPORT_TOKENS):
+            return True
+    return False
+
+
+def constrain_legacy_scvi_tools(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scvi_records = [record for record in records if str(record.get("name") or "").lower() == "scvi-tools"]
+    if not scvi_records:
+        return records
+    lower_bounds = []
+    for record in scvi_records:
+        try:
+            requirement = Requirement(str(record.get("spec") or "scvi-tools"))
+        except InvalidRequirement:
+            continue
+        for specifier in requirement.specifier:
+            if specifier.operator in {">", ">=", "~="}:
+                lower_bounds.append(str(specifier))
+    combined = "scvi-tools" + ",".join([*sorted(dict.fromkeys(lower_bounds)), "<1.0"])
+    updated = []
+    has_mudata = False
+    for record in records:
+        name = str(record.get("name") or "").lower()
+        if name == "scvi-tools":
+            record = dict(record)
+            record["spec"] = combined
+            record["evidence"] = f"{record.get('evidence')}; legacy_scvi_api"
+            record["version_constraint_reason"] = "legacy scvi API imports are incompatible with unconstrained scvi-tools 1.x dependency stack"
+        if name == "mudata":
+            has_mudata = True
+            record = dict(record)
+            record["spec"] = "mudata<0.3"
+            record["version_constraint_reason"] = "legacy scvi-tools with anndata<0.9 requires a pre-0.3 mudata stack"
+        updated.append(record)
+    if not has_mudata:
+        updated.append(
+            {
+                "spec": "mudata<0.3",
+                "name": "mudata",
+                "import_name": "mudata",
+                "required": True,
+                "category": "runtime_compatibility",
+                "source": "compatibility_policy",
+                "evidence": "legacy_scvi_api",
+                "version_constraint_reason": "legacy scvi-tools with anndata<0.9 requires a pre-0.3 mudata stack",
+            }
+        )
+    updated.extend(legacy_scvi_transitive_constraints())
+    return _dedupe_records(updated, "spec")
+
+
+def legacy_scvi_transitive_constraints() -> list[dict[str, Any]]:
+    specs = [
+        ("jax<0.4.24,>=0.4.18", "jax"),
+        ("jaxlib<0.4.24,>=0.4.18", "jaxlib"),
+        ("ml-dtypes<0.3,>=0.2.0", "ml_dtypes"),
+        ("flax<0.7.1,>=0.6.11", "flax"),
+        ("optax<0.2", "optax"),
+        ("chex<0.1.8", "chex"),
+        ("numpyro<0.13", "numpyro"),
+        ("scipy<1.13", "scipy"),
+        ("pandas<2", "pandas"),
+    ]
+    return [
+        {
+            "spec": spec,
+            "name": spec.split("<", 1)[0].split(">", 1)[0].split("=", 1)[0],
+            "import_name": import_name,
+            "required": True,
+            "category": "runtime_compatibility",
+            "source": "compatibility_policy",
+            "evidence": "legacy_scvi_api",
+            "version_constraint_reason": "legacy scvi-tools lacks upper bounds for jax/flax/optax/chex/numpyro/scipy/pandas",
+        }
+        for spec, import_name in specs
+    ]
+
+
+def add_scanpy_matplotlib_compatibility(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scanpy_records = [record for record in records if str(record.get("name") or "").lower() == "scanpy"]
+    if not scanpy_records:
+        return records
+    updated = []
+    needs_pin = True
+    for record in records:
+        if str(record.get("name") or "").lower() != "matplotlib":
+            updated.append(record)
+            continue
+        if has_matplotlib_upper_bound(record):
+            needs_pin = False
+            updated.append(record)
+            continue
+        pinned = dict(record)
+        pinned["spec"] = merge_matplotlib_compatibility_spec(str(record.get("spec") or "matplotlib"))
+        pinned["category"] = record.get("category") or "runtime_compatibility"
+        pinned["source"] = record.get("source") or "compatibility_policy"
+        pinned["version_constraint_reason"] = "scanpy tutorials with unconstrained scanpy/matplotlib can resolve to a known incompatible matplotlib 3.7+ plotting stack"
+        updated.append(pinned)
+        needs_pin = False
+    if not needs_pin:
+        return _dedupe_records(updated, "spec")
+    updated.append(
+        {
+            "spec": "matplotlib<3.7",
+            "name": "matplotlib",
+            "import_name": "matplotlib",
+            "required": True,
+            "category": "runtime_compatibility",
+            "source": "compatibility_policy",
+            "evidence": "scanpy_matplotlib_metaclass_compatibility",
+            "version_constraint_reason": "scanpy tutorials with unconstrained scanpy/matplotlib can resolve to a known incompatible matplotlib 3.7+ plotting stack",
+        }
+    )
+    return _dedupe_records(updated, "spec")
+
+
+def merge_matplotlib_compatibility_spec(spec: str) -> str:
+    try:
+        requirement = Requirement(spec)
+    except InvalidRequirement:
+        return "matplotlib<3.7"
+    preserved = []
+    for specifier in requirement.specifier:
+        if specifier.operator in {">", ">=", "!=", "~=", "=="}:
+            preserved.append(str(specifier))
+    suffix = ",".join([*sorted(dict.fromkeys(preserved)), "<3.7"])
+    return f"matplotlib{suffix}"
+
+
+def has_matplotlib_upper_bound(record: dict[str, Any]) -> bool:
+    try:
+        requirement = Requirement(str(record.get("spec") or "matplotlib"))
+    except InvalidRequirement:
+        return False
+    return any(specifier.operator in {"<", "<="} for specifier in requirement.specifier)
+
+
 def python_import_dependency_records(root: Path) -> list[dict[str, Any]]:
     records = []
     local_modules = local_python_modules(root)
     for path in root.rglob("*.py"):
-        if any(part.startswith(".") for part in path.parts):
+        if any(part.startswith(".") for part in path.parts) or is_non_runtime_python_source(path, root):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
         except SyntaxError:
             continue
-        for node in ast.walk(tree):
-            names = []
-            if isinstance(node, ast.Import):
-                names.extend(alias.name.split(".", 1)[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                names.append(node.module.split(".", 1)[0])
-            for name in names:
-                record = import_dependency_record(name, public_local_path(path, root), local_modules)
-                if record:
-                    records.append(record)
+        records.extend(import_dependency_records_from_ast(tree, public_local_path(path, root), local_modules))
     return _dedupe_records(records, "name")
+
+
+def import_dependency_records_from_ast(tree: ast.AST, evidence: str | None, local_modules: set[str]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def visit(node: ast.AST, *, in_function: bool = False) -> None:
+        names: list[str] = []
+        if isinstance(node, ast.Import):
+            names.extend(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            names.append(node.module.split(".", 1)[0])
+        for name in names:
+            record = import_dependency_record(
+                name,
+                evidence,
+                local_modules,
+                required=not in_function,
+                category="optional_runtime" if in_function else "runtime",
+            )
+            if record:
+                records.append(record)
+        child_in_function = in_function or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for child in ast.iter_child_nodes(node):
+            visit(child, in_function=child_in_function)
+
+    visit(tree)
+    return records
+
+
+def is_non_runtime_python_source(path: Path, root: Path) -> bool:
+    rel = path.relative_to(root)
+    parts = [part.lower() for part in rel.parts]
+    if not parts:
+        return False
+    if any(part in {"docs", "doc", "tests", "test", "examples", "example", "notebooks", "notebook", "benchmarks", "benchmark", "benchmarking"} for part in parts):
+        return True
+    return rel.as_posix().lower() == "setup.py"
+
+
+def apply_self_r_overrides(records: list[dict[str, Any]], self_packages: set[str]) -> None:
+    for record in records:
+        if record.get("name") in self_packages:
+            record["required"] = False
+            record["category"] = "self_package"
+            record["source"] = "DESCRIPTION:Package"
+
+
+def apply_optional_r_overrides(records: list[dict[str, Any]], optional: dict[str, list[str]]) -> None:
+    optional_names = {name for values in optional.values() for name in values}
+    for record in records:
+        if record.get("name") in optional_names and str(record.get("evidence", "")).startswith(("README", "docs/", "vignettes/", "R/")):
+            record["required"] = False
+            record["category"] = "optional_runtime"
 
 
 def local_python_modules(root: Path) -> set[str]:
@@ -493,11 +736,11 @@ def local_python_modules(root: Path) -> set[str]:
     return modules
 
 
-def import_dependency_record(name: str, evidence: str | None, local_modules: set[str]) -> dict[str, Any] | None:
+def import_dependency_record(name: str, evidence: str | None, local_modules: set[str], *, required: bool = True, category: str = "runtime") -> dict[str, Any] | None:
     if not name or name in local_modules or name in sys.stdlib_module_names:
         return None
     package = PYTHON_IMPORT_PACKAGE_ALIASES.get(name, name)
-    record = _python_record(package, "import_fallback", evidence or "python_import", required=True, category="runtime")
+    record = _python_record(package, "import_fallback", evidence or "python_import", required=required, category=category)
     if record:
         record["import_name"] = name
     return record
@@ -514,13 +757,14 @@ def markdown_r_dependency_records(root: Path) -> list[dict[str, Any]]:
         for name in packages:
             if name in R_BASE_PACKAGES:
                 continue
+            install_tool = name in R_INSTALL_TOOL_PACKAGES
             records.append(
                 {
                     "name": name,
                     "source": "README_or_Rmd",
                     "evidence": public_local_path(path, root),
-                    "required": True,
-                    "category": "tutorial_runtime",
+                    "required": not install_tool,
+                    "category": "install_tool" if install_tool else "tutorial_runtime",
                 }
             )
     return _dedupe_records(records, "name")
@@ -551,8 +795,8 @@ def r_script_dependency_records(root: Path) -> list[dict[str, Any]]:
                     "name": "apeglm",
                     "source": "R_script_parameter_hint",
                     "evidence": public,
-                    "required": False,
-                    "category": "parameter_hint",
+                    "required": True,
+                    "category": "runtime",
                 }
             )
     return _dedupe_records(records, "name")

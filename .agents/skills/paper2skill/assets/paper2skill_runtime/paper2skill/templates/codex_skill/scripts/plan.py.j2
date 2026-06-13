@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default=str(ROOT / "assets" / "demo_input_manifest.yaml"))
     parser.add_argument("--out", default=str(ROOT / "result"))
+    parser.add_argument("--example-id", default=None)
     args = parser.parse_args(argv)
     out = Path(args.out)
     manifest = load_json_yaml(Path(args.manifest))
@@ -38,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     steps = trace.get("workflow_steps", [])
     plan = {
         "status": "planned",
+        "example_id": args.example_id or (((manifest.get("inputs") or {}).get("algorithm") or {}).get("example_id")),
         "manifest": env_manager.public_data(manifest),
         "steps": env_manager.public_data(steps),
         "workflow_dag": env_manager.public_data(dag),

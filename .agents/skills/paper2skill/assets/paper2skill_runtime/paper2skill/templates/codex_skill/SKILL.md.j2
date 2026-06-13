@@ -67,16 +67,12 @@ Run:
 python scripts/run.py --manifest input_manifest.yaml
 ```
 
-`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared in `references/adapter_spec.yaml` and review evidence is recorded in `references/adapter_review.yaml`. Non-demo runs only execute adapters with status `ready`, `reviewed`, or `verified`; `candidate` and `blocked` adapters stop with `blocked_adapter_not_ready`. Demo execution only proves the tutorial path, not biological validity on user data, and must not be treated as real algorithm execution unless the adapter report explicitly passes.
+`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared per example in `references/examples_catalog.yaml` and summarized in `references/adapter_spec.yaml`. Non-demo runs only execute adapters with status `verified`; `dry_run_only` adapters can preflight, plan, and dry-run but cannot perform real execution. Demo execution only proves the tutorial path, not biological validity on user data, and must not be treated as real algorithm execution unless the adapter report explicitly passes.
 
 Adapter lifecycle:
 
-- `demo_only`: demo mode only.
-- `candidate`: inferred but not reviewed; non-demo run is blocked.
-- `blocked`: missing or unsafe wiring; non-demo run is blocked.
-- `reviewed`: human-approved mapping passed static checks.
-- `ready`: trusted fixture or minimal dry-run evidence passed.
-- `verified`: executable adapter plus expected output contract validation.
+- `dry_run_only`: generated default; preflight, plan, and dry-run only.
+- `verified`: official tutorial/demo/test-data execution passed output validation.
 
 ## Output contract
 
@@ -99,7 +95,7 @@ Dry-run results are not biological results. Demo runs only prove that the tutori
 - `blocked_dependencies_missing`: required package or executable is missing.
 - `blocked_runtime_missing`: required runtime such as `Rscript` is unavailable.
 - `blocked_input_invalid`: manifest or input files are invalid.
-- `blocked_adapter_not_ready`: a non-demo run requested an adapter that is candidate, blocked, or missing required wiring.
+- `blocked_adapter_not_ready`: a non-demo run requested an adapter that is dry_run_only or missing required wiring.
 - `fail`: execution or output validation failed.
 
 ## Evidence sources
@@ -109,6 +105,7 @@ Dry-run results are not biological results. Demo runs only prove that the tutori
 - `references/workflow_dag.json`
 - `references/adapter_spec.yaml`
 - `references/adapter_review.yaml`
+- `references/examples_catalog.yaml`
 - `references/notebook_execution_policy.json`
 - `references/api_reference.md`
 - `references/paper_summary.md`
