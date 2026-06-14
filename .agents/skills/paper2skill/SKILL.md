@@ -25,15 +25,28 @@ algorithm workflow.
 Do not rely on hidden conversation context. The generated child skill must carry
 its own `SKILL.md`, `scripts/`, `references/`, and `assets/`.
 
-## Seven-Step Workflow
+## Compiler Workflow
 
-1. Plan inputs and policies
-2. Inspect evidence sources
-3. Build child skill
-4. Run build-time validation
-5. Repair iteratively
-6. Validate child skill package
-7. Optionally run independent benchmark
+Paper2Skill compiles paper methods into agent-callable child skills through a
+plan-run-plan loop:
+
+```text
+thin plan -> controlled run -> promotion plan -> verified reusable skill
+```
+
+The stable compiler stages are:
+
+1. `collect_sources`
+2. `normalize_evidence`
+3. `build_tutorial_graph`
+4. `rank_execution_candidates`
+5. `run_candidate`
+6. `synthesize_contracts`
+7. `promote_skill`
+8. `evaluate_maturity`
+
+Each stage must write a machine-readable artifact. Later stages consume those
+artifacts instead of hidden chat context.
 
 ## Command Entry
 
@@ -51,6 +64,17 @@ python scripts/paper2skill.py plan \
   --repo path/to/repo \
   --tutorial path/to/tutorial.py \
   --out paper2skill_plan
+```
+
+Use `triage-plan` to write the thin plan artifacts used by the generalized
+compiler:
+
+```bash
+python scripts/paper2skill.py triage-plan \
+  --paper path/to/paper.md \
+  --repo path/to/repo \
+  --tutorial path/to/tutorial.py \
+  --out paper2skill_triage_plan
 ```
 
 Use `build` to generate a child skill:
@@ -85,6 +109,35 @@ Use `validate` after build:
 python scripts/paper2skill.py validate --skill ../algorithm-skill
 ```
 
+Use `run-example` only after explicit execution approval. It writes a run trace
+for one selected example:
+
+```bash
+python scripts/paper2skill.py run-example \
+  --skill ../algorithm-skill \
+  --manifest ../algorithm-skill/assets/demo_input_manifest.yaml \
+  --example-id default_demo \
+  --out paper2skill_run \
+  --confirm-run yes
+```
+
+Use `ingest-run` when an approved run already exists:
+
+```bash
+python scripts/paper2skill.py ingest-run \
+  --run-dir path/to/result \
+  --skill ../algorithm-skill \
+  --out paper2skill_run_trace
+```
+
+Use `promote` to convert a passing run trace into verified adapter evidence:
+
+```bash
+python scripts/paper2skill.py promote \
+  --skill ../algorithm-skill \
+  --run-trace paper2skill_run_trace/run_trace.json
+```
+
 ## Validation Boundary
 
 Build-time validation is a generation self-check and repair signal. It writes
@@ -104,6 +157,7 @@ python scripts/paper2skill.py benchmark run \
 
 Never install dependencies, execute unknown repository scripts, download large
 datasets, or run non-verified adapters automatically. Generated adapters start
-as `dry_run_only`; only adapters that pass `data_smoke` or `live_execute`
-output validation may become `verified`. If bundled runtime dependencies are
-missing, `scripts/paper2skill.py` prints an install plan and exits.
+as `dry_run_only`; only a selected example with a passing run trace and passing
+output validation may become `verified`. Static API or CLI inference can only
+produce `dry_run_only` adapters. If bundled runtime dependencies are missing,
+`scripts/paper2skill.py` prints an install plan and exits.

@@ -60,6 +60,14 @@ def load_optional_contract(path: Path) -> dict:
         return {"_load_error": "could not load %s: %s" % (path.name, exc)}
 
 
+def load_contract(name: str) -> dict:
+    modern_path = ROOT / "references" / "contracts" / name
+    legacy_path = ROOT / "references" / name
+    if modern_path.exists():
+        return load_optional_contract(modern_path)
+    return load_optional_contract(legacy_path)
+
+
 def normalize_token(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
 
@@ -415,8 +423,8 @@ def validate_inputs(manifest: dict) -> dict:
     algorithm = ((manifest.get("inputs") or {}).get("algorithm") or {})
     if "mode" not in algorithm:
         errors.append("inputs.algorithm.mode is required")
-    io_contract = load_optional_contract(ROOT / "references" / "io_contract.yaml")
-    bio_contract = load_optional_contract(ROOT / "references" / "bio_contract.yaml")
+    io_contract = load_contract("io_contract.yaml")
+    bio_contract = load_contract("bio_contract.yaml")
     errors.extend(validate_contracts(manifest, io_contract, bio_contract))
     return {"status": "pass" if not errors else "blocked_input_invalid", "errors": errors}
 

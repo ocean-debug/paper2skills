@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import subprocess
+import sys
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+import yaml
+
 from paper2skill.build_validation import VALIDATION_DEPTHS, validate_build
 from paper2skill.common import slugify
-from paper2skill.common import write_json
+from paper2skill.common import ensure_dir, write_json, write_yaml
+from paper2skill.compiler import ingest_run_directory, promote_from_run_trace
 from paper2skill.evaluation.run_benchmark import run_benchmark
 from paper2skill.generators.codex_skill_generator import build_context, example_inputs, generate_skill, plan_outputs
 from paper2skill.runtime.env_manager import inspect_environment, load_environment_spec, public_environment_report
@@ -24,6 +29,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_generation_metadata_args(plan)
     plan.add_argument("--out", default="paper2skill_plan")
 
+    triage = sub.add_parser("triage-plan", help="Write thin plan-run-plan artifacts without generating a skill.")
+    add_input_args(triage)
+    add_generation_metadata_args(triage)
+    triage.add_argument("--out", default="paper2skill_triage_plan")
+
     build = sub.add_parser("build", help="Generate a Codex skill.")
     add_input_args(build)
     add_generation_metadata_args(build)
@@ -37,12 +47,33 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--validation-python", default=None, help="Python executable used to run data_smoke/live_execute validation.")
     build.add_argument("--example-data-cache-dir", default=None, help="Directory containing pre-downloaded official example data for data_smoke/live_execute validation.")
     build.add_argument("--repair-attempts", type=int, default=4, help="Regenerate and re-check the skill when build-time self-check fails; capped at 4.")
-    build.add_argument("--example-id", default=None, help="Example id from references/examples_catalog.yaml to verify for data_smoke/live_execute.")
+    build.add_argument("--example-id", default=None, help="Example id from references/tutorial_catalog.yaml to verify for data_smoke/live_execute.")
     build.add_argument("--example-data-url", action="append", default=[], help="Official tutorial data URL to include in the generated examples catalog.")
 
     validate = sub.add_parser("validate", help="Validate a generated skill.")
     validate.add_argument("--skill", required=True)
     validate.add_argument("--json", action="store_true", dest="as_json")
+
+    run_example = sub.add_parser("run-example", help="Run a selected generated-skill example and write a run trace.")
+    run_example.add_argument("--skill", required=True)
+    run_example.add_argument("--manifest", required=True)
+    run_example.add_argument("--out", required=True)
+    run_example.add_argument("--example-id", default=None)
+    run_example.add_argument("--python", default=sys.executable)
+    run_example.add_argument("--timeout", type=int, default=600)
+    run_example.add_argument("--confirm-run", choices=["yes", "no"], default="no")
+
+    ingest = sub.add_parser("ingest-run", help="Ingest an existing result directory into a Paper2Skill run trace.")
+    ingest.add_argument("--run-dir", required=True)
+    ingest.add_argument("--skill", default=None)
+    ingest.add_argument("--example-id", default=None)
+    ingest.add_argument("--out", default="paper2skill_run_trace")
+
+    promote = sub.add_parser("promote", help="Promote a generated skill using a passing run trace.")
+    promote.add_argument("--skill", required=True)
+    promote.add_argument("--run-trace", required=True)
+    promote.add_argument("--example-id", default=None)
+    promote.add_argument("--out", default=None, help="Optional output directory for promoted contracts; default updates the skill.")
 
     inspect = sub.add_parser("inspect-env", help="Inspect a generated skill environment.")
     inspect.add_argument("--skill", required=True)
@@ -104,6 +135,10 @@ def command_plan(args: argparse.Namespace) -> int:
     out = plan_outputs(context, args.out)
     print(f"Wrote plan outputs to {out}")
     return 0
+
+
+def command_triage_plan(args: argparse.Namespace) -> int:
+    return command_plan(args)
 
 
 def command_build(args: argparse.Namespace) -> int:
@@ -386,6 +421,124 @@ def command_validate(args: argparse.Namespace) -> int:
     return 0 if result["status"] == "pass" else 2
 
 
+def command_ingest_run(args: argparse.Namespace) -> int:
+    trace = ingest_run_directory(args.run_dir, skill_dir=args.skill, example_id=args.example_id)
+    out = ensure_dir(Path(args.out))
+    write_json(out / "run_trace.json", trace)
+    print(f"Wrote run trace to {out / 'run_trace.json'}")
+    return 0 if trace.get("status") == "pass" else 2
+
+
+def command_run_example(args: argparse.Namespace) -> int:
+    paths = resolve_run_example_paths(args.skill, args.out, args.manifest)
+    skill = paths["skill"]
+    out = ensure_dir(paths["out"])
+    manifest = paths["manifest"]
+    result_dir = paths["result_dir"]
+    trace_path = out / "run_trace.json"
+    if args.confirm_run != "yes":
+        trace = {
+            "schema_version": 1,
+            "trace_type": "paper2skill_run_trace",
+            "status": "blocked_confirmation_required",
+            "skill_dir": str(skill),
+            "example_id": args.example_id,
+            "commands": [],
+            "output_validation": {"status": "not_run"},
+            "message": "run-example requires --confirm-run yes before executing generated skill code.",
+        }
+        write_json(trace_path, trace)
+        print(f"Blocked execution; wrote run trace to {trace_path}")
+        return 2
+    commands = [
+        ("preflight", [args.python, str(skill / "scripts" / "preflight.py"), "--manifest", str(manifest), "--out", str(result_dir)]),
+        ("plan", [args.python, str(skill / "scripts" / "plan.py"), "--manifest", str(manifest), "--out", str(result_dir)]),
+        ("run", [args.python, str(skill / "scripts" / "run.py"), "--manifest", str(manifest), "--out", str(result_dir), "--verification-run"]),
+        ("validate_outputs", [args.python, str(skill / "scripts" / "validate_outputs.py"), "--result", str(result_dir)]),
+    ]
+    command_records = []
+    status = "pass"
+    for stage, command in commands:
+        if args.example_id and stage in {"plan", "run", "validate_outputs"}:
+            command = [*command, "--example-id", args.example_id]
+        try:
+            completed = subprocess.run(command, cwd=skill, text=True, capture_output=True, check=False, timeout=args.timeout)
+        except subprocess.TimeoutExpired as exc:
+            command_records.append(
+                {
+                    "stage": stage,
+                    "command": command,
+                    "returncode": None,
+                    "stdout_tail": tail_text(exc.stdout or ""),
+                    "stderr_tail": tail_text(exc.stderr or ""),
+                    "status": "timeout",
+                }
+            )
+            status = "fail"
+            break
+        record = {
+            "stage": stage,
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout_tail": tail_text(completed.stdout),
+            "stderr_tail": tail_text(completed.stderr),
+        }
+        command_records.append(record)
+        if completed.returncode != 0:
+            status = "fail"
+            break
+    trace = ingest_run_directory(result_dir, skill_dir=skill, example_id=args.example_id)
+    trace["status"] = "pass" if status == "pass" and trace.get("output_validation", {}).get("status") == "pass" else status
+    trace["commands"] = command_records
+    write_json(trace_path, trace)
+    print(f"Wrote run trace to {trace_path}")
+    return 0 if trace.get("status") == "pass" else 2
+
+
+def resolve_run_example_paths(skill: str | Path, out: str | Path, manifest: str | Path) -> dict[str, Path]:
+    out_path = resolve_cli_path(out)
+    return {
+        "skill": resolve_cli_path(skill),
+        "out": out_path,
+        "manifest": resolve_cli_path(manifest),
+        "result_dir": (out_path / "result").resolve(),
+    }
+
+
+def command_promote(args: argparse.Namespace) -> int:
+    skill = Path(args.skill)
+    target = ensure_dir(Path(args.out)) if args.out else skill
+    trace = load_mapping(Path(args.run_trace))
+    adapter_spec = load_mapping(skill / "references" / "adapter_spec.yaml")
+    adapter_review = load_mapping(skill / "references" / "adapter_review.yaml")
+    algorithm_contract = load_mapping(skill / "references" / "algorithm_contract.yaml")
+    tutorial_catalog_path = skill / "references" / "tutorial_catalog.yaml"
+    if not tutorial_catalog_path.exists():
+        tutorial_catalog_path = skill / "references" / "examples_catalog.yaml"
+    tutorial_catalog = load_mapping(tutorial_catalog_path)
+    result = promote_from_run_trace(
+        adapter_spec=adapter_spec,
+        adapter_review=adapter_review,
+        tutorial_catalog=tutorial_catalog,
+        run_trace=trace,
+        example_id=args.example_id,
+    )
+    write_json(target / "promotion_report.json", result)
+    write_json(target / "debug" / "run_trace.promoted.json", trace)
+    if result["promoted"]:
+        updated_algorithm_contract = update_algorithm_contract_after_promotion(algorithm_contract, result["adapter_spec"], result["maturity"])
+        write_yaml(target / "references" / "algorithm_contract.yaml", updated_algorithm_contract)
+        write_yaml(target / "references" / "adapter_spec.yaml", result["adapter_spec"])
+        write_yaml(target / "references" / "adapter_review.yaml", result["adapter_review"])
+        write_yaml(target / "references" / "tutorial_catalog.yaml", result["tutorial_catalog"])
+        write_yaml(target / "references" / "examples_catalog.yaml", result["tutorial_catalog"])
+        write_yaml(target / "references" / "maturity.yaml", result["maturity"])
+        write_yaml(target / "references" / "contracts" / "algorithm_contract.yaml", updated_algorithm_contract)
+        write_yaml(target / "references" / "contracts" / "adapter_contract.yaml", result["adapter_spec"])
+    print(f"promotion: {'promoted' if result['promoted'] else 'not_promoted'}")
+    return 0 if result["promoted"] else 2
+
+
 def command_inspect_env(args: argparse.Namespace) -> int:
     spec_path = Path(args.skill) / "assets" / "environment_spec.yaml"
     spec = load_environment_spec(spec_path)
@@ -423,16 +576,58 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "plan":
         return command_plan(args)
+    if args.command == "triage-plan":
+        return command_triage_plan(args)
     if args.command == "build":
         return command_build(args)
     if args.command == "validate":
         return command_validate(args)
+    if args.command == "run-example":
+        return command_run_example(args)
+    if args.command == "ingest-run":
+        return command_ingest_run(args)
+    if args.command == "promote":
+        return command_promote(args)
     if args.command == "inspect-env":
         return command_inspect_env(args)
     if args.command == "benchmark":
         return command_benchmark(args)
     parser.error(f"unknown command: {args.command}")
     return 2
+
+
+def load_mapping(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        if path.suffix.lower() in {".yaml", ".yml"}:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        else:
+            data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def resolve_cli_path(value: str | Path) -> Path:
+    return Path(value).expanduser().resolve()
+
+
+def update_algorithm_contract_after_promotion(algorithm_contract: dict[str, Any], adapter_spec: dict[str, Any], maturity: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(algorithm_contract)
+    algorithm = dict(updated.get("algorithm") or {})
+    algorithm["adapter_status"] = adapter_spec.get("status", algorithm.get("adapter_status"))
+    algorithm["maturity_level"] = maturity.get("level", algorithm.get("maturity_level"))
+    updated["algorithm"] = algorithm
+    updated["maturity"] = maturity
+    return updated
+
+
+def tail_text(value: object, *, max_chars: int = 4000) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    value = str(value or "")
+    return value[-max_chars:] if len(value) > max_chars else value
 
 
 if __name__ == "__main__":

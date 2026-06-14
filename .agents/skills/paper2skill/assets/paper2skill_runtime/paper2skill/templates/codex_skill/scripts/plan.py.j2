@@ -33,13 +33,22 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     out = Path(args.out)
     manifest = load_json_yaml(Path(args.manifest))
+    tutorial_catalog_path = ROOT / "references" / "tutorial_catalog.yaml"
+    if not tutorial_catalog_path.exists():
+        tutorial_catalog_path = ROOT / "references" / "examples_catalog.yaml"
+    tutorial_catalog = load_json_yaml(tutorial_catalog_path) if tutorial_catalog_path.exists() else {}
     trace = load_json(ROOT / "references" / "tutorial_trace.json")
     dag_path = ROOT / "references" / "workflow_dag.json"
     dag = load_json(dag_path) if dag_path.exists() else {"nodes": [], "edges": []}
     steps = trace.get("workflow_steps", [])
+    selected_example_id = args.example_id or (((manifest.get("inputs") or {}).get("algorithm") or {}).get("example_id")) or tutorial_catalog.get("default_example_id")
     plan = {
         "status": "planned",
-        "example_id": args.example_id or (((manifest.get("inputs") or {}).get("algorithm") or {}).get("example_id")),
+        "example_id": selected_example_id,
+        "tutorial_catalog": {
+            "default_example_id": tutorial_catalog.get("default_example_id"),
+            "selection_policy": tutorial_catalog.get("selection_policy"),
+        },
         "manifest": env_manager.public_data(manifest),
         "steps": env_manager.public_data(steps),
         "workflow_dag": env_manager.public_data(dag),

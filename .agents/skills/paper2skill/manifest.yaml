@@ -25,7 +25,7 @@ references:
       path: references/validation_modes.md
     - condition: run or explain independent gold-standard benchmark evaluation
       path: references/benchmark_levels.md
-    - condition: inspect the seven-step workflow or generated child skill contract
+    - condition: inspect the compiler workflow or generated child skill contract
       path: references/workflow.md
     - condition: review execution, installation, data, or adapter safety boundaries
       path: references/safety_policy.md

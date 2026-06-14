@@ -27,7 +27,9 @@ def input_path(manifest: dict) -> Path:
 
 
 def examples_catalog() -> dict:
-    path = ROOT / "references" / "examples_catalog.yaml"
+    path = ROOT / "references" / "tutorial_catalog.yaml"
+    if not path.exists():
+        path = ROOT / "references" / "examples_catalog.yaml"
     if not path.exists():
         return {}
     data = env_manager.load_json_yaml(path)

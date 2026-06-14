@@ -98,7 +98,14 @@ def explicit_example_missing(example_id: str | None) -> bool:
 
 
 def examples_catalog() -> dict:
-    path = ROOT / "references" / "examples_catalog.yaml"
+    path = ROOT / "references" / "tutorial_catalog.yaml"
+    if not path.exists():
+        path = ROOT / "references" / "examples_catalog.yaml"
+    return load_json_yaml(path) if path.exists() else {}
+
+
+def maturity_contract() -> dict:
+    path = ROOT / "references" / "maturity.yaml"
     return load_json_yaml(path) if path.exists() else {}
 
 
@@ -140,8 +147,9 @@ def run_adapter(kind: str, manifest: dict, out: Path, manifest_path: Path | None
 
 
 def write_blocked_result(out: Path, selected_adapter: str, adapter_report: dict, manifest: dict) -> dict:
+    result_status = adapter_report.get("status") if str(adapter_report.get("status", "")).startswith("blocked_") else "blocked_adapter_not_ready"
     result = {
-        "status": "blocked_adapter_not_ready",
+        "status": result_status,
         "skill_name": "{{ skill_name }}",
         "algorithm": "{{ algorithm_name }}",
         "maturity_level": "{{ maturity_level }}",
@@ -151,7 +159,7 @@ def write_blocked_result(out: Path, selected_adapter: str, adapter_report: dict,
         "workflow_summary": load_json(out / "workflow" / "plan.json"),
         "adapter": adapter_report,
         "outputs": [],
-        "caveats": ["adapter is dry_run_only; verification must pass before non-demo execution"],
+        "caveats": adapter_report.get("caveats") or ["adapter is dry_run_only; verification must pass before non-demo execution"],
         "evidence_used": load_json(out / "workflow" / "plan.json").get("evidence_used", []),
     }
     write_json(out / "result.json", env_manager.public_data(result))
@@ -190,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             "adapter_status": "dry_run_only",
             "global_adapter_status": spec.get("status"),
             "entrypoint": spec.get("entrypoint"),
-            "message": "Selected example is missing from examples_catalog.yaml.",
+            "message": "Selected example is missing from tutorial_catalog.yaml.",
             "caveats": spec.get("caveats", []),
         }
         write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
@@ -207,6 +215,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "dry_run", "adapter": adapter_report}, indent=2))
         return 0
     if not demo_run:
+        maturity = maturity_contract()
+        if maturity.get("level") == "L1" and not args.verification_run:
+            adapter_report = {
+                "status": "blocked_contract_only",
+                "adapter_type": selected_adapter,
+                "example_id": example_id,
+                "adapter_status": example_adapter_status,
+                "global_adapter_status": spec.get("status"),
+                "entrypoint": spec.get("entrypoint"),
+                "message": "This skill is L1 contract-only; run_trace and output validation are required before real execution.",
+                "caveats": spec.get("caveats", []),
+            }
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
         if example_adapter_status not in EXECUTABLE_ADAPTER_STATUSES and not args.verification_run:
             adapter_report = {
                 "status": "dry_run_only",
@@ -215,7 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 "adapter_status": example_adapter_status,
                 "global_adapter_status": spec.get("status"),
                 "entrypoint": spec.get("entrypoint"),
-                "message": "Adapter status is dry_run_only; data_smoke/live_execute verification must pass before real execution.",
+                "message": "Adapter status is dry_run_only; run_trace and output validation must pass before real execution.",
                 "caveats": spec.get("caveats", []),
             }
             write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
@@ -244,10 +268,13 @@ def main(argv: list[str] | None = None) -> int:
     write_json(out / "workflow" / "executed_steps.json", {"status": "pass", "executed": [step.get("id") for step in load_json(out / "workflow" / "plan.json").get("steps", [])]})
     repro = out / "reproducibility"
     repro.mkdir(parents=True, exist_ok=True)
-    for name in ["source_manifest.json", "algorithm_contract.yaml", "adapter_spec.yaml", "adapter_review.yaml", "bio_contract.yaml", "notebook_execution_policy.json"]:
+    for name in ["source_manifest.json", "algorithm_contract.yaml", "adapter_spec.yaml", "adapter_review.yaml", "bio_contract.yaml", "tutorial_catalog.yaml", "maturity.yaml", "notebook_execution_policy.json"]:
         src = ROOT / "references" / name
         if src.exists():
             shutil.copyfile(src, repro / name)
+    contracts_src = ROOT / "references" / "contracts"
+    if contracts_src.exists():
+        shutil.copytree(contracts_src, repro / "contracts", dirs_exist_ok=True)
     shutil.copyfile(ROOT / "assets" / "environment_spec.yaml", repro / "environment_spec.yaml")
     (repro / "command_history.sh").write_text("python scripts/run.py --manifest %s\n" % public_cli_path(args.manifest), encoding="utf-8")
     (out / "logs").mkdir(parents=True, exist_ok=True)

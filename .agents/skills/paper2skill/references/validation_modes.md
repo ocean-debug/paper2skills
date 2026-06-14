@@ -33,7 +33,8 @@ It runs:
 It must block when the runner, validation manifest, selected example, or
 expected outputs are missing. The validation manifest is required and must use
 `data_kind: minimal` or `data_kind: official_minimal`. The selected example
-adapter can become `verified` only after output validation passes.
+adapter can become `verified` only after a run trace is recorded and output
+validation passes.
 
 ## live_execute
 
@@ -93,6 +94,7 @@ Rules:
 - package, policy, preflight, install, and execution-plan status
 - execution gate status for `data_smoke` and `live_execute`
 - execution records when execution is allowed
+- run trace or run-trace-compatible records when execution is allowed
 - repair actions when regeneration is attempted
 
 It must not include `benchmark_score`.

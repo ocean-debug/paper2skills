@@ -25,6 +25,7 @@ paper2skill_plan/
 .paper2skill-smoke-result/
 .paper2skill-resolve/
 .paper2skill_collection/
+test/
 
 # Logs, temp files, and OS metadata
 *.log

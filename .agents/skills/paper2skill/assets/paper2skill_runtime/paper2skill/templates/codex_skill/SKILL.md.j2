@@ -5,17 +5,24 @@ description: Use this skill to plan, validate, run, and interpret {{ algorithm_n
 
 # {{ algorithm_name }} Skill
 
+## Maturity
+
+- Level: `{{ maturity.level }}`
+- Status: `{{ maturity.status }}`
+- Archetype: `{{ algorithm_archetype.archetype }}`
+- Adapter status: `{{ adapter_spec.status }}`
+
 ## What this skill does
 
-This skill plans, validates, and runs the evidence-backed {{ algorithm_name }} workflow captured from official tutorial and repository evidence.
+This skill is a Paper2Skill-compiled agent capability for {{ algorithm_name }}. It plans, preflights, runs only verified adapters, validates outputs, and records why the method is or is not safe to apply to a requested dataset.
 
 ## When to use
 
-Use this skill when the user asks to reproduce the official {{ algorithm_name }} demo, inspect compatible inputs, plan a run, or validate generated outputs.
+Use this skill when the user asks to reproduce a cataloged official example, inspect compatible inputs, plan a run, validate generated outputs, or apply {{ algorithm_name }} to data that satisfies the recorded contracts.
 
 ## When not to use
 
-Do not use this skill as a general paper summarizer, as an alternative algorithm selector, or as a biological interpretation engine for unsupported data.
+Do not use this skill as a general paper summarizer, as an alternative algorithm selector, or as a biological interpretation engine for unsupported data. Do not run unverified examples or extrapolate one verified tutorial to other tutorial paths.
 
 ## Required inputs
 
@@ -25,7 +32,9 @@ Do not use this skill as a general paper summarizer, as an alternative algorithm
 
 ## Input state requirements
 
-Input state requirements are recorded in `references/algorithm_contract.yaml` and `references/bio_contract.yaml`. Any unconfirmed biological field is marked `not_confirmed`.
+Input state requirements are recorded in `references/contracts/algorithm_contract.yaml`, `references/contracts/io_contract.yaml`, and `references/contracts/bio_contract.yaml`. Compatibility copies also exist under `references/`. Any unconfirmed biological field is marked `not_confirmed`.
+
+Bio contract fields carry provenance metadata: `evidence_id`, `source_type`, and `claim_type`. Treat `claim_type: agent_extension` differently from paper or official tutorial claims.
 
 ## Environment policy
 
@@ -57,7 +66,7 @@ Run:
 python scripts/plan.py --manifest input_manifest.yaml
 ```
 
-The planner reads `references/tutorial_trace.json` and `references/workflow_dag.json`, then writes `workflow/plan.json` and `workflow/plan.md`.
+The planner reads `references/tutorial_catalog.yaml`, `references/tutorial_trace.json`, and `references/workflow_dag.json`, then writes `workflow/plan.json` and `workflow/plan.md`.
 
 ## Execution workflow
 
@@ -67,12 +76,14 @@ Run:
 python scripts/run.py --manifest input_manifest.yaml
 ```
 
-`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared per example in `references/examples_catalog.yaml` and summarized in `references/adapter_spec.yaml`. Non-demo runs only execute adapters with status `verified`; `dry_run_only` adapters can preflight, plan, and dry-run but cannot perform real execution. Demo execution only proves the tutorial path, not biological validity on user data, and must not be treated as real algorithm execution unless the adapter report explicitly passes.
+`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared per example in `references/tutorial_catalog.yaml` and summarized in `references/contracts/adapter_contract.yaml`. Non-demo runs only execute adapters with status `verified`; `dry_run_only` adapters can preflight, plan, and dry-run but cannot perform real execution. Demo execution only proves that tutorial path, not biological validity on user data.
 
 Adapter lifecycle:
 
 - `dry_run_only`: generated default; preflight, plan, and dry-run only.
 - `verified`: official tutorial/demo/test-data execution passed output validation.
+
+Static inference can only create `dry_run_only`. Promotion to `verified` requires a passing run trace and output validation.
 
 ## Output contract
 
@@ -96,10 +107,17 @@ Dry-run results are not biological results. Demo runs only prove that the tutori
 - `blocked_runtime_missing`: required runtime such as `Rscript` is unavailable.
 - `blocked_input_invalid`: manifest or input files are invalid.
 - `blocked_adapter_not_ready`: a non-demo run requested an adapter that is dry_run_only or missing required wiring.
+- `blocked_contract_only`: this skill has L1 contract/preflight maturity only.
 - `fail`: execution or output validation failed.
 
 ## Evidence sources
 
+- `references/tutorial_catalog.yaml`
+- `references/contracts/algorithm_contract.yaml`
+- `references/contracts/bio_contract.yaml`
+- `references/contracts/adapter_contract.yaml`
+- `references/maturity.yaml`
+- `references/evidence_summary.md`
 - `references/evidence_report.md`
 - `references/tutorial_trace.md`
 - `references/workflow_dag.json`

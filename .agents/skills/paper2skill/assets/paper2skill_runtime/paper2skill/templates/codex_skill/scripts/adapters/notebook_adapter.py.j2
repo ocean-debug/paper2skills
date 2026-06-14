@@ -31,7 +31,10 @@ def load_mapping(path: Path) -> dict[str, Any]:
 
 
 def catalog() -> dict[str, Any]:
-    return load_mapping(ROOT / "references" / "examples_catalog.yaml")
+    catalog_path = ROOT / "references" / "tutorial_catalog.yaml"
+    if not catalog_path.exists():
+        catalog_path = ROOT / "references" / "examples_catalog.yaml"
+    return load_mapping(catalog_path)
 
 
 def selected_example(example_id: str | None) -> dict[str, Any]:
@@ -119,7 +122,7 @@ def expose_data_aliases(work: Path, data_path: Path, filename: str) -> list[str]
 
 
 def selected_data_sources(example: dict[str, Any], manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    data_sources = [item for item in (example.get("data_sources") or []) if isinstance(item, dict)]
+    data_sources = catalog_data_sources(example)
     primary = ((manifest.get("inputs") or {}).get("primary_data") or {})
     primary_url = str(primary.get("url") or "")
     if primary_url:
@@ -132,6 +135,19 @@ def selected_data_sources(example: dict[str, Any], manifest: dict[str, Any]) -> 
     if not url_sources:
         return []
     return sorted(url_sources, key=lambda item: data_source_score(item, example))[:1]
+
+
+def catalog_data_sources(example: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    inputs = example.get("inputs") if isinstance(example.get("inputs"), dict) else {}
+    for value in [example.get("data_sources"), inputs.get("data_sources")]:
+        if isinstance(value, list):
+            sources.extend(item for item in value if isinstance(item, dict))
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for source in sources:
+        key = (str(source.get("type") or ""), str(source.get("url") or ""), str(source.get("path") or source.get("filename") or ""))
+        deduped[key] = source
+    return list(deduped.values())
 
 
 def data_source_score(item: dict[str, Any], example: dict[str, Any]) -> tuple[int, str]:

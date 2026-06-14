@@ -30,7 +30,10 @@ def load_mapping(path: Path) -> dict[str, Any]:
 
 
 def catalog() -> dict[str, Any]:
-    return load_mapping(ROOT / "references" / "examples_catalog.yaml")
+    catalog_path = ROOT / "references" / "tutorial_catalog.yaml"
+    if not catalog_path.exists():
+        catalog_path = ROOT / "references" / "examples_catalog.yaml"
+    return load_mapping(catalog_path)
 
 
 def adapter_spec() -> dict[str, Any]:

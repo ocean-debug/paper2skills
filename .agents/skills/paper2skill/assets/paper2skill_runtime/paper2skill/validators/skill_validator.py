@@ -43,6 +43,10 @@ REQUIRED_FILES = [
     "references/adapter_spec.yaml",
     "references/adapter_review.yaml",
     "references/examples_catalog.yaml",
+    "references/tutorial_catalog.yaml",
+    "references/maturity.yaml",
+    "references/run_trace.template.json",
+    "references/evidence_summary.md",
     "references/notebook_execution_policy.json",
     "references/paper.md",
     "references/paper_sections.json",
@@ -53,6 +57,11 @@ REQUIRED_FILES = [
     "references/algorithm_contract.yaml",
     "references/bio_contract.yaml",
     "references/io_contract.yaml",
+    "references/contracts/algorithm_contract.yaml",
+    "references/contracts/adapter_contract.yaml",
+    "references/contracts/bio_contract.yaml",
+    "references/contracts/environment_contract.yaml",
+    "references/contracts/io_contract.yaml",
     "references/evidence_graph.json",
     "references/build_report.json",
     "assets/input_manifest_template.yaml",
@@ -85,6 +94,7 @@ REQUIRED_SKILL_SECTIONS = [
 
 ADAPTER_STATUSES = {"dry_run_only", "verified"}
 EXECUTABLE_ADAPTER_STATUSES = {"verified"}
+MATURITY_LEVELS = {"L1", "L2", "L3", "L4"}
 
 
 def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
@@ -106,11 +116,20 @@ def validate_skill(skill_dir: str | Path) -> dict[str, Any]:
     _validate_yaml_contract(root / "references/adapter_spec.yaml", PROJECT_ROOT / "paper2skill/schemas/adapter_spec_schema.yaml", "adapter_spec", errors)
     _validate_yaml_contract(root / "references/bio_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/bio_contract_schema.yaml", "bio_contract", errors)
     _validate_yaml_contract(root / "references/io_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/algorithm_skill_schema.yaml", "io_contract", errors, required_only=("input_contract", "output_contract"))
+    _validate_yaml_contract(root / "references/contracts/algorithm_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/algorithm_skill_schema.yaml", "contracts.algorithm_contract", errors)
+    _validate_yaml_contract(root / "references/contracts/adapter_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/adapter_spec_schema.yaml", "contracts.adapter_contract", errors)
+    _validate_yaml_contract(root / "references/contracts/bio_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/bio_contract_schema.yaml", "contracts.bio_contract", errors)
+    _validate_yaml_contract(root / "references/contracts/io_contract.yaml", PROJECT_ROOT / "paper2skill/schemas/algorithm_skill_schema.yaml", "contracts.io_contract", errors, required_only=("input_contract", "output_contract"))
+    _load_yaml_mapping(root / "references/contracts/environment_contract.yaml", "contracts.environment_contract", errors)
     _validate_yaml_contract(root / "assets/environment_spec.yaml", PROJECT_ROOT / "paper2skill/schemas/environment_schema.yaml", "environment_spec", errors)
     _validate_environment_spec(root / "assets/environment_spec.yaml", errors)
     _validate_workflow_dag(root / "references/workflow_dag.json", errors)
     _validate_adapter_spec(root / "references/adapter_spec.yaml", errors)
     _validate_adapter_review(root / "references/adapter_review.yaml", errors)
+    _validate_tutorial_catalog(root / "references/tutorial_catalog.yaml", errors, warnings)
+    _validate_maturity(root / "references/maturity.yaml", errors)
+    _validate_contract_consistency(root, errors)
+    _validate_run_trace_template(root / "references/run_trace.template.json", errors)
     trace_path = root / "references/tutorial_trace.json"
     if trace_path.exists():
         try:
@@ -137,6 +156,123 @@ def _validate_yaml_contract(contract_path: Path, schema_path: Path, label: str, 
                 errors.append(f"{label}: missing required key '{key}'")
         return
     errors.extend(validate_simple_schema(data, schema, label))
+
+
+def _load_yaml_mapping(path: Path, label: str, errors: list[str]) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        errors.append(f"{label}: invalid YAML: {exc}")
+        return {}
+    if not isinstance(data, dict):
+        errors.append(f"{label}: expected mapping")
+        return {}
+    return data
+
+
+def _validate_tutorial_catalog(path: Path, errors: list[str], warnings: list[str]) -> None:
+    catalog = _load_yaml_mapping(path, "tutorial_catalog", errors)
+    if not catalog:
+        return
+    examples = catalog.get("examples")
+    if not isinstance(examples, list) or not examples:
+        errors.append("tutorial_catalog.examples: expected non-empty list")
+        return
+    default_example_id = catalog.get("default_example_id")
+    example_ids: set[str] = set()
+    for index, item in enumerate(examples):
+        if not isinstance(item, dict):
+            errors.append(f"tutorial_catalog.examples[{index}]: expected object")
+            continue
+        example_id = item.get("example_id")
+        if not example_id:
+            errors.append(f"tutorial_catalog.examples[{index}].example_id: missing required key")
+        else:
+            example_ids.add(str(example_id))
+        maturity = item.get("maturity")
+        if maturity is not None and maturity not in MATURITY_LEVELS:
+            errors.append(f"tutorial_catalog.examples[{index}].maturity: invalid maturity level")
+        adapter = item.get("adapter") if isinstance(item.get("adapter"), dict) else item.get("selected_adapter")
+        if not isinstance(adapter, dict):
+            errors.append(f"tutorial_catalog.examples[{index}].adapter: expected mapping")
+        else:
+            status = adapter.get("status")
+            if status not in ADAPTER_STATUSES:
+                errors.append(f"tutorial_catalog.examples[{index}].adapter.status: invalid adapter status")
+        for url in _catalog_data_urls(item):
+            if _invalid_data_url(url):
+                errors.append(f"tutorial_catalog.examples[{index}].inputs.data_sources: non-data URL classified as data: {url}")
+        if (item.get("verification") or {}).get("status") == "pass" and isinstance(adapter, dict) and adapter.get("status") != "verified":
+            warnings.append(f"tutorial_catalog.examples[{index}]: passing verification should normally promote adapter.status to verified")
+    if default_example_id not in example_ids:
+        errors.append("tutorial_catalog.default_example_id: must match an examples[].example_id")
+
+
+def _catalog_data_urls(item: dict[str, Any]) -> list[str]:
+    sources = []
+    inputs = item.get("inputs") if isinstance(item.get("inputs"), dict) else {}
+    for candidate in [item.get("data_sources"), inputs.get("data_sources")]:
+        if isinstance(candidate, list):
+            sources.extend(candidate)
+    urls = []
+    for source in sources:
+        if isinstance(source, dict) and source.get("url"):
+            urls.append(str(source["url"]))
+        elif isinstance(source, str):
+            urls.append(source)
+    return urls
+
+
+def _invalid_data_url(url: str) -> bool:
+    raw = url.lower().strip()
+    if raw.rstrip("`]").endswith((".**", ".*", ".md", ".html", "/locally", "/locally/")):
+        return True
+    lowered = raw.rstrip("`].\\*")
+    if "#egg=" in lowered or "git+" in lowered:
+        return True
+    if any(token in lowered for token in ["readthedocs", "docs.", "pytorch.org/get-started", "conda.io", "documentation"]):
+        return True
+    suffix = Path(lowered.split("?", 1)[0]).suffix
+    return bool(suffix) and suffix not in {".h5ad", ".h5", ".hdf5", ".loom", ".rds", ".rda", ".mtx", ".csv", ".tsv", ".txt", ".fastq", ".fq", ".bam", ".sam", ".bed", ".gtf", ".gff", ".vcf"}
+
+
+def _validate_maturity(path: Path, errors: list[str]) -> None:
+    maturity = _load_yaml_mapping(path, "maturity", errors)
+    if not maturity:
+        return
+    if maturity.get("level") not in MATURITY_LEVELS:
+        errors.append("maturity.level: invalid maturity level")
+    if not maturity.get("status"):
+        errors.append("maturity.status: missing required key")
+
+
+def _validate_contract_consistency(root: Path, errors: list[str]) -> None:
+    algorithm_contract = _load_yaml_mapping(root / "references/algorithm_contract.yaml", "algorithm_contract", errors)
+    adapter_spec = _load_yaml_mapping(root / "references/adapter_spec.yaml", "adapter_spec", errors)
+    maturity = _load_yaml_mapping(root / "references/maturity.yaml", "maturity", errors)
+    algorithm = algorithm_contract.get("algorithm") if isinstance(algorithm_contract.get("algorithm"), dict) else {}
+    if adapter_spec and algorithm.get("adapter_status") and algorithm.get("adapter_status") != adapter_spec.get("status"):
+        errors.append("algorithm_contract.algorithm.adapter_status: must match adapter_spec.status")
+    if maturity and algorithm.get("maturity_level") and algorithm.get("maturity_level") != maturity.get("level"):
+        errors.append("algorithm_contract.algorithm.maturity_level: must match maturity.level")
+
+
+def _validate_run_trace_template(path: Path, errors: list[str]) -> None:
+    if not path.exists():
+        return
+    try:
+        trace = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        errors.append(f"run_trace.template: invalid JSON: {exc}")
+        return
+    if not isinstance(trace, dict):
+        errors.append("run_trace.template: expected object")
+        return
+    for key in ["schema_version", "trace_type", "status", "output_validation", "commands", "produced_files"]:
+        if key not in trace:
+            errors.append(f"run_trace.template.{key}: missing required key")
 
 
 def _validate_workflow_dag(path: Path, errors: list[str]) -> None:
@@ -185,6 +321,13 @@ def _validate_adapter_spec(path: Path, errors: list[str]) -> None:
             errors.append("adapter_spec.function: required when python_api status is executable")
     if status not in ADAPTER_STATUSES:
         errors.append("adapter_spec.status: invalid adapter status")
+    if status == "verified":
+        verification = spec.get("verification") if isinstance(spec.get("verification"), dict) else {}
+        output_validation = verification.get("output_validation") if isinstance(verification.get("output_validation"), dict) else {}
+        if not _has_run_trace_evidence(spec, verification):
+            errors.append("adapter_spec.verification: verified status requires run_trace evidence")
+        if output_validation.get("status") != "pass":
+            errors.append("adapter_spec.verification.output_validation.status: verified status requires pass")
 
 
 def _validate_adapter_review(path: Path, errors: list[str]) -> None:
@@ -232,8 +375,15 @@ def _validate_adapter_review(path: Path, errors: list[str]) -> None:
             errors.append("adapter_review.verification.status: verified status requires pass")
         if not isinstance(output_validation, dict) or output_validation.get("status") != "pass":
             errors.append("adapter_review.verification.output_validation.status: verified status requires pass")
+        if not isinstance(verification, dict) or not _has_run_trace_evidence(review, verification):
+            errors.append("adapter_review.verification: verified status requires run_trace evidence")
         if not review.get("expected_outputs"):
             errors.append("adapter_review.expected_outputs: verified status requires at least one expected output")
+
+
+def _has_run_trace_evidence(data: dict[str, Any], verification: dict[str, Any]) -> bool:
+    evidence = [str(item).lower() for item in data.get("evidence", []) or []]
+    return verification.get("source") == "run_trace" or "run_trace" in evidence or bool(verification.get("run_trace"))
 
 
 def _load_adapter_spec_for_review(review_path: Path) -> dict[str, Any]:

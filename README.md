@@ -1,10 +1,11 @@
 # Paper2Skill
 
-Paper2Skill is an installable Codex standard skill that builds child skills from
-algorithm papers, official source repositories, and official tutorials or
-examples. The generated child skill is meant for Codex or another agent to use
-for planning, preflight, execution, and output validation of a paper-backed
-algorithm workflow.
+Paper2Skill is an installable Codex standard skill that compiles algorithm
+papers, official source repositories, and official tutorials/examples into
+agent-callable child skills. The goal is not just to run a demo: the generated
+skill should know when it can be used, what inputs it requires, how to preflight,
+how to run, where outputs land, how success is verified, when to refuse, and its
+current maturity level.
 
 This repository is intentionally lean. The product artifact is the skill bundle
 under `.agents/skills/paper2skill/`; it is not a top-level Python package, MCP
@@ -47,15 +48,26 @@ install plan and exits so the user can explicitly approve environment changes.
 
 ## Workflow
 
-The skill follows this fixed seven-step workflow:
+The compiler follows a plan-run-plan loop:
 
-1. Plan inputs and policies
-2. Inspect evidence sources
-3. Build child skill
-4. Run build-time validation
-5. Repair iteratively
-6. Validate child skill package
-7. Optionally run independent benchmark
+```text
+thin plan -> controlled run -> promotion plan -> verified reusable skill
+```
+
+The stable stages are:
+
+1. `collect_sources`
+2. `normalize_evidence`
+3. `build_tutorial_graph`
+4. `rank_execution_candidates`
+5. `run_candidate`
+6. `synthesize_contracts`
+7. `promote_skill`
+8. `evaluate_maturity`
+
+The main compiler artifacts are `tutorial_catalog.yaml`, `run_trace.json`,
+`references/contracts/*.yaml`, `references/maturity.yaml`, and
+`references/evidence_summary.md`.
 
 ## Build A Child Skill
 
@@ -67,6 +79,17 @@ python scripts/paper2skill.py plan \
   --repo path/to/official-repo \
   --tutorial path/to/official-tutorial.py \
   --out paper2skill_plan
+```
+
+Use `triage-plan` to write generalized compiler artifacts without generating a
+child skill:
+
+```bash
+python scripts/paper2skill.py triage-plan \
+  --paper path/to/paper.md \
+  --repo path/to/official-repo \
+  --tutorial path/to/official-tutorial.py \
+  --out paper2skill_triage_plan
 ```
 
 Use `build` to generate a child skill:
@@ -110,6 +133,42 @@ Reviewed execution modes require `--validation-manifest` and reviewed adapter
 evidence. Paper2Skill does not fabricate approvals or bypass review gates during
 repair.
 
+## Run Trace And Promotion
+
+Generated adapters start as `dry_run_only`. Static API/CLI/notebook/script
+inference cannot mark an adapter as verified.
+
+After explicit approval, run one selected example and write a run trace:
+
+```bash
+python scripts/paper2skill.py run-example \
+  --skill ../algorithm-skill \
+  --manifest ../algorithm-skill/assets/demo_input_manifest.yaml \
+  --example-id default_demo \
+  --out paper2skill_run \
+  --confirm-run yes
+```
+
+If a reviewed run already exists, ingest it:
+
+```bash
+python scripts/paper2skill.py ingest-run \
+  --run-dir path/to/result \
+  --skill ../algorithm-skill \
+  --out paper2skill_run_trace
+```
+
+Promote only from a passing run trace with passing output validation:
+
+```bash
+python scripts/paper2skill.py promote \
+  --skill ../algorithm-skill \
+  --run-trace paper2skill_run_trace/run_trace.json
+```
+
+Verification is per tutorial/example. A child skill may contain multiple
+examples, but each keeps its own runnable status and maturity evidence.
+
 ## Validate A Child Skill
 
 ```bash
@@ -126,6 +185,20 @@ scripts/run.py
 scripts/validate_outputs.py
 references/
 assets/
+```
+
+The compact contract surface is:
+
+```text
+references/tutorial_catalog.yaml
+references/maturity.yaml
+references/evidence_summary.md
+references/contracts/algorithm_contract.yaml
+references/contracts/adapter_contract.yaml
+references/contracts/bio_contract.yaml
+references/contracts/environment_contract.yaml
+references/contracts/io_contract.yaml
+assets/input_manifest_template.yaml
 ```
 
 ## Benchmark Separately

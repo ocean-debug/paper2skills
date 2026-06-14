@@ -35,9 +35,9 @@ def test_command_extension_is_prefix_compatible() -> None:
         "status": "verified",
         "entrypoint": "omics",
         "command": "omics --input {manifest} --out {out}",
-        "verification": {"status": "pass", "output_validation": {"status": "pass"}},
+        "verification": {"status": "pass", "source": "run_trace", "output_validation": {"status": "pass"}},
         "expected_outputs": ["results/summary.json"],
-        "evidence": [],
+        "evidence": ["run_trace"],
         "caveats": [],
     }
 
@@ -63,9 +63,9 @@ def test_list_command_is_valid_verified_mapping() -> None:
         "status": "verified",
         "entrypoint": "python-workflow",
         "command": ["python", "-m", "workflow", "--manifest", "{manifest}", "--out", "{out}"],
-        "verification": {"status": "pass", "output_validation": {"status": "pass"}},
+        "verification": {"status": "pass", "source": "run_trace", "output_validation": {"status": "pass"}},
         "expected_outputs": ["results/summary.json"],
-        "evidence": [],
+        "evidence": ["run_trace"],
         "caveats": [],
     }
 
@@ -157,6 +157,34 @@ def test_verified_review_accepts_nested_output_validation() -> None:
         "status": "verified",
         "entrypoint": "omics",
         "command": "omics --input {manifest} --out {out}",
+        "verification": {"status": "pass", "source": "run_trace", "output_validation": {"status": "pass"}},
+        "expected_outputs": ["results/summary.json"],
+        "evidence": ["run_trace"],
+        "caveats": [],
+    }
+
+    reviewed_spec, review_data = codex_skill_generator.apply_adapter_review(spec, review)
+
+    assert reviewed_spec["status"] == "verified"
+    assert review_data["verification"]["output_validation"]["status"] == "pass"
+
+
+def test_verified_review_requires_run_trace_evidence() -> None:
+    spec = {
+        "adapter_type": "cli",
+        "status": "dry_run_only",
+        "entrypoint": "omics",
+        "command": "omics",
+        "module": None,
+        "function": None,
+        "evidence": [],
+        "caveats": [],
+    }
+    review = {
+        "adapter_type": "cli",
+        "status": "verified",
+        "entrypoint": "omics",
+        "command": "omics --input {manifest} --out {out}",
         "verification": {"status": "pass", "output_validation": {"status": "pass"}},
         "expected_outputs": ["results/summary.json"],
         "evidence": [],
@@ -165,8 +193,8 @@ def test_verified_review_accepts_nested_output_validation() -> None:
 
     reviewed_spec, review_data = codex_skill_generator.apply_adapter_review(spec, review)
 
-    assert reviewed_spec["status"] == "verified"
-    assert review_data["verification"]["output_validation"]["status"] == "pass"
+    assert reviewed_spec["status"] == "dry_run_only"
+    assert review_data["status"] == "dry_run_only"
 
 
 def write_child_template(template_root: Path, source: str, target: Path) -> None:
@@ -474,9 +502,11 @@ def test_mark_verified_only_updates_selected_example(tmp_path: Path) -> None:
     references.mkdir(parents=True)
     (references / "adapter_spec.yaml").write_text(json.dumps({"adapter_type": "notebook", "status": "dry_run_only"}), encoding="utf-8")
     (references / "adapter_review.yaml").write_text(json.dumps({"adapter_type": "notebook", "status": "dry_run_only", "expected_outputs": []}), encoding="utf-8")
+    (references / "algorithm_contract.yaml").write_text(json.dumps({"algorithm": {"adapter_status": "dry_run_only", "maturity_level": "L1"}}), encoding="utf-8")
     (references / "examples_catalog.yaml").write_text(
         json.dumps(
             {
+                "default_example_id": "demo_a",
                 "examples": [
                     {"example_id": "demo_a", "adapter": {"status": "dry_run_only"}},
                     {"example_id": "demo_b", "adapter": {"status": "dry_run_only"}},
@@ -485,10 +515,13 @@ def test_mark_verified_only_updates_selected_example(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    result = root / "result"
+    (result / "qc").mkdir(parents=True)
+    (result / "qc" / "output_validation.json").write_text(json.dumps({"status": "pass"}), encoding="utf-8")
 
     build_validator.mark_verified(
         root,
-        execution={"result_dir": "result", "output_validation": {"status": "pass"}},
+        execution={"status": "pass", "result_dir": "result", "output_validation": {"status": "pass"}},
         gate={"example_id": "demo_b", "expected_outputs": ["results/summary.json"], "manifest_data": {"validation_depth": "data_smoke"}},
     )
 
@@ -497,11 +530,10 @@ def test_mark_verified_only_updates_selected_example(tmp_path: Path) -> None:
     catalog = yaml.safe_load((references / "examples_catalog.yaml").read_text(encoding="utf-8"))
     statuses = {item["example_id"]: item["adapter"]["status"] for item in catalog["examples"]}
 
-    assert spec["status"] == "dry_run_only"
-    assert review["status"] == "dry_run_only"
+    assert spec["status"] == "verified"
+    assert review["status"] == "verified"
     assert statuses == {"demo_a": "dry_run_only", "demo_b": "verified"}
-    assert catalog["verification_summary"]["has_verified_example"] is True
-    assert catalog["verification_summary"]["verified_examples"] == ["demo_b"]
+    assert [item for item in catalog["examples"] if item["example_id"] == "demo_b"][0]["verification"]["source"] == "run_trace"
 
 
 def test_validate_outputs_uses_executed_example_contract(tmp_path: Path) -> None:

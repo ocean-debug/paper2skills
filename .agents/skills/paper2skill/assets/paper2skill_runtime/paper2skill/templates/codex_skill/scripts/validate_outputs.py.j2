@@ -71,7 +71,7 @@ def expected_contract(validation_manifest: Path | None, *, result: Path, example
         expected_outputs = manifest.get("expected_outputs") if isinstance(manifest.get("expected_outputs"), list) else []
         expected_values = manifest.get("expected_output_values") if isinstance(manifest.get("expected_output_values"), dict) else {}
         output_contract = manifest.get("output_contract") if isinstance(manifest.get("output_contract"), dict) else {}
-        catalog = load_optional_mapping(ROOT / "references" / "examples_catalog.yaml")
+        catalog = load_tutorial_catalog()
         selected, selected_errors, selected_example_id = selected_catalog_example(catalog, str(resolved_example_id) if resolved_example_id else None)
         if selected_errors:
             contract_errors.extend(selected_errors)
@@ -92,7 +92,7 @@ def expected_contract(validation_manifest: Path | None, *, result: Path, example
     review = load_optional_mapping(ROOT / "references" / "adapter_review.yaml")
     review_outputs = review.get("expected_outputs") if isinstance(review.get("expected_outputs"), list) else []
     review_values = review.get("expected_output_values") if isinstance(review.get("expected_output_values"), dict) else {}
-    catalog = load_optional_mapping(ROOT / "references" / "examples_catalog.yaml")
+    catalog = load_tutorial_catalog()
     selected, selected_errors, selected_example_id = selected_catalog_example(catalog, executed_example_id)
     output_contract = selected.get("output_contract") if isinstance(selected.get("output_contract"), dict) else {}
     selected_outputs = output_contract.get("required_files") or selected.get("expected_outputs") or review_outputs
@@ -126,6 +126,13 @@ def selected_catalog_example(catalog: dict, example_id: str | None) -> tuple[dic
         if isinstance(item, dict) and item.get("example_id") == example_id:
             return item, [], example_id
     return {}, [{"reason": "unknown_example_id", "example_id": example_id}], example_id
+
+
+def load_tutorial_catalog() -> dict:
+    catalog = load_optional_mapping(ROOT / "references" / "tutorial_catalog.yaml")
+    if catalog:
+        return catalog
+    return load_optional_mapping(ROOT / "references" / "examples_catalog.yaml")
 
 
 def normalize_expected_outputs(values: list) -> list[str]:

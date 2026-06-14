@@ -12,6 +12,7 @@ import yaml
 
 from paper2skill.build_validation.skill_package import validate_skill_package
 from paper2skill.collectors.path_sanitizer import public_data
+from paper2skill.compiler import ingest_run_directory, promote_from_run_trace
 
 
 VALIDATION_DEPTHS = ("dry_run", "data_smoke", "live_execute")
@@ -158,7 +159,7 @@ def collect_dry_run_errors(report: dict[str, Any]) -> list[str]:
 def verification_execution_gate(root: Path, *, depth: str, manifest: str | Path | None, example_id: str | None = None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     errors: list[str] = []
-    catalog = read_yaml_reference(root / "references" / "examples_catalog.yaml")
+    catalog = read_catalog_reference(root)
     generated_manifest_error: str | None = None
     try:
         manifest_path = resolve_manifest(root, manifest) or generated_validation_manifest(root, depth=depth, example_id=example_id)
@@ -243,14 +244,15 @@ def generated_validation_manifest(root: Path, *, depth: str, example_id: str | N
         input_manifest = root / "assets" / "input_manifest_template.yaml"
     if not input_manifest.is_file():
         return None
-    catalog = read_yaml_reference(root / "references" / "examples_catalog.yaml")
+    catalog = read_catalog_reference(root)
     selected = select_example(catalog, example_id)
     output_contract = selected.get("output_contract") if isinstance(selected.get("output_contract"), dict) else {}
     expected_outputs = list(output_contract.get("required_files") or selected.get("expected_outputs") or ["results/summary.json"])
+    data_kind = str(selected.get("data_kind") or ("minimal" if depth == "data_smoke" else "official_example"))
     manifest_data = {
         "validation_type": BUILD_VALIDATION_TYPE,
         "validation_depth": depth,
-        "data_kind": "minimal" if depth == "data_smoke" else "official_example",
+        "data_kind": data_kind,
         "example_id": selected.get("example_id") or example_id or catalog.get("default_example_id"),
         "manifest_path": str(input_manifest.relative_to(root)).replace("\\", "/"),
         "expected_outputs": expected_outputs,
@@ -258,7 +260,7 @@ def generated_validation_manifest(root: Path, *, depth: str, example_id: str | N
         "official_example": {
             "source": selected.get("source"),
             "scenario": selected.get("scenario"),
-            "data_sources": selected.get("data_sources") or [],
+            "data_sources": catalog_data_sources(selected),
         },
     }
     path = root / "build_validation" / f"{depth}_validation_manifest.yaml"
@@ -307,6 +309,26 @@ def read_yaml_reference(path: Path) -> dict[str, Any]:
     except yaml.YAMLError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def read_catalog_reference(root: Path) -> dict[str, Any]:
+    catalog = read_yaml_reference(root / "references" / "tutorial_catalog.yaml")
+    if catalog:
+        return catalog
+    return read_yaml_reference(root / "references" / "examples_catalog.yaml")
+
+
+def catalog_data_sources(example: dict[str, Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    inputs = example.get("inputs") if isinstance(example.get("inputs"), dict) else {}
+    for value in [example.get("data_sources"), inputs.get("data_sources")]:
+        if isinstance(value, list):
+            sources.extend(item for item in value if isinstance(item, dict))
+    deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for source in sources:
+        key = (str(source.get("type") or ""), str(source.get("url") or ""), str(source.get("path") or source.get("filename") or ""))
+        deduped[key] = source
+    return list(deduped.values())
 
 
 def read_yaml_mapping(path: Path) -> tuple[dict[str, Any], list[str]]:
@@ -360,7 +382,7 @@ def run_verification_validation(
             ],
         ),
         (
-        "output_validation",
+            "output_validation",
             [
                 *runner,
                 str(root / "scripts" / "validate_outputs.py"),
@@ -462,51 +484,76 @@ def validation_python_runner(*, env_prefix: str | Path | None, python_executable
 def mark_verified(root: Path, *, execution: dict[str, Any], gate: dict[str, Any]) -> None:
     spec_path = root / "references" / "adapter_spec.yaml"
     review_path = root / "references" / "adapter_review.yaml"
-    catalog_path = root / "references" / "examples_catalog.yaml"
+    catalog_path = root / "references" / "tutorial_catalog.yaml"
+    if not catalog_path.exists():
+        catalog_path = root / "references" / "examples_catalog.yaml"
     spec = read_yaml_reference(spec_path)
     review = read_yaml_reference(review_path)
     catalog = read_yaml_reference(catalog_path)
     example_id = gate.get("example_id")
     output_validation = execution.get("output_validation") if isinstance(execution.get("output_validation"), dict) else {}
-    expected_outputs = gate.get("expected_outputs") or []
-    verification = {
-        "status": "pass",
-        "validation_depth": (gate.get("manifest_data") or {}).get("validation_depth"),
-        "example_id": example_id,
-        "result_dir": execution.get("result_dir"),
-        "output_validation": output_validation,
-    }
-    summary = {
-        "has_verified_example": True,
-        "verified_examples": sorted(
-            dict.fromkeys(
-                [
-                    *(
-                        str(item)
-                        for item in ((catalog.get("verification_summary") or {}).get("verified_examples") or [])
-                        if item
-                    ),
-                    str(example_id),
-                ]
-            )
-        ),
-        "latest_example_id": example_id,
-    }
-    spec["verification_summary"] = summary
-    review["verification_summary"] = summary
-    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
-    for item in examples:
-        if isinstance(item, dict) and item.get("example_id") == example_id:
-            adapter = item.get("adapter") if isinstance(item.get("adapter"), dict) else {}
-            adapter["status"] = "verified"
-            item["adapter"] = adapter
-            item["verification"] = verification
-            item["expected_outputs"] = expected_outputs
-    catalog["verification_summary"] = summary
-    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    review_path.write_text(yaml.safe_dump(review, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    if catalog:
-        catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    if output_validation.get("status") != "pass":
+        return
+    trace = run_trace_from_execution(root, execution=execution, example_id=example_id, expected_outputs=gate.get("expected_outputs") or [])
+    result = promote_from_run_trace(
+        adapter_spec=spec,
+        adapter_review=review,
+        tutorial_catalog=catalog,
+        run_trace=trace,
+        example_id=example_id,
+    )
+    write_json_file(root / "debug" / "build_validation_run_trace.promoted.json", trace)
+    write_json_file(root / "build_validation" / "promotion_report.json", result)
+    if not result.get("promoted"):
+        return
+    algorithm_contract = read_yaml_reference(root / "references" / "algorithm_contract.yaml")
+    updated_algorithm_contract = update_algorithm_contract_after_promotion(algorithm_contract, result["adapter_spec"], result["maturity"])
+    write_yaml_file(root / "references" / "algorithm_contract.yaml", updated_algorithm_contract)
+    write_yaml_file(root / "references" / "adapter_spec.yaml", result["adapter_spec"])
+    write_yaml_file(root / "references" / "adapter_review.yaml", result["adapter_review"])
+    write_yaml_file(root / "references" / "tutorial_catalog.yaml", result["tutorial_catalog"])
+    write_yaml_file(root / "references" / "examples_catalog.yaml", result["tutorial_catalog"])
+    write_yaml_file(root / "references" / "maturity.yaml", result["maturity"])
+    write_yaml_file(root / "references" / "contracts" / "algorithm_contract.yaml", updated_algorithm_contract)
+    write_yaml_file(root / "references" / "contracts" / "adapter_contract.yaml", result["adapter_spec"])
+
+
+def run_trace_from_execution(root: Path, *, execution: dict[str, Any], example_id: str | None, expected_outputs: list[str]) -> dict[str, Any]:
+    result_dir = execution.get("result_dir")
+    if result_dir:
+        result_path = Path(str(result_dir))
+        if not result_path.is_absolute():
+            result_path = root / result_path
+        trace = ingest_run_directory(result_path, skill_dir=root, example_id=example_id)
+    else:
+        trace = {}
+    trace["status"] = execution.get("status", trace.get("status"))
+    trace["commands"] = execution.get("commands") or trace.get("commands") or []
+    output_validation = execution.get("output_validation") if isinstance(execution.get("output_validation"), dict) else {}
+    if expected_outputs and "expected_outputs" not in output_validation:
+        output_validation = {**output_validation, "expected_outputs": expected_outputs}
+    trace["output_validation"] = output_validation
+    return trace
+
+
+def update_algorithm_contract_after_promotion(algorithm_contract: dict[str, Any], adapter_spec: dict[str, Any], maturity: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(algorithm_contract)
+    algorithm = dict(updated.get("algorithm") or {})
+    algorithm["adapter_status"] = adapter_spec.get("status", algorithm.get("adapter_status"))
+    algorithm["maturity_level"] = maturity.get("level", algorithm.get("maturity_level"))
+    updated["algorithm"] = algorithm
+    updated["maturity"] = maturity
+    return updated
+
+
+def write_yaml_file(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
+def write_json_file(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def execution_report(

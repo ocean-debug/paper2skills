@@ -11,7 +11,7 @@ from paper2skill.miners.dependency_miner import constrain_legacy_scvi_tools
 from paper2skill.env_rebuilder.routes import route_python_packages
 from paper2skill.build_validation.skill_package import path_leakage
 from paper2skill.build_validation.validator import stage_example_data_cache
-from paper2skill.generators.codex_skill_generator import build_examples_catalog
+from paper2skill.compiler import build_tutorial_catalog
 
 
 def test_legacy_scvi_constraints_bound_transitive_stack() -> None:
@@ -76,18 +76,19 @@ def test_path_leakage_skips_staged_example_data(tmp_path: Path) -> None:
 
 
 def test_multiple_user_data_urls_are_matched_to_relevant_tutorials() -> None:
-    catalog = build_examples_catalog(
+    catalog = build_tutorial_catalog(
         {
             "tutorials": [
                 {"path": "docs/batch.ipynb", "cells": ["train = sc.read('.pancreas.h5ad')"]},
                 {"path": "docs/perturb.ipynb", "cells": ["train = sc.read('.train_kang.h5ad')"]},
             ]
         },
-        {"adapter_type": "notebook", "status": "dry_run_only", "entrypoint": "adapter.py", "command": ["python"]},
+        {"adapter_type": "notebook", "status": "dry_run_only", "entrypoint": "adapter.py", "command": ["python"], "expected_outputs": []},
         {},
         {"language": "python"},
+        {"archetype": "notebook_tutorial", "adapter_type": "notebook", "interface": {}},
         user_data_urls=[
-            "https://drive.google.com/uc?id=1r87vhoLLq6PXAYdmyyd89zG90eJOFYLk",
+            "https://example.org/data/train_kang.h5ad",
             "https://www.dropbox.com/s/qj1jlm9w10wmt0u/pancreas.h5ad?dl=1",
         ],
     )
