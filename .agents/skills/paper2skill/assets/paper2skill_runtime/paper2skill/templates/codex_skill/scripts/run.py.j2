@@ -109,6 +109,27 @@ def maturity_contract() -> dict:
     return load_json_yaml(path) if path.exists() else {}
 
 
+def algorithm_contract() -> dict:
+    modern_path = ROOT / "references" / "contracts" / "algorithm_contract.yaml"
+    legacy_path = ROOT / "references" / "algorithm_contract.yaml"
+    path = modern_path if modern_path.exists() else legacy_path
+    return load_json_yaml(path) if path.exists() else {}
+
+
+def real_execution_contract_gate(contract: dict) -> dict:
+    applicability = contract.get("applicability") if isinstance(contract.get("applicability"), dict) else {}
+    recommended = contract.get("recommended_execution") if isinstance(contract.get("recommended_execution"), dict) else {}
+    reasons = []
+    if applicability.get("real_execution_allowed") is False:
+        reasons.append("applicability.real_execution_allowed=false")
+    allowed_modes = applicability.get("allowed_execution_modes")
+    if isinstance(allowed_modes, list) and "verified_run" not in allowed_modes:
+        reasons.append("applicability.allowed_execution_modes lacks verified_run")
+    if recommended.get("can_execute_real_data") is False:
+        reasons.append("recommended_execution.can_execute_real_data=false")
+    return {"allowed": not reasons, "reasons": reasons}
+
+
 def selected_example_adapter_status(example_id: str | None, spec: dict) -> str:
     catalog = examples_catalog()
     examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
@@ -146,6 +167,12 @@ def run_adapter(kind: str, manifest: dict, out: Path, manifest_path: Path | None
     return {"status": "blocked", "adapter_type": kind, "message": "No executable adapter is configured."}
 
 
+def annotate_adapter_report(adapter_report: dict, *, demo_run: bool, verification_run: bool) -> dict:
+    adapter_report["demo_mode"] = bool(demo_run)
+    adapter_report["verification_run"] = bool(verification_run)
+    return adapter_report
+
+
 def write_blocked_result(out: Path, selected_adapter: str, adapter_report: dict, manifest: dict) -> dict:
     result_status = adapter_report.get("status") if str(adapter_report.get("status", "")).startswith("blocked_") else "blocked_adapter_not_ready"
     result = {
@@ -170,7 +197,7 @@ def write_blocked_result(out: Path, selected_adapter: str, adapter_report: dict,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", default=str(ROOT / "assets" / "demo_input_manifest.yaml"))
+    parser.add_argument("--manifest", default=str(ROOT / "assets" / "official_attempt_manifest.yaml"))
     parser.add_argument("--out", default=str(ROOT / "result"))
     parser.add_argument("--example-id", default=None)
     parser.add_argument("--dry-run", action="store_true", help="Plan and render the selected adapter without executing it.")
@@ -188,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     example_adapter_status = selected_example_adapter_status(example_id, spec)
     adapter_report = {"status": "dry_run_only", "adapter_type": selected_adapter, "example_id": example_id, "message": "Dry-run only adapter was planned."}
     demo_run = is_demo_run(manifest, spec)
+    adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
     if explicit_example_missing(example_id):
         (out / "workflow").mkdir(parents=True, exist_ok=True)
         write_json(out / "workflow" / "plan.json", {"status": "blocked", "evidence_used": []})
@@ -201,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
             "message": "Selected example is missing from tutorial_catalog.yaml.",
             "caveats": spec.get("caveats", []),
         }
+        adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
         write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
         blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
         print(json.dumps(blocked, indent=2))
@@ -210,11 +239,33 @@ def main(argv: list[str] | None = None) -> int:
         plan_command.extend(["--example-id", example_id])
     subprocess.run(plan_command, check=True)
     if args.dry_run:
+        adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
         write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
         write_json(out / "result.json", {"status": "dry_run", "adapter": adapter_report, "outputs": []})
         print(json.dumps({"status": "dry_run", "adapter": adapter_report}, indent=2))
         return 0
     if not demo_run:
+        gate = real_execution_contract_gate(algorithm_contract())
+        if not gate["allowed"] and not args.verification_run:
+            adapter_report = {
+                "status": "blocked_applicability_contract",
+                "adapter_type": selected_adapter,
+                "example_id": example_id,
+                "adapter_status": example_adapter_status,
+                "global_adapter_status": spec.get("status"),
+                "entrypoint": spec.get("entrypoint"),
+                "message": "Algorithm contract does not allow real execution for this child skill state.",
+                "refusal_reasons": [
+                    {"code": "real_execution_not_allowed", "path": "references/contracts/algorithm_contract.yaml", "message": reason}
+                    for reason in gate["reasons"]
+                ],
+                "caveats": spec.get("caveats", []),
+            }
+            adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
         maturity = maturity_contract()
         if maturity.get("level") == "L1" and not args.verification_run:
             adapter_report = {
@@ -227,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                 "message": "This skill is L1 contract-only; run_trace and output validation are required before real execution.",
                 "caveats": spec.get("caveats", []),
             }
+            adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
             write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
             blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
             print(json.dumps(blocked, indent=2))
@@ -242,16 +294,19 @@ def main(argv: list[str] | None = None) -> int:
                 "message": "Adapter status is dry_run_only; run_trace and output validation must pass before real execution.",
                 "caveats": spec.get("caveats", []),
             }
+            adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
             write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
             blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
             print(json.dumps(blocked, indent=2))
             return 2
         adapter_report = run_adapter(selected_adapter, manifest, out, Path(args.manifest), example_id, args.verification_run)
+        adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
         if adapter_report.get("status") != "pass":
             write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
             blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
             print(json.dumps(blocked, indent=2))
             return 2
+    adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
     write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
     outputs = adapter_report.get("outputs", [])
     if demo_run:

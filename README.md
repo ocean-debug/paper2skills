@@ -48,26 +48,41 @@ install plan and exits so the user can explicitly approve environment changes.
 
 ## Workflow
 
-The compiler follows a plan-run-plan loop:
+The compiler follows one public plan-run-plan loop:
 
 ```text
-thin plan -> controlled run -> promotion plan -> verified reusable skill
+thin plan -> run -> promotion plan -> child skill
 ```
 
-The stable stages are:
+`thin plan` is tutorial-first: it catalogs official tutorials/examples,
+collects paper and repository evidence as support, infers initial contracts,
+and selects a reviewed minimal execution candidate without running code.
 
-1. `collect_sources`
-2. `normalize_evidence`
-3. `build_tutorial_graph`
-4. `rank_execution_candidates`
-5. `run_candidate`
-6. `synthesize_contracts`
-7. `promote_skill`
-8. `evaluate_maturity`
+`run` executes only one approved candidate with a reviewed manifest and records
+environment, inputs, adapter report, produced files, logs, and output
+validation.
+
+`promotion plan` decides whether the run trace is strong enough to promote an
+adapter. Demo summaries, dry-runs, missing adapter reports, and failed output
+validation must refuse promotion.
+
+`child skill` is the compact installable skill surface with preflight, planning,
+execution, output validation, contracts, tutorial catalog, evidence summary, and
+maturity metadata.
 
 The main compiler artifacts are `tutorial_catalog.yaml`, `run_trace.json`,
 `references/contracts/*.yaml`, `references/maturity.yaml`, and
 `references/evidence_summary.md`.
+
+`references/contracts/algorithm_contract.yaml` is the child skill's routing
+contract. It records `applicability` (supported task, domain, modality,
+allowed execution modes, real execution gate, and refusal rules) and
+`recommended_execution` (default manifest, entrypoints, inferred API/command,
+and verified-run requirements).
+
+Generated manifests include `inputs.analysis.task`, `inputs.analysis.domain`,
+and `inputs.analysis.modality` so preflight can reject requests that conflict
+with the routing contract before any adapter execution.
 
 ## Build A Child Skill
 
@@ -143,7 +158,7 @@ After explicit approval, run one selected example and write a run trace:
 ```bash
 python scripts/paper2skill.py run-example \
   --skill ../algorithm-skill \
-  --manifest ../algorithm-skill/assets/demo_input_manifest.yaml \
+  --manifest path/to/reviewed_official_example_manifest.yaml \
   --example-id default_demo \
   --out paper2skill_run \
   --confirm-run yes
@@ -158,7 +173,8 @@ python scripts/paper2skill.py ingest-run \
   --out paper2skill_run_trace
 ```
 
-Promote only from a passing run trace with passing output validation:
+Promote only from a passing non-demo run trace with a passing adapter report and
+passing output validation:
 
 ```bash
 python scripts/paper2skill.py promote \
@@ -198,8 +214,13 @@ references/contracts/adapter_contract.yaml
 references/contracts/bio_contract.yaml
 references/contracts/environment_contract.yaml
 references/contracts/io_contract.yaml
+assets/official_attempt_manifest.yaml
 assets/input_manifest_template.yaml
 ```
+
+`assets/demo_input_manifest.yaml` may be present for local smoke behavior, but it
+is not part of the promotion path and must not be used as verified execution
+evidence.
 
 ## Benchmark Separately
 
@@ -216,7 +237,7 @@ Benchmark levels are L0 through L4:
 
 - `L0`: package structure, required files, policy safety, and path hygiene.
 - `L1`: evidence bundle and contracts aligned with gold standard.
-- `L2`: official minimal/demo data execution.
+- `L2`: official minimal/example adapter execution with output validation.
 - `L3`: gold new-data adaptation and output contract validation.
 - `L4`: agent use of the generated child skill for an end-to-end task.
 

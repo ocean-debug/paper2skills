@@ -42,7 +42,6 @@ REQUIRED_FILES = [
     "references/repo_evidence.json",
     "references/adapter_spec.yaml",
     "references/adapter_review.yaml",
-    "references/examples_catalog.yaml",
     "references/tutorial_catalog.yaml",
     "references/maturity.yaml",
     "references/run_trace.template.json",
@@ -71,7 +70,7 @@ REQUIRED_FILES = [
     "assets/environment.yml",
     "assets/env/paper2skill.environment.yml",
     "assets/env/normalization_report.json",
-    "assets/demo_input_manifest.yaml",
+    "assets/official_attempt_manifest.yaml",
     "agents/openai.yaml",
 ]
 

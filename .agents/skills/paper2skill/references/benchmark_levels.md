@@ -16,13 +16,15 @@ Compares evidence and contracts against gold expectations:
 - tutorial trace
 - workflow DAG
 - IO and Bio contracts
+- algorithm routing contract (`applicability`, `recommended_execution`, refusal rules)
 - environment evidence
 - adapter review
 - evidence bundle
 
 ## L2
 
-Runs reviewed official minimal-data or demo execution with expected outputs.
+Runs reviewed official minimal/example adapter execution with expected outputs.
+Demo-mode summary runs are not sufficient for L2.
 
 ## L3
 

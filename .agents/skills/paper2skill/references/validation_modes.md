@@ -34,7 +34,8 @@ It must block when the runner, validation manifest, selected example, or
 expected outputs are missing. The validation manifest is required and must use
 `data_kind: minimal` or `data_kind: official_minimal`. The selected example
 adapter can become `verified` only after a run trace is recorded and output
-validation passes.
+validation passes. Demo-mode summary runs are diagnostic only and cannot promote
+an adapter.
 
 ## live_execute
 
@@ -64,7 +65,7 @@ Required fields:
 ```yaml
 validation_type: build_time_self_check
 data_kind: minimal
-manifest_path: assets/demo_input_manifest.yaml
+manifest_path: path/to/reviewed_official_minimal_manifest.yaml
 expected_outputs:
   - results/summary.json
 expected_output_values:

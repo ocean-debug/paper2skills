@@ -18,14 +18,18 @@ BENCHMARK_LEVELS = ("L0", "L1", "L2", "L3", "L4")
 DEFAULT_EVIDENCE_FILES = [
     "references/source_manifest.json",
     "references/tutorial_trace.json",
+    "references/tutorial_catalog.yaml",
     "references/workflow_dag.json",
     "assets/environment_spec.yaml",
+    "references/algorithm_contract.yaml",
     "references/io_contract.yaml",
     "references/bio_contract.yaml",
+    "references/maturity.yaml",
     "references/evidence_graph.json",
     "references/adapter_spec.yaml",
     "references/adapter_review.yaml",
     "references/notebook_execution_policy.json",
+    "references/contracts/algorithm_contract.yaml",
 ]
 
 
@@ -134,6 +138,11 @@ def evaluate_l1(result: dict[str, Any], skill: Path, case: dict[str, Any]) -> No
     compare_expected_yaml_field(result, "L1", skill / "references" / "adapter_spec.yaml", "adapter_type", gold.get("expected_adapter_type"))
     compare_expected_yaml_field(result, "L1", skill / "references" / "adapter_spec.yaml", "status", gold.get("expected_adapter_status"))
     compare_expected_yaml_field(result, "L1", skill / "references" / "algorithm_contract.yaml", ("algorithm", "language"), gold.get("expected_language"))
+    routing_report = validate_algorithm_routing_contract(skill)
+    add_check(result, "L1", "algorithm_routing_contract", routing_report["passed"], routing_report)
+    if not routing_report["passed"]:
+        fail(result, "L1", "routing_contract_incomplete")
+        result["errors"].extend(f"routing_contract_missing:{item}" for item in routing_report["missing"])
 
 
 def evaluate_execution_level(result: dict[str, Any], skill: Path, case: dict[str, Any], case_file: Path, output_root: Path, level: str) -> None:
@@ -209,6 +218,51 @@ def compare_expected_yaml_field(result: dict[str, Any], level: str, path: Path, 
     add_check(result, level, f"gold:{name}", passed, {"expected": expected, "actual": actual, "path": str(path)})
     if not passed:
         fail(result, level, f"gold_mismatch:{name}")
+
+
+def validate_algorithm_routing_contract(skill: Path) -> dict[str, Any]:
+    contract_path = skill / "references" / "contracts" / "algorithm_contract.yaml"
+    if not contract_path.exists():
+        contract_path = skill / "references" / "algorithm_contract.yaml"
+    contract = load_yaml_file(contract_path)
+    required_paths = [
+        ("algorithm", "task"),
+        ("algorithm", "domain"),
+        ("algorithm", "modality"),
+        ("algorithm", "adapter_status"),
+        ("algorithm", "maturity_level"),
+        ("applicability", "supported_task"),
+        ("applicability", "domain"),
+        ("applicability", "modality"),
+        ("applicability", "allowed_execution_modes"),
+        ("applicability", "real_execution_allowed"),
+        ("applicability", "refusal_rules"),
+        ("recommended_execution", "default_manifest"),
+        ("recommended_execution", "entrypoints", "preflight"),
+        ("recommended_execution", "entrypoints", "plan"),
+        ("recommended_execution", "entrypoints", "run"),
+        ("recommended_execution", "entrypoints", "validate_outputs"),
+        ("recommended_execution", "real_execution_requires"),
+        ("recommended_execution", "can_execute_real_data"),
+    ]
+    missing = [".".join(path) for path in required_paths if missing_contract_value(contract, path)]
+    refusal_rules = nested_get(contract, ("applicability", "refusal_rules"))
+    rule_codes = {str(item.get("code")) for item in refusal_rules or [] if isinstance(item, dict)}
+    for code in ["unsupported_task", "adapter_not_verified", "bio_contract_mismatch"]:
+        if code not in rule_codes:
+            missing.append(f"applicability.refusal_rules.{code}")
+    return {"passed": not missing, "missing": sorted(missing), "path": str(contract_path)}
+
+
+def missing_contract_value(data: dict[str, Any], path: tuple[str, ...]) -> bool:
+    value = nested_get(data, path)
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if isinstance(value, (list, dict)) and not value:
+        return True
+    return False
 
 
 def compare_expected_output_values(run_dir: Path, expected_values: dict[str, Any]) -> list[dict[str, Any]]:

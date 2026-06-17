@@ -18,16 +18,27 @@ This skill is a Paper2Skill-compiled agent capability for {{ algorithm_name }}. 
 
 ## When to use
 
-Use this skill when the user asks to reproduce a cataloged official example, inspect compatible inputs, plan a run, validate generated outputs, or apply {{ algorithm_name }} to data that satisfies the recorded contracts.
+Use this skill when the user asks to reproduce a cataloged official example, inspect compatible inputs, plan a run, validate generated outputs, or apply {{ algorithm_name }} to data that satisfies `references/contracts/algorithm_contract.yaml:applicability`.
+
+Before taking action, compare the user request with:
+
+- `applicability.supported_task`
+- `applicability.domain`
+- `applicability.modality`
+- `applicability.allowed_execution_modes`
+- `applicability.real_execution_allowed`
 
 ## When not to use
 
-Do not use this skill as a general paper summarizer, as an alternative algorithm selector, or as a biological interpretation engine for unsupported data. Do not run unverified examples or extrapolate one verified tutorial to other tutorial paths.
+Do not use this skill as a general paper summarizer, as an alternative algorithm selector, or as a biological interpretation engine for unsupported data. Do not run unverified examples or extrapolate one verified tutorial to other tutorial paths. If the request violates `applicability.refusal_rules`, refuse with the matching rule code and the manifest field that needs correction when available.
 
 ## Required inputs
 
-- `input_manifest.yaml`, using `assets/input_manifest_template.yaml` as the starting point.
+- `input_manifest.yaml`, using `assets/official_attempt_manifest.yaml` or `assets/input_manifest_template.yaml` as the starting point.
 - Input files declared in the manifest.
+- `inputs.analysis.task`, `inputs.analysis.domain`, and `inputs.analysis.modality` when applying the algorithm to user data.
+- `inputs.primary_data.format` and `inputs.primary_data.matrix_state` when required by the IO or bio contract.
+- `inputs.metadata.*` keys required by `references/contracts/bio_contract.yaml`.
 - User confirmation before any dependency installation.
 
 ## Input state requirements
@@ -35,6 +46,8 @@ Do not use this skill as a general paper summarizer, as an alternative algorithm
 Input state requirements are recorded in `references/contracts/algorithm_contract.yaml`, `references/contracts/io_contract.yaml`, and `references/contracts/bio_contract.yaml`. Compatibility copies also exist under `references/`. Any unconfirmed biological field is marked `not_confirmed`.
 
 Bio contract fields carry provenance metadata: `evidence_id`, `source_type`, and `claim_type`. Treat `claim_type: agent_extension` differently from paper or official tutorial claims.
+
+Use `recommended_execution.default_manifest` from `references/contracts/algorithm_contract.yaml` as the default contract-aware starting point. `assets/demo_input_manifest.yaml` is smoke-only and must not be used for promotion or user-data biological analysis.
 
 ## Environment policy
 
@@ -56,7 +69,7 @@ Run:
 python scripts/preflight.py --manifest input_manifest.yaml
 ```
 
-Preflight checks input paths, required parameters, Python/R/CLI dependencies, and writes QC JSON. It must not execute the main algorithm.
+Preflight checks input paths, requested task/domain/modality, required parameters, IO/bio contract compatibility, Python/R/CLI dependencies, and writes QC JSON. It must not execute the main algorithm. When the request or input data violates applicability, IO, or bio contracts, `qc/input_validation.json` contains `refusal_reasons` with machine-readable `code`, `path`, and `message` fields.
 
 ## Planning workflow
 
@@ -76,14 +89,16 @@ Run:
 python scripts/run.py --manifest input_manifest.yaml
 ```
 
-`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared per example in `references/tutorial_catalog.yaml` and summarized in `references/contracts/adapter_contract.yaml`. Non-demo runs only execute adapters with status `verified`; `dry_run_only` adapters can preflight, plan, and dry-run but cannot perform real execution. Demo execution only proves that tutorial path, not biological validity on user data.
+`run.py` calls preflight first and stops if preflight fails. It records the selected adapter in `workflow/adapter_report.json`. Adapter readiness is declared per example in `references/tutorial_catalog.yaml` and summarized in `references/contracts/adapter_contract.yaml`. Non-demo runs only execute adapters with status `verified`; `dry_run_only` adapters can preflight, plan, and dry-run but cannot perform real execution. Demo execution only proves that tutorial path, not biological validity on user data, and cannot promote an adapter.
 
 Adapter lifecycle:
 
 - `dry_run_only`: generated default; preflight, plan, and dry-run only.
 - `verified`: official tutorial/demo/test-data execution passed output validation.
 
-Static inference can only create `dry_run_only`. Promotion to `verified` requires a passing run trace and output validation.
+Static inference can only create `dry_run_only`. Promotion to `verified` requires a non-demo run trace, `workflow/adapter_report.json` with `status=pass`, and passing output validation.
+
+Recommended entrypoints and the inferred core API/command are recorded in `references/contracts/algorithm_contract.yaml:recommended_execution`. If `recommended_execution.can_execute_real_data` is false, real execution must be refused even when a manifest is syntactically valid.
 
 ## Output contract
 
@@ -123,7 +138,6 @@ Dry-run results are not biological results. Demo runs only prove that the tutori
 - `references/workflow_dag.json`
 - `references/adapter_spec.yaml`
 - `references/adapter_review.yaml`
-- `references/examples_catalog.yaml`
 - `references/notebook_execution_policy.json`
 - `references/api_reference.md`
 - `references/paper_summary.md`

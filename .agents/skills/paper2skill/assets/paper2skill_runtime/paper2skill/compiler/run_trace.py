@@ -28,6 +28,10 @@ def build_empty_run_trace(*, skill_dir: str | Path | None = None, example_id: st
         "stderr_tail": "",
         "failure_repairs": [],
         "output_validation": {"status": "not_run"},
+        "adapter_report": {},
+        "result_json": {},
+        "promotion_ready": False,
+        "promotion_rejections": [],
         "resource_usage": {},
     }
 
@@ -46,10 +50,12 @@ def ingest_run_directory(run_dir: str | Path, *, skill_dir: str | Path | None = 
     )
     trace["input_bindings"] = load_first_mapping([root / "workflow" / "plan.json", root / "input_manifest.yaml", root / "manifest.yaml"])
     trace["install_plan"] = load_first_mapping([root / "qc" / "missing_dependencies.json", root / "install_plan.json"])
+    trace["adapter_report"] = load_first_mapping([root / "workflow" / "adapter_report.json"])
+    trace["result_json"] = load_first_mapping([root / "result.json"])
     trace["stdout_tail"] = tail_first_existing([root / "stdout.log", root / "logs" / "stdout.log", root / "logs" / "run.log"])
     trace["stderr_tail"] = tail_first_existing([root / "stderr.log", root / "logs" / "stderr.log"])
     trace["status"] = "pass" if run_trace_passed(trace) else "fail"
-    return trace
+    return annotate_run_trace_promotion(trace)
 
 
 def run_trace_passed(trace: dict[str, Any]) -> bool:
@@ -59,6 +65,55 @@ def run_trace_passed(trace: dict[str, Any]) -> bool:
     validation = trace.get("output_validation") if isinstance(trace.get("output_validation"), dict) else {}
     if validation.get("status") == "pass":
         return True
+    return False
+
+
+def run_trace_promotion_ready(trace: dict[str, Any]) -> bool:
+    return not run_trace_promotion_rejections(trace)
+
+
+def annotate_run_trace_promotion(trace: dict[str, Any]) -> dict[str, Any]:
+    rejections = run_trace_promotion_rejections(trace)
+    trace["promotion_ready"] = not rejections
+    trace["promotion_rejections"] = rejections
+    return trace
+
+
+def run_trace_promotion_rejections(trace: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    status = str(trace.get("status") or "").lower()
+    if status not in {"pass", "success", "ingested"}:
+        reasons.append("run_trace_status_not_passed")
+    validation = trace.get("output_validation") if isinstance(trace.get("output_validation"), dict) else {}
+    if validation.get("status") != "pass":
+        reasons.append("run_trace_output_validation_not_passed")
+    if run_trace_is_demo(trace):
+        reasons.append("demo_trace_not_promotable")
+    result = trace.get("result_json") if isinstance(trace.get("result_json"), dict) else {}
+    if str(result.get("status") or "").lower() == "dry_run":
+        reasons.append("dry_run_trace_not_promotable")
+    adapter_report = trace.get("adapter_report") if isinstance(trace.get("adapter_report"), dict) else {}
+    if not adapter_report:
+        reasons.append("adapter_report_missing")
+    elif str(adapter_report.get("status") or "").lower() != "pass":
+        reasons.append("adapter_execution_not_passed")
+    return reasons
+
+
+def run_trace_is_demo(trace: dict[str, Any]) -> bool:
+    adapter_report = trace.get("adapter_report") if isinstance(trace.get("adapter_report"), dict) else {}
+    if adapter_report.get("demo_mode") is True:
+        return True
+    result = trace.get("result_json") if isinstance(trace.get("result_json"), dict) else {}
+    if result.get("demo_mode") is True:
+        return True
+    for container in [trace.get("input_bindings"), result.get("workflow_summary")]:
+        if not isinstance(container, dict):
+            continue
+        manifest = container.get("manifest") if isinstance(container.get("manifest"), dict) else container
+        mode = (((manifest.get("inputs") or {}).get("algorithm") or {}).get("mode"))
+        if str(mode).lower() == "demo":
+            return True
     return False
 
 

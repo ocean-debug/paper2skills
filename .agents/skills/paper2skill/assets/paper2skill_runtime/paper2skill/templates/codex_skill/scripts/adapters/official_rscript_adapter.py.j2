@@ -263,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = load_mapping(manifest_path)
     example = selected_example(example_id_from_manifest(manifest, argv[2] if len(argv) == 3 else None))
     if not example:
-        return fail(out, "selected_example_not_found", "selected example is missing from examples_catalog.yaml")
+        return fail(out, "selected_example_not_found", "selected example is missing from tutorial_catalog.yaml")
     adapter = selected_adapter(example)
     repo = source_repo(manifest)
     if repo is None:

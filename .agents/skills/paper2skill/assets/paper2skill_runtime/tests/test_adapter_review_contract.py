@@ -212,6 +212,141 @@ def import_module_from_path(name: str, path: Path):
     return module
 
 
+def import_preflight_module(tmp_path: Path):
+    template_root = RUNTIME_ROOT / "paper2skill" / "templates" / "codex_skill"
+    skill_root = tmp_path / "contract-aware-skill"
+    scripts = skill_root / "scripts"
+    references = skill_root / "references" / "contracts"
+    references.mkdir(parents=True)
+    for source, target in {
+        "scripts/preflight.py.j2": scripts / "preflight.py",
+        "scripts/env_manager.py.j2": scripts / "env_manager.py",
+    }.items():
+        write_child_template(template_root, source, target)
+    original_sys_path = list(sys.path)
+    for module_name in ["_paper2skill_preflight_contract", "env_manager"]:
+        sys.modules.pop(module_name, None)
+    try:
+        module = import_module_from_path("_paper2skill_preflight_contract", scripts / "preflight.py")
+    finally:
+        sys.path[:] = original_sys_path
+        sys.modules.pop("env_manager", None)
+    return skill_root, module
+
+
+def test_preflight_refuses_matrix_state_contract_mismatch(tmp_path: Path) -> None:
+    skill_root, preflight_module = import_preflight_module(tmp_path)
+    contracts = skill_root / "references" / "contracts"
+    (contracts / "bio_contract.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "bio_contract": {
+                    "modality": {"primary": {"value": "scRNA-seq", "confidence": "high"}},
+                    "organism": {},
+                    "input_matrix_state": {
+                        "raw_counts_required": {"value": True, "confidence": "high"},
+                        "normalized_input_disallowed": {"value": True, "confidence": "high"},
+                    },
+                    "metadata_requirements": {},
+                    "modality_contracts": {},
+                    "interpretation_boundary": {},
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (contracts / "io_contract.yaml").write_text(
+        yaml.safe_dump({"input_contract": {"required": {"primary_data": {"format": {"value": "h5ad", "confidence": "high"}}}}}, sort_keys=False),
+        encoding="utf-8",
+    )
+    manifest = {
+        "inputs": {
+            "primary_data": {"path": "assets/input.h5ad", "format": "h5ad", "exists": False, "matrix_state": "log_normalized"},
+            "metadata": {},
+            "algorithm": {"mode": "official_example_attempt"},
+        }
+    }
+
+    result = preflight_module.validate_inputs(manifest)
+
+    assert result["status"] == "blocked_input_invalid"
+    assert any(item["code"] == "matrix_state_contract_mismatch" for item in result["refusal_reasons"])
+    assert any("raw counts required" in error for error in result["errors"])
+
+
+def test_preflight_refuses_missing_metadata_contract(tmp_path: Path) -> None:
+    skill_root, preflight_module = import_preflight_module(tmp_path)
+    contracts = skill_root / "references" / "contracts"
+    (contracts / "bio_contract.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "bio_contract": {
+                    "modality": {"primary": {"value": "bulk RNA-seq", "confidence": "high"}},
+                    "organism": {},
+                    "input_matrix_state": {},
+                    "metadata_requirements": {"condition_key": {"value": "condition", "confidence": "high"}},
+                    "modality_contracts": {},
+                    "interpretation_boundary": {},
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (contracts / "io_contract.yaml").write_text(
+        yaml.safe_dump({"input_contract": {"required": {"primary_data": {"format": {"value": "csv", "confidence": "high"}}}}}, sort_keys=False),
+        encoding="utf-8",
+    )
+    manifest = {
+        "inputs": {
+            "primary_data": {"path": "assets/counts.csv", "format": "csv", "exists": False},
+            "metadata": {},
+            "algorithm": {"mode": "official_example_attempt"},
+        }
+    }
+
+    result = preflight_module.validate_inputs(manifest)
+
+    assert result["status"] == "blocked_input_invalid"
+    assert result["refusal_reasons"] == result["error_details"]
+    assert any(item["code"] == "metadata_contract_mismatch" for item in result["refusal_reasons"])
+    assert any("missing required metadata field" in error for error in result["errors"])
+
+
+def test_preflight_refuses_unsupported_applicability_task(tmp_path: Path) -> None:
+    skill_root, preflight_module = import_preflight_module(tmp_path)
+    contracts = skill_root / "references" / "contracts"
+    (contracts / "algorithm_contract.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "algorithm": {"name": "Demo", "task": "single_cell_integration"},
+                "applicability": {
+                    "supported_task": "single_cell_integration",
+                    "domain": "bioinformatics",
+                    "modality": "scRNA-seq",
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "inputs": {
+            "analysis": {"task": "differential_expression", "domain": "bioinformatics", "modality": "scRNA-seq"},
+            "primary_data": {"path": "assets/input.h5ad", "format": "h5ad", "exists": False},
+            "metadata": {},
+            "algorithm": {"mode": "official_example_attempt"},
+        }
+    }
+
+    result = preflight_module.validate_inputs(manifest)
+
+    assert result["status"] == "blocked_input_invalid"
+    assert any(item["code"] == "unsupported_task" for item in result["refusal_reasons"])
+    assert any("applicability.supported_task" in error for error in result["errors"])
+
+
 def test_child_run_status_is_resolved_per_selected_example(tmp_path: Path) -> None:
     template_root = RUNTIME_ROOT / "paper2skill" / "templates" / "codex_skill"
     skill_root = tmp_path / "example-gated-skill"
@@ -323,6 +458,73 @@ def test_one_verified_example_does_not_unlock_dry_run_only_example(tmp_path: Pat
     assert adapter_report["global_adapter_status"] == "verified"
 
 
+def test_child_run_blocks_when_algorithm_contract_disallows_real_execution(tmp_path: Path) -> None:
+    template_root = RUNTIME_ROOT / "paper2skill" / "templates" / "codex_skill"
+    skill_root = tmp_path / "contract-gated-run-skill"
+    scripts = skill_root / "scripts"
+    references = skill_root / "references"
+    contracts = references / "contracts"
+    assets = skill_root / "assets"
+    contracts.mkdir(parents=True)
+    assets.mkdir()
+
+    for source, target in {
+        "scripts/run.py.j2": scripts / "run.py",
+        "scripts/env_manager.py.j2": scripts / "env_manager.py",
+    }.items():
+        write_child_template(template_root, source, target)
+    (scripts / "preflight.py").write_text(
+        "from pathlib import Path\nimport sys\nout=Path(sys.argv[sys.argv.index('--out')+1])\n"
+        "(out/'qc').mkdir(parents=True, exist_ok=True)\n"
+        "for name in ['input_validation.json','environment_report.json','missing_dependencies.json']:\n"
+        "    (out/'qc'/name).write_text('{}', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    (scripts / "plan.py").write_text(
+        "from pathlib import Path\nimport sys\nout=Path(sys.argv[sys.argv.index('--out')+1])\n"
+        "(out/'workflow').mkdir(parents=True, exist_ok=True)\n"
+        "(out/'workflow'/'plan.json').write_text('{\"evidence_used\": []}', encoding='utf-8')\n"
+        "(out/'workflow'/'plan.md').write_text('# plan\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    manifest_path = assets / "manifest.json"
+    manifest_path.write_text(json.dumps({"inputs": {"algorithm": {"mode": "official_example_attempt"}}}), encoding="utf-8")
+    (references / "adapter_spec.yaml").write_text(
+        json.dumps({"adapter_type": "workflow_engine", "status": "verified", "entrypoint": "x", "command": "x", "caveats": []}),
+        encoding="utf-8",
+    )
+    (references / "maturity.yaml").write_text(json.dumps({"level": "L2", "status": "official_or_minimal_example_verified"}), encoding="utf-8")
+    (references / "tutorial_catalog.yaml").write_text(
+        json.dumps({"default_example_id": "verified_demo", "examples": [{"example_id": "verified_demo", "adapter": {"status": "verified"}}]}),
+        encoding="utf-8",
+    )
+    (contracts / "algorithm_contract.yaml").write_text(
+        json.dumps(
+            {
+                "applicability": {"real_execution_allowed": False, "allowed_execution_modes": ["preflight", "plan", "dry_run"]},
+                "recommended_execution": {"can_execute_real_data": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    original_sys_path = list(sys.path)
+    for module_name in ["_paper2skill_child_run_contract_gate", "env_manager"]:
+        sys.modules.pop(module_name, None)
+    try:
+        run_module = import_module_from_path("_paper2skill_child_run_contract_gate", scripts / "run.py")
+        rc = run_module.main(["--manifest", str(manifest_path), "--out", str(skill_root / "result")])
+    finally:
+        sys.path[:] = original_sys_path
+        for module_name in ["_paper2skill_child_run_contract_gate", "env_manager"]:
+            sys.modules.pop(module_name, None)
+
+    assert rc == 2
+    adapter_report = json.loads((skill_root / "result" / "workflow" / "adapter_report.json").read_text(encoding="utf-8"))
+    assert adapter_report["status"] == "blocked_applicability_contract"
+    assert adapter_report["refusal_reasons"][0]["code"] == "real_execution_not_allowed"
+
+
 def test_child_run_fails_unknown_explicit_example_even_during_verification(tmp_path: Path) -> None:
     template_root = RUNTIME_ROOT / "paper2skill" / "templates" / "codex_skill"
     skill_root = tmp_path / "example-run-missing-skill"
@@ -387,7 +589,7 @@ def test_child_run_fails_unknown_explicit_example_even_during_verification(tmp_p
     adapter_report = json.loads((skill_root / "result" / "workflow" / "adapter_report.json").read_text(encoding="utf-8"))
     assert adapter_report["status"] == "fail"
     assert adapter_report["example_id"] == "missing"
-    assert "missing from examples_catalog" in adapter_report["message"]
+    assert "missing from tutorial_catalog" in adapter_report["message"]
 
 
 def test_child_run_fails_explicit_example_when_catalog_has_no_examples(tmp_path: Path) -> None:
@@ -503,7 +705,7 @@ def test_mark_verified_only_updates_selected_example(tmp_path: Path) -> None:
     (references / "adapter_spec.yaml").write_text(json.dumps({"adapter_type": "notebook", "status": "dry_run_only"}), encoding="utf-8")
     (references / "adapter_review.yaml").write_text(json.dumps({"adapter_type": "notebook", "status": "dry_run_only", "expected_outputs": []}), encoding="utf-8")
     (references / "algorithm_contract.yaml").write_text(json.dumps({"algorithm": {"adapter_status": "dry_run_only", "maturity_level": "L1"}}), encoding="utf-8")
-    (references / "examples_catalog.yaml").write_text(
+    (references / "tutorial_catalog.yaml").write_text(
         json.dumps(
             {
                 "default_example_id": "demo_a",
@@ -527,7 +729,7 @@ def test_mark_verified_only_updates_selected_example(tmp_path: Path) -> None:
 
     spec = yaml.safe_load((references / "adapter_spec.yaml").read_text(encoding="utf-8"))
     review = yaml.safe_load((references / "adapter_review.yaml").read_text(encoding="utf-8"))
-    catalog = yaml.safe_load((references / "examples_catalog.yaml").read_text(encoding="utf-8"))
+    catalog = yaml.safe_load((references / "tutorial_catalog.yaml").read_text(encoding="utf-8"))
     statuses = {item["example_id"]: item["adapter"]["status"] for item in catalog["examples"]}
 
     assert spec["status"] == "verified"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 
@@ -19,6 +20,8 @@ class TutorialCandidate:
     section_anchor: str | None = None
     source_path: str | None = None
     code_block_index: int | None = None
+    indexed_from: str | None = None
+    missing_index_target: str | None = None
 
 
 TUTORIAL_SUFFIXES = {".ipynb", ".md", ".rst", ".rmd", ".r", ".py"}
@@ -75,7 +78,15 @@ def scan_tutorial_candidates(repo_root: str | Path) -> dict[str, Any]:
                     )
                 )
     candidates.sort(key=lambda item: (not item.include_in_tools, item.priority, item.path))
-    return {"candidates": candidates, "report": {"total": len(candidates), "included": sum(1 for item in candidates if item.include_in_tools)}}
+    missing_indexed = indexed_tutorial_gaps(root, paths)
+    return {
+        "candidates": candidates,
+        "report": {
+            "total": len(candidates),
+            "included": sum(1 for item in candidates if item.include_in_tools),
+            "missing_indexed_tutorials": missing_indexed,
+        },
+    }
 
 
 def is_excluded(path: Path, root: Path) -> bool:
@@ -172,3 +183,96 @@ def priority_for(path: Path, rel: str) -> int:
     if lower.startswith(("vignettes/", "tutorials/", "examples/", "notebooks/")):
         return base + 1
     return base + 3
+
+
+def indexed_tutorial_gaps(root: Path, paths: list[Path]) -> list[dict[str, str]]:
+    existing = {path.relative_to(root).as_posix() for path in paths}
+    gaps: dict[tuple[str, str], dict[str, str]] = {}
+    for path in paths:
+        if path.suffix.lower() not in {".rst", ".md"}:
+            continue
+        rel = path.relative_to(root).as_posix()
+        for target in indexed_tutorial_targets(path, root):
+            if target in existing:
+                continue
+            gaps[(rel, target)] = {"index": rel, "target": target, "reason": "indexed_tutorial_missing"}
+    return list(gaps.values())
+
+
+def indexed_tutorial_targets(path: Path, root: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    candidates: list[str] = []
+    lines = text.splitlines()
+    in_toctree = False
+    toctree_indent: int | None = None
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith(".. toctree::"):
+            in_toctree = True
+            toctree_indent = None
+            continue
+        if in_toctree:
+            if not stripped:
+                continue
+            indent = len(line) - len(line.lstrip())
+            if toctree_indent is None and stripped.startswith(":"):
+                continue
+            if toctree_indent is None:
+                toctree_indent = indent
+            if indent < toctree_indent:
+                in_toctree = False
+            elif not stripped.startswith(":"):
+                candidates.append(index_target_from_line(stripped))
+                continue
+        for match in re.finditer(r"\(([^)]+\.(?:ipynb|md|rst|rmd|py|r))\)", line):
+            candidates.append(match.group(1))
+        for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", line):
+            target = match.group(1)
+            if looks_like_indexed_tutorial_ref(target):
+                candidates.append(target)
+    resolved = []
+    for value in candidates:
+        if not value:
+            continue
+        if "://" in value or value.startswith("#"):
+            continue
+        target = value.split("#", 1)[0].strip()
+        if not target:
+            continue
+        target_path = resolve_index_target(path.parent, target)
+        try:
+            resolved.append(target_path.relative_to(root.resolve()).as_posix())
+        except ValueError:
+            continue
+    return sorted(dict.fromkeys(resolved))
+
+
+def index_target_from_line(stripped: str) -> str:
+    match = re.search(r"<([^>]+)>", stripped)
+    if match:
+        return match.group(1).strip()
+    return stripped.split()[0]
+
+
+def resolve_index_target(base: Path, target: str) -> Path:
+    candidate = base / target
+    if candidate.suffix:
+        return candidate.resolve()
+    for suffix in [".ipynb", ".rst", ".md", ".rmd", ".py", ".r"]:
+        suffixed = candidate.with_suffix(suffix)
+        if suffixed.exists():
+            return suffixed.resolve()
+    return candidate.with_suffix(".ipynb").resolve()
+
+
+def looks_like_indexed_tutorial_ref(target: str) -> bool:
+    if "://" in target or target.startswith("#"):
+        return False
+    clean = target.split("#", 1)[0].strip().lower()
+    if not clean:
+        return False
+    suffix = Path(clean).suffix
+    if suffix in TUTORIAL_SUFFIXES:
+        return True
+    parts = {part for part in clean.replace("\\", "/").split("/") if part}
+    return bool(parts & {"tutorial", "tutorials", "example", "examples", "notebook", "notebooks", "vignette", "vignettes"})

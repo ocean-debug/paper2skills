@@ -13,10 +13,11 @@ import yaml
 from paper2skill.build_validation import VALIDATION_DEPTHS, validate_build
 from paper2skill.common import slugify
 from paper2skill.common import ensure_dir, write_json, write_yaml
-from paper2skill.compiler import ingest_run_directory, promote_from_run_trace
+from paper2skill.compiler import annotate_run_trace_promotion, ingest_run_directory, promote_from_run_trace, update_algorithm_contract_after_promotion
 from paper2skill.evaluation.run_benchmark import run_benchmark
 from paper2skill.generators.codex_skill_generator import build_context, example_inputs, generate_skill, plan_outputs
 from paper2skill.runtime.env_manager import inspect_environment, load_environment_spec, public_environment_report
+from paper2skill.reproduction.agentic import ReproduceConfig, run_agentic_reproduction
 from paper2skill.validators.skill_validator import validate_skill
 
 
@@ -50,6 +51,22 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--example-id", default=None, help="Example id from references/tutorial_catalog.yaml to verify for data_smoke/live_execute.")
     build.add_argument("--example-data-url", action="append", default=[], help="Official tutorial data URL to include in the generated examples catalog.")
 
+    reproduce = sub.add_parser("reproduce", help="Build, smoke-run, repair, and promote a generated skill to verified when execution is approved.")
+    add_input_args(reproduce)
+    add_generation_metadata_args(reproduce)
+    reproduce.add_argument("--example", choices=["toy_python", "toy_r"], default=None)
+    reproduce.add_argument("--out", default=None)
+    reproduce.add_argument("--confirm-run", choices=["yes", "no"], default="no")
+    reproduce.add_argument("--install-policy", choices=["never", "plan", "yes"], default="never")
+    reproduce.add_argument("--repair-budget", type=int, default=2)
+    reproduce.add_argument("--smoke-timeout", type=int, default=600)
+    reproduce.add_argument("--data-cache-dir", default=None)
+    reproduce.add_argument("--target-maturity", choices=["L2", "L3", "L4"], default="L2")
+    reproduce.add_argument("--validation-python", default=None)
+    reproduce.add_argument("--validation-env-prefix", default=None)
+    reproduce.add_argument("--example-id", default=None)
+    reproduce.add_argument("--example-data-url", action="append", default=[], help="Official tutorial data URL to include in the generated examples catalog.")
+
     validate = sub.add_parser("validate", help="Validate a generated skill.")
     validate.add_argument("--skill", required=True)
     validate.add_argument("--json", action="store_true", dest="as_json")
@@ -69,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--example-id", default=None)
     ingest.add_argument("--out", default="paper2skill_run_trace")
 
-    promote = sub.add_parser("promote", help="Promote a generated skill using a passing run trace.")
+    promote = sub.add_parser("promote", help="Promote a generated skill using a promotion-ready run trace.")
     promote.add_argument("--skill", required=True)
     promote.add_argument("--run-trace", required=True)
     promote.add_argument("--example-id", default=None)
@@ -102,6 +119,7 @@ def add_input_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-execute-tutorials", action="store_true")
     parser.add_argument("--strict-evidence", action="store_true")
     parser.add_argument("--tutorial-filter", default=None)
+    parser.add_argument("--catalog-all-tutorials", action="store_true")
     parser.add_argument("--adapter-review", default=None)
     parser.add_argument("--tutorial", action="append", default=[])
     parser.add_argument("--maturity-target", default=None)
@@ -128,6 +146,7 @@ def command_plan(args: argparse.Namespace) -> int:
         no_execute_tutorials=args.no_execute_tutorials,
         strict_evidence=args.strict_evidence,
         tutorial_filter=args.tutorial_filter,
+        catalog_all_tutorials=args.catalog_all_tutorials,
         adapter_review=args.adapter_review,
         collection_dir=Path(args.out) / ".paper2skill_collection",
         maturity_level=args.maturity_target or "L1",
@@ -165,6 +184,7 @@ def command_build(args: argparse.Namespace) -> int:
         "no_execute_tutorials": args.no_execute_tutorials,
         "strict_evidence": args.strict_evidence,
         "tutorial_filter": args.tutorial_filter,
+        "catalog_all_tutorials": args.catalog_all_tutorials,
         "adapter_review": args.adapter_review,
         "example_data_urls": args.example_data_url or None,
     }.items():
@@ -214,7 +234,7 @@ def validate_build_inputs(args: argparse.Namespace) -> list[str]:
         errors.extend(validate_existing_dir("--repo", args.repo))
     elif args.repo.startswith("file://"):
         errors.extend(validate_existing_dir("--repo", file_url_path(args.repo)))
-    if not (args.tutorial or args.tutorial_filter):
+    if not (args.tutorial or args.tutorial_filter or args.catalog_all_tutorials):
         errors.append("build requires official tutorial/example evidence: provide --tutorial or --tutorial-filter.")
     for tutorial in args.tutorial or []:
         errors.extend(validate_tutorial_file(tutorial, args.repo))
@@ -282,18 +302,102 @@ def validate_resolved_evidence(args: argparse.Namespace, context: dict[str, Any]
     tutorial_trace = context.get("tutorial_trace") if isinstance(context.get("tutorial_trace"), dict) else {}
     tutorials = tutorial_trace.get("tutorials") if isinstance(tutorial_trace.get("tutorials"), list) else []
     if args.tutorial:
-        for index, requested in enumerate(args.tutorial):
-            trace = tutorials[index] if index < len(tutorials) and isinstance(tutorials[index], dict) else {}
-            if trace.get("error"):
+        for requested in args.tutorial:
+            trace = find_tutorial_trace(tutorials, requested)
+            if trace is None or trace.get("error"):
                 errors.append(f"build could not resolve --tutorial evidence after repository inspection: {requested}")
-        if len(tutorials) < len(args.tutorial):
-            for requested in args.tutorial[len(tutorials) :]:
-                errors.append(f"build could not inspect --tutorial evidence after repository inspection: {requested}")
     elif args.tutorial_filter:
-        resolved = [trace for trace in tutorials if isinstance(trace, dict) and not trace.get("error")]
+        resolved = [trace for trace in tutorials if isinstance(trace, dict) and not trace.get("error") and tutorial_trace_matches_filter(trace, args.tutorial_filter)]
         if not resolved:
             errors.append(f"build could not find tutorial/example evidence matching --tutorial-filter: {args.tutorial_filter}")
+    scanner_report = tutorial_trace.get("tutorial_scanner_report") if isinstance(tutorial_trace.get("tutorial_scanner_report"), dict) else {}
+    missing_indexed = scanner_report.get("missing_indexed_tutorials") if isinstance(scanner_report.get("missing_indexed_tutorials"), list) else []
+    if getattr(args, "strict_evidence", False) and missing_indexed:
+        missing = ", ".join(str(item.get("target") or item) for item in missing_indexed if isinstance(item, dict))
+        errors.append(f"repo tutorial index references missing tutorial files: {missing}")
     return errors
+
+
+def find_tutorial_trace(tutorials: list[Any], requested: str) -> dict[str, Any] | None:
+    requested_path = str(requested).replace("\\", "/").split("#", 1)[0]
+    requested_name = Path(requested_path).name
+    for trace in tutorials:
+        if not isinstance(trace, dict):
+            continue
+        path = str(trace.get("path") or "").replace("\\", "/").split("#", 1)[0]
+        if path == requested_path or path.endswith(f"/{requested_path}") or (requested_name and Path(path).name == requested_name):
+            return trace
+    return None
+
+
+def tutorial_trace_matches_filter(trace: dict[str, Any], tutorial_filter: str) -> bool:
+    needles = [part.strip().lower() for part in str(tutorial_filter or "").split("|") if part.strip()]
+    if not needles:
+        return True
+    haystack = "\n".join(str(trace.get(key) or "") for key in ["path", "title", "source", "source_path"]).lower()
+    return any(needle in haystack for needle in needles)
+
+
+def command_reproduce(args: argparse.Namespace) -> int:
+    args.catalog_all_tutorials = True
+    input_errors = validate_build_inputs(args)
+    if input_errors:
+        for error in input_errors:
+            print(f"ERROR: {error}")
+        return 2
+    values: dict[str, Any] = {}
+    if args.example:
+        values.update(example_inputs(args.example))
+    for key, value in {
+        "skill_name": args.skill_name,
+        "algorithm_name": args.algorithm_name,
+        "task": args.task,
+        "paper": args.paper,
+        "repo": args.repo,
+        "tutorials": args.tutorial or None,
+        "paper_url": args.paper_url,
+        "paper_title": args.paper_title,
+        "maturity_level": args.maturity_target,
+        "repo_ref": args.repo_ref,
+        "skip_repo_clone": args.skip_repo_clone,
+        "no_execute_tutorials": args.no_execute_tutorials,
+        "strict_evidence": args.strict_evidence,
+        "tutorial_filter": args.tutorial_filter,
+        "catalog_all_tutorials": True,
+        "adapter_review": args.adapter_review,
+        "example_data_urls": args.example_data_url or None,
+    }.items():
+        if value is not None and value != "" and value != [] and value is not False:
+            values[key] = value
+    if args.out:
+        out_dir = Path(args.out)
+    else:
+        inferred_name = values.get("skill_name") or values.get("algorithm_name") or "generated-skill"
+        out_dir = Path(".agents") / "skills" / slugify(str(inferred_name))
+    values["collection_dir"] = out_dir.parent / ".paper2skill_collection" / out_dir.name
+    context = build_context(**values)
+    evidence_errors = validate_resolved_evidence(args, context)
+    if evidence_errors:
+        for error in evidence_errors:
+            print(f"ERROR: {error}")
+        return 2
+    result = run_agentic_reproduction(
+        context,
+        out_dir,
+        ReproduceConfig(
+            confirm_run=args.confirm_run == "yes",
+            install_policy=args.install_policy,
+            repair_budget=max(0, args.repair_budget),
+            smoke_timeout=args.smoke_timeout,
+            data_cache_dir=args.data_cache_dir,
+            target_maturity=args.target_maturity,
+            validation_python=args.validation_python,
+            validation_env_prefix=args.validation_env_prefix,
+            example_id=args.example_id,
+        ),
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("status") == "pass" else 2
 
 
 def generate_with_build_validation(
@@ -490,6 +594,7 @@ def command_run_example(args: argparse.Namespace) -> int:
     trace = ingest_run_directory(result_dir, skill_dir=skill, example_id=args.example_id)
     trace["status"] = "pass" if status == "pass" and trace.get("output_validation", {}).get("status") == "pass" else status
     trace["commands"] = command_records
+    annotate_run_trace_promotion(trace)
     write_json(trace_path, trace)
     print(f"Wrote run trace to {trace_path}")
     return 0 if trace.get("status") == "pass" else 2
@@ -531,7 +636,6 @@ def command_promote(args: argparse.Namespace) -> int:
         write_yaml(target / "references" / "adapter_spec.yaml", result["adapter_spec"])
         write_yaml(target / "references" / "adapter_review.yaml", result["adapter_review"])
         write_yaml(target / "references" / "tutorial_catalog.yaml", result["tutorial_catalog"])
-        write_yaml(target / "references" / "examples_catalog.yaml", result["tutorial_catalog"])
         write_yaml(target / "references" / "maturity.yaml", result["maturity"])
         write_yaml(target / "references" / "contracts" / "algorithm_contract.yaml", updated_algorithm_contract)
         write_yaml(target / "references" / "contracts" / "adapter_contract.yaml", result["adapter_spec"])
@@ -580,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_triage_plan(args)
     if args.command == "build":
         return command_build(args)
+    if args.command == "reproduce":
+        return command_reproduce(args)
     if args.command == "validate":
         return command_validate(args)
     if args.command == "run-example":
@@ -611,16 +717,6 @@ def load_mapping(path: Path) -> dict[str, Any]:
 
 def resolve_cli_path(value: str | Path) -> Path:
     return Path(value).expanduser().resolve()
-
-
-def update_algorithm_contract_after_promotion(algorithm_contract: dict[str, Any], adapter_spec: dict[str, Any], maturity: dict[str, Any]) -> dict[str, Any]:
-    updated = dict(algorithm_contract)
-    algorithm = dict(updated.get("algorithm") or {})
-    algorithm["adapter_status"] = adapter_spec.get("status", algorithm.get("adapter_status"))
-    algorithm["maturity_level"] = maturity.get("level", algorithm.get("maturity_level"))
-    updated["algorithm"] = algorithm
-    updated["maturity"] = maturity
-    return updated
 
 
 def tail_text(value: object, *, max_chars: int = 4000) -> str:

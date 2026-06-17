@@ -132,6 +132,67 @@ def validate_contracts(manifest: dict, io_contract: dict, bio_contract: dict) ->
     return errors
 
 
+def validate_applicability(manifest: dict, algorithm_contract: dict) -> list[str]:
+    errors: list[str] = []
+    if algorithm_contract.get("_load_error") or is_demo_manifest(manifest):
+        return errors
+    applicability = algorithm_contract.get("applicability") if isinstance(algorithm_contract.get("applicability"), dict) else {}
+    expected_task = confirmed_value(applicability.get("supported_task"))
+    expected_domain = confirmed_value(applicability.get("domain"))
+    expected_modality = confirmed_value(applicability.get("modality"))
+    actual_task = manifest_analysis_value(manifest, ["task", "goal", "analysis_task"], algorithm_keys=["task", "goal"])
+    actual_domain = manifest_analysis_value(manifest, ["domain", "analysis_domain"])
+    actual_modality = manifest_analysis_value(manifest, ["modality", "data_modality"], primary_keys=["modality"], bio_context_keys=["modality"])
+    if expected_task is not None and actual_task is not None and not semantic_value_matches(expected_task, actual_task):
+        errors.append("inputs.analysis.task violates applicability.supported_task: expected %s, got %s" % (expected_task, actual_task))
+    if expected_domain is not None and actual_domain is not None and not semantic_value_matches(expected_domain, actual_domain):
+        errors.append("inputs.analysis.domain violates applicability.domain: expected %s, got %s" % (expected_domain, actual_domain))
+    if expected_modality is not None and actual_modality is not None and not semantic_value_matches(expected_modality, actual_modality):
+        errors.append("inputs.analysis.modality violates applicability.modality: expected %s, got %s" % (expected_modality, actual_modality))
+    return errors
+
+
+def manifest_analysis_value(
+    manifest: dict,
+    analysis_keys: list[str],
+    *,
+    algorithm_keys: list[str] | None = None,
+    primary_keys: list[str] | None = None,
+    bio_context_keys: list[str] | None = None,
+) -> object | None:
+    inputs = manifest.get("inputs") or {}
+    analysis = inputs.get("analysis") if isinstance(inputs.get("analysis"), dict) else {}
+    algorithm = inputs.get("algorithm") if isinstance(inputs.get("algorithm"), dict) else {}
+    primary = inputs.get("primary_data") if isinstance(inputs.get("primary_data"), dict) else {}
+    bio_context = inputs.get("bio_context") if isinstance(inputs.get("bio_context"), dict) else {}
+    for source, keys in [
+        (analysis, analysis_keys),
+        (algorithm, algorithm_keys or []),
+        (primary, primary_keys or []),
+        (bio_context, bio_context_keys or []),
+    ]:
+        for key in keys:
+            value = confirmed_value(source.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def semantic_value_matches(expected: object, actual: object) -> bool:
+    expected_key = normalize_token(expected)
+    actual_key = normalize_token(actual)
+    if expected_key == actual_key:
+        return True
+    if expected_key in actual_key or actual_key in expected_key:
+        return True
+    aliases = {
+        "scrna_seq": {"single_cell_rna_seq", "single_cell_rnaseq", "sc_rna_seq", "scrnaseq"},
+        "single_cell_rna_seq": {"scrna_seq", "sc_rna_seq", "scrnaseq"},
+        "bulk_rna_seq": {"bulk_rnaseq", "rnaseq"},
+    }
+    return actual_key in aliases.get(expected_key, set()) or expected_key in aliases.get(actual_key, set())
+
+
 def is_demo_manifest(manifest: dict) -> bool:
     mode = (((manifest.get("inputs") or {}).get("algorithm") or {}).get("mode"))
     return str(mode).lower() == "demo"
@@ -425,8 +486,61 @@ def validate_inputs(manifest: dict) -> dict:
         errors.append("inputs.algorithm.mode is required")
     io_contract = load_contract("io_contract.yaml")
     bio_contract = load_contract("bio_contract.yaml")
+    algorithm_contract = load_contract("algorithm_contract.yaml")
+    errors.extend(validate_applicability(manifest, algorithm_contract))
     errors.extend(validate_contracts(manifest, io_contract, bio_contract))
-    return {"status": "pass" if not errors else "blocked_input_invalid", "errors": errors}
+    details = refusal_details(errors)
+    return {
+        "status": "pass" if not errors else "blocked_input_invalid",
+        "errors": errors,
+        "error_details": details,
+        "refusal_reasons": details,
+    }
+
+
+def refusal_details(errors: list[str]) -> list[dict]:
+    return [refusal_detail(error) for error in errors]
+
+
+def refusal_detail(error: str) -> dict:
+    text = str(error)
+    lowered = text.lower()
+    if "primary data does not exist" in lowered:
+        return refusal("input_file_missing", text, "inputs.primary_data.path")
+    if "inputs.primary_data.path is required" in lowered:
+        return refusal("input_path_required", text, "inputs.primary_data.path")
+    if "inputs.algorithm.mode is required" in lowered:
+        return refusal("algorithm_mode_required", text, "inputs.algorithm.mode")
+    if "applicability.supported_task" in lowered:
+        return refusal("unsupported_task", text, "inputs.analysis.task")
+    if "applicability.domain" in lowered:
+        return refusal("unsupported_domain", text, "inputs.analysis.domain")
+    if "applicability.modality" in lowered:
+        return refusal("unsupported_modality", text, "inputs.analysis.modality")
+    if "format violates" in lowered or "format is required" in lowered:
+        return refusal("input_format_contract_mismatch", text, "inputs.primary_data.format")
+    if "raw counts required" in lowered or "matrix_state" in lowered or "normalized input is disallowed" in lowered or "batch-corrected input is disallowed" in lowered:
+        return refusal("matrix_state_contract_mismatch", text, "inputs.primary_data.matrix_state")
+    if "metadata field" in lowered or "missing required metadata field" in lowered:
+        return refusal("metadata_contract_mismatch", text, "inputs.metadata")
+    if "species" in lowered:
+        return refusal("species_contract_mismatch", text, "inputs.primary_data.species")
+    if "genome_build" in lowered:
+        return refusal("genome_build_contract_mismatch", text, "inputs.primary_data.genome_build")
+    if "paired ribo-seq/rna-seq" in lowered:
+        return refusal("paired_modality_input_missing", text, "inputs.primary_data.modalities")
+    if "could not load" in lowered:
+        return refusal("contract_load_error", text, "references/contracts")
+    return refusal("input_contract_violation", text, "inputs")
+
+
+def refusal(code: str, message: str, path: str) -> dict:
+    return {
+        "code": code,
+        "message": message,
+        "path": path,
+        "action": "fix_manifest_or_choose_a_supported_dataset_before_running",
+    }
 
 
 def declares_non_file_source(primary: dict) -> bool:
@@ -452,7 +566,7 @@ def declares_non_file_source(primary: dict) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--manifest", default=str(ROOT / "assets" / "demo_input_manifest.yaml"))
+    parser.add_argument("--manifest", default=str(ROOT / "assets" / "official_attempt_manifest.yaml"))
     parser.add_argument("--out", default=str(ROOT / "result"))
     args = parser.parse_args(argv)
     out = Path(args.out)

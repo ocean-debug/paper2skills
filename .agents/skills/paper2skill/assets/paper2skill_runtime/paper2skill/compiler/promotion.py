@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from paper2skill.compiler.run_trace import run_trace_passed
+from paper2skill.compiler.run_trace import run_trace_promotion_ready, run_trace_promotion_rejections
 
 
 def evaluate_maturity(
@@ -11,7 +11,7 @@ def evaluate_maturity(
     tutorial_catalog: dict[str, Any],
     run_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if run_trace and run_trace_passed(run_trace):
+    if run_trace and run_trace_promotion_ready(run_trace):
         level = "L2"
         status = "official_or_minimal_example_verified"
     else:
@@ -33,7 +33,7 @@ def evaluate_maturity(
         "verified_examples": sorted(item for item in verified_examples if item),
         "levels": {
             "L1": "contract/preflight only",
-            "L2": "official demo or minimal data verified",
+            "L2": "official minimal/example adapter execution verified",
             "L3": "new user data smoke verified",
             "L4": "agentic end-to-end use verified",
         },
@@ -48,10 +48,12 @@ def promote_from_run_trace(
     run_trace: dict[str, Any],
     example_id: str | None = None,
 ) -> dict[str, Any]:
-    if not run_trace_passed(run_trace):
+    promotion_rejections = run_trace_promotion_rejections(run_trace)
+    if promotion_rejections:
         return {
             "promoted": False,
-            "reason": "run_trace_output_validation_not_passed",
+            "reason": promotion_rejections[0],
+            "promotion_rejections": promotion_rejections,
             "adapter_spec": adapter_spec,
             "adapter_review": adapter_review,
             "tutorial_catalog": tutorial_catalog,
@@ -97,6 +99,52 @@ def promote_from_run_trace(
         "tutorial_catalog": next_catalog,
         "maturity": evaluate_maturity(next_spec, next_catalog, run_trace),
     }
+
+
+def update_algorithm_contract_after_promotion(algorithm_contract: dict[str, Any], adapter_spec: dict[str, Any], maturity: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(algorithm_contract)
+    algorithm = dict(updated.get("algorithm") or {})
+    algorithm["adapter_status"] = adapter_spec.get("status", algorithm.get("adapter_status"))
+    algorithm["maturity_level"] = maturity.get("level", algorithm.get("maturity_level"))
+    updated["algorithm"] = algorithm
+    maturity_level = str(maturity.get("level") or algorithm.get("maturity_level") or "L1")
+    adapter_status = str(adapter_spec.get("status") or algorithm.get("adapter_status") or "dry_run_only")
+    real_execution_allowed = adapter_status == "verified" and maturity_level in {"L2", "L3", "L4"}
+    applicability = dict(updated.get("applicability") or {})
+    applicability["adapter_status"] = adapter_status
+    applicability["maturity_level"] = maturity_level
+    applicability["real_execution_allowed"] = real_execution_allowed
+    applicability["allowed_execution_modes"] = ["preflight", "plan", "dry_run"] + (["verified_run"] if real_execution_allowed else [])
+    updated["applicability"] = applicability
+    recommended_execution = dict(updated.get("recommended_execution") or {})
+    recommended_execution.setdefault("default_manifest", "assets/official_attempt_manifest.yaml")
+    recommended_execution.setdefault("template_manifest", "assets/input_manifest_template.yaml")
+    recommended_execution.setdefault("smoke_manifest", "assets/demo_input_manifest.yaml")
+    recommended_execution.setdefault(
+        "entrypoints",
+        {
+            "preflight": "python scripts/preflight.py --manifest assets/official_attempt_manifest.yaml",
+            "plan": "python scripts/plan.py --manifest assets/official_attempt_manifest.yaml",
+            "run": "python scripts/run.py --manifest assets/official_attempt_manifest.yaml",
+            "validate_outputs": "python scripts/validate_outputs.py --result result",
+        },
+    )
+    core_api = dict(recommended_execution.get("core_api") or {})
+    for key in ["adapter_type", "entrypoint", "command", "module", "function"]:
+        value = adapter_spec.get(key)
+        if value not in (None, "", []):
+            core_api.setdefault(key, value)
+    recommended_execution["core_api"] = core_api
+    recommended_execution["adapter_status"] = adapter_status
+    recommended_execution["maturity_level"] = maturity_level
+    recommended_execution.setdefault(
+        "real_execution_requires",
+        ["adapter_status=verified", "non_demo_run_trace", "adapter_report.status=pass", "output_validation.status=pass"],
+    )
+    recommended_execution["can_execute_real_data"] = real_execution_allowed
+    updated["recommended_execution"] = recommended_execution
+    updated["maturity"] = maturity
+    return updated
 
 
 def expected_outputs_from_trace(run_trace: dict[str, Any]) -> list[str]:

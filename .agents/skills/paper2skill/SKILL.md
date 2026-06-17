@@ -28,24 +28,27 @@ its own `SKILL.md`, `scripts/`, `references/`, and `assets/`.
 ## Compiler Workflow
 
 Paper2Skill compiles paper methods into agent-callable child skills through a
-plan-run-plan loop:
+single plan-run-plan loop:
 
 ```text
-thin plan -> controlled run -> promotion plan -> verified reusable skill
+thin plan -> run -> promotion plan -> child skill
 ```
 
-The stable compiler stages are:
+`thin plan` catalogs official tutorials/examples first, then uses paper and
+repository evidence to support contracts, adapter candidates, and applicability
+boundaries. It does not execute code.
 
-1. `collect_sources`
-2. `normalize_evidence`
-3. `build_tutorial_graph`
-4. `rank_execution_candidates`
-5. `run_candidate`
-6. `synthesize_contracts`
-7. `promote_skill`
-8. `evaluate_maturity`
+`run` executes one approved minimal or official example with a reviewed manifest
+and records a run trace.
 
-Each stage must write a machine-readable artifact. Later stages consume those
+`promotion plan` decides whether the trace can promote an adapter. It must
+refuse demo summaries, dry-runs, missing adapter reports, failed adapter
+execution, or failed output validation.
+
+`child skill` is the compact installable skill with preflight, plan, run,
+output validation, contracts, tutorial catalog, evidence summary, and maturity.
+
+Each phase must write machine-readable artifacts. Later phases consume those
 artifacts instead of hidden chat context.
 
 ## Command Entry
@@ -89,6 +92,31 @@ python scripts/paper2skill.py build \
   --validation-depth dry_run
 ```
 
+Use `reproduce` when the user explicitly asks for reproduction, validation, or
+a usable verified skill. It first builds the L1 child skill, then runs the
+fixed agentic loop `catalog -> build L1 -> env_probe -> data_probe ->
+adapter_materialize -> smoke_run -> error_classify -> repair -> rerun ->
+promote -> emit skill`:
+
+```bash
+python scripts/paper2skill.py reproduce \
+  --paper path/to/paper.md \
+  --repo path/to/repo \
+  --tutorial path/to/default_validation_tutorial.ipynb \
+  --skill-name algorithm-skill \
+  --out ../algorithm-skill \
+  --confirm-run yes \
+  --install-policy never \
+  --repair-budget 2 \
+  --data-cache-dir path/to/data_cache
+```
+
+For `reproduce`, explicit `--tutorial` chooses the default validation target
+but must not truncate `references/tutorial_catalog.yaml`; repository tutorial
+indexes and candidates remain cataloged. The command writes
+`agentic_run/repair_log.jsonl`, `agentic_run/env_delta.json`,
+`agentic_run/run_trace.json`, and `agentic_run/promotion_report.json`.
+
 Use build-time execution only with an explicit validation manifest and output
 contract:
 
@@ -115,7 +143,7 @@ for one selected example:
 ```bash
 python scripts/paper2skill.py run-example \
   --skill ../algorithm-skill \
-  --manifest ../algorithm-skill/assets/demo_input_manifest.yaml \
+  --manifest path/to/reviewed_official_example_manifest.yaml \
   --example-id default_demo \
   --out paper2skill_run \
   --confirm-run yes
@@ -130,7 +158,8 @@ python scripts/paper2skill.py ingest-run \
   --out paper2skill_run_trace
 ```
 
-Use `promote` to convert a passing run trace into verified adapter evidence:
+Use `promote` to convert a passing non-demo run trace into verified adapter
+evidence:
 
 ```bash
 python scripts/paper2skill.py promote \
@@ -157,7 +186,8 @@ python scripts/paper2skill.py benchmark run \
 
 Never install dependencies, execute unknown repository scripts, download large
 datasets, or run non-verified adapters automatically. Generated adapters start
-as `dry_run_only`; only a selected example with a passing run trace and passing
-output validation may become `verified`. Static API or CLI inference can only
-produce `dry_run_only` adapters. If bundled runtime dependencies are missing,
+as `dry_run_only`; only a selected example with a passing adapter report,
+passing run trace, and passing output validation may become `verified`. Static
+API or CLI inference can only produce `dry_run_only` adapters. Demo summaries do
+not promote adapters. If bundled runtime dependencies are missing,
 `scripts/paper2skill.py` prints an install plan and exits.

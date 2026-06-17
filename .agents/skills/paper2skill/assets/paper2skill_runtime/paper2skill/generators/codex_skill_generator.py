@@ -38,7 +38,6 @@ from paper2skill.validators.adapter_review import adapter_review_matches, missin
 TEMPLATE_ROOT = PROJECT_ROOT / "paper2skill" / "templates" / "codex_skill"
 EXECUTABLE_ADAPTER_STATUSES = {"verified"}
 ADAPTER_STATUSES = {"dry_run_only", "verified"}
-DEFAULT_EXAMPLE_ID = "official_example_001"
 SOURCE_SNAPSHOT_MAX_FILE_BYTES = 5 * 1024 * 1024
 SOURCE_SNAPSHOT_SKIP_PARTS = {
     ".git",
@@ -531,6 +530,7 @@ def build_context(
     no_execute_tutorials: bool = True,
     strict_evidence: bool = False,
     tutorial_filter: str | None = None,
+    catalog_all_tutorials: bool = False,
     adapter_review: str | Path | None = None,
     example_data_urls: list[str] | None = None,
     collection_dir: str | Path | None = None,
@@ -552,21 +552,22 @@ def build_context(
     )
     source_manifest = resolved.source_manifest
     tutorial_paths = [str(path) for path in resolved.selected_tutorials]
-    if tutorial_paths:
-        tutorial_trace = mine_tutorials(tutorial_paths, base_dir=resolved.repo_path if resolved.repo_path else None)
-        if resolved.repo_path and not tutorials:
-            repo_tutorial_trace = mine_repo_tutorials(resolved.repo_path, tutorial_filter=tutorial_filter)
-            tutorial_trace["tutorial_candidates"] = repo_tutorial_trace.get("tutorial_candidates", [])
-            tutorial_trace["tutorial_scanner_report"] = repo_tutorial_trace.get("tutorial_scanner_report", {})
-        else:
-            tutorial_trace["tutorial_candidates"] = []
-            tutorial_trace["tutorial_scanner_report"] = {"total": len(tutorial_paths), "included": len(tutorial_paths), "filter": tutorial_filter}
+    if resolved.repo_path and (tutorial_paths or catalog_all_tutorials or tutorial_filter):
+        repo_filter = None if catalog_all_tutorials else tutorial_filter
+        repo_tutorial_trace = mine_repo_tutorials(resolved.repo_path, tutorial_filter=repo_filter)
+        tutorial_trace = merge_tutorial_traces(
+            repo_tutorial_trace,
+            mine_tutorials(tutorial_paths, base_dir=resolved.repo_path) if tutorial_paths else {"tutorials": [], "workflow_steps": [], "steps": []},
+        )
+        tutorial_trace["tutorial_candidates"] = repo_tutorial_trace.get("tutorial_candidates", [])
+        tutorial_trace["tutorial_scanner_report"] = repo_tutorial_trace.get("tutorial_scanner_report", {})
     elif resolved.repo_path:
         tutorial_trace = mine_repo_tutorials(resolved.repo_path, tutorial_filter=tutorial_filter)
     else:
         tutorial_trace = {"tutorials": [], "workflow_steps": [], "steps": [], "tutorial_candidates": [], "tutorial_scanner_report": {"total": 0, "included": 0, "filter": tutorial_filter}}
     tutorial_trace["tutorial_execution_status"] = "not_executed_by_policy" if no_execute_tutorials else "not_executed"
-    dependency_evidence = mine_dependencies(resolved.repo_path, tutorial_paths)
+    mined_tutorial_paths = tutorial_paths_from_trace(tutorial_trace) or tutorial_paths
+    dependency_evidence = mine_dependencies(resolved.repo_path, mined_tutorial_paths)
     repo_evidence = mine_api(resolved.repo_path)
     classification = classify_algorithm(repo_evidence, tutorial_trace)
     if language:
@@ -581,7 +582,7 @@ def build_context(
     algorithm_archetype = infer_algorithm_archetype(repo_evidence, tutorial_trace, classification, adapter_type)
     adapter_spec = apply_adapter_interface(adapter_spec, algorithm_archetype)
     adapter_spec, adapter_review_data = apply_adapter_review(adapter_spec, load_adapter_review(adapter_review))
-    examples_catalog = build_generic_tutorial_catalog(
+    tutorial_catalog = build_generic_tutorial_catalog(
         tutorial_trace,
         adapter_spec,
         repo_evidence,
@@ -589,6 +590,13 @@ def build_context(
         algorithm_archetype,
         user_data_urls=example_data_urls or [],
     )
+    scanner_report = tutorial_trace.get("tutorial_scanner_report") if isinstance(tutorial_trace.get("tutorial_scanner_report"), dict) else {}
+    missing_indexed_tutorials = scanner_report.get("missing_indexed_tutorials") if isinstance(scanner_report.get("missing_indexed_tutorials"), list) else []
+    if missing_indexed_tutorials:
+        tutorial_catalog["missing_indexed_tutorials"] = missing_indexed_tutorials
+    tutorial_catalog = apply_preferred_default(tutorial_catalog, tutorial_paths)
+    if tutorial_filter and not tutorial_paths:
+        tutorial_catalog = apply_filter_default(tutorial_catalog, tutorial_filter)
     environment_spec = infer_environment_spec(dependency_evidence, classification["language"])
     if classification["language"] == "python" and not environment_spec["python"]["packages"]:
         environment_spec["python"]["packages"] = []
@@ -601,14 +609,24 @@ def build_context(
     paper_sections = (((source_manifest.get("paper") or {}).get("parsed_document") or {}).get("sections") or [])
     bio_contract = normalize_bio_contract_evidence(infer_bio_contract(tutorial_trace, paper_sections, dependency_evidence, strict_evidence=strict_evidence))
     io_contract = infer_io_contract(tutorial_trace, bio_contract)
-    run_trace = build_empty_run_trace(example_id=examples_catalog.get("default_example_id"))
-    maturity = evaluate_maturity(adapter_spec, examples_catalog, run_trace)
+    run_trace = build_empty_run_trace(example_id=tutorial_catalog.get("default_example_id"))
+    maturity = evaluate_maturity(adapter_spec, tutorial_catalog, run_trace)
+    applicability = build_applicability_contract(
+        task=task,
+        classification=classification,
+        algorithm_archetype=algorithm_archetype,
+        adapter_spec=adapter_spec,
+        tutorial_catalog=tutorial_catalog,
+        bio_contract=bio_contract,
+        maturity=maturity,
+    )
+    recommended_execution = build_recommended_execution(adapter_spec, tutorial_catalog, maturity)
     algorithm_contract = {
         "algorithm": {
             "name": algorithm_name,
             "task": task,
             "domain": classification["domain"],
-            "modality": "not_confirmed",
+            "modality": applicability["modality"],
             "language": classification["language"],
             "execution_mode": classification["execution_mode"],
             "archetype": algorithm_archetype["archetype"],
@@ -616,6 +634,8 @@ def build_context(
             "adapter_status": adapter_spec["status"],
             "maturity_level": maturity["level"],
         },
+        "applicability": applicability,
+        "recommended_execution": recommended_execution,
         **io_contract,
         "environment_contract": {
             "install_policy_default": "ask",
@@ -657,8 +677,8 @@ def build_context(
         "install_plan_markdown": render_install_plan_markdown(install_plan),
         "adapter_spec": adapter_spec,
         "adapter_review": adapter_review_data,
-        "examples_catalog": examples_catalog,
-        "tutorial_catalog": examples_catalog,
+        "examples_catalog": tutorial_catalog,
+        "tutorial_catalog": tutorial_catalog,
         "run_trace": run_trace,
         "maturity": maturity,
         "notebook_execution_policy": notebook_execution_policy(tutorial_trace),
@@ -674,11 +694,184 @@ def build_context(
             "no_execute_tutorials": no_execute_tutorials,
             "strict_evidence": strict_evidence,
             "tutorial_filter": tutorial_filter,
+            "catalog_all_tutorials": catalog_all_tutorials,
             "adapter_review": str(adapter_review) if adapter_review else None,
             "example_data_urls": example_data_urls or [],
         },
         "warnings": resolved.warnings,
         "demo_data": _demo_data_for_language(classification["language"]),
+    }
+
+
+def merge_tutorial_traces(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(primary)
+    tutorials: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for source in [primary, secondary]:
+        for tutorial in source.get("tutorials", []) or []:
+            if not isinstance(tutorial, dict):
+                continue
+            key = str(tutorial.get("path") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            tutorials.append(tutorial)
+    steps: list[dict[str, Any]] = []
+    for tutorial in tutorials:
+        steps.extend(step for step in tutorial.get("workflow_steps", []) or [] if isinstance(step, dict))
+    merged["tutorials"] = tutorials
+    merged["workflow_steps"] = steps
+    merged["steps"] = steps
+    return merged
+
+
+def tutorial_paths_from_trace(tutorial_trace: dict[str, Any]) -> list[str]:
+    paths = []
+    for tutorial in tutorial_trace.get("tutorials", []) or []:
+        if isinstance(tutorial, dict) and tutorial.get("path"):
+            paths.append(str(tutorial["path"]))
+    return paths
+
+
+def apply_preferred_default(catalog: dict[str, Any], preferred_paths: list[str]) -> dict[str, Any]:
+    if not preferred_paths:
+        return catalog
+    preferred_ids = [slugify(Path(str(path).split("#", 1)[0]).stem, default="").replace("-", "_") for path in preferred_paths]
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    selected_id = None
+    for preferred_id in preferred_ids:
+        for item in examples:
+            if isinstance(item, dict) and item.get("example_id") == preferred_id:
+                selected_id = preferred_id
+                break
+        if selected_id:
+            break
+    if not selected_id:
+        return catalog
+    updated = dict(catalog)
+    updated["default_example_id"] = selected_id
+    for item in examples:
+        if isinstance(item, dict):
+            item["is_default"] = item.get("example_id") == selected_id
+    return updated
+
+
+def apply_filter_default(catalog: dict[str, Any], tutorial_filter: str) -> dict[str, Any]:
+    needles = [part.strip().lower() for part in str(tutorial_filter or "").split("|") if part.strip()]
+    if not needles:
+        return catalog
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    selected_id = None
+    for item in examples:
+        if not isinstance(item, dict):
+            continue
+        haystack = "\n".join(str(item.get(key) or "") for key in ["example_id", "tutorial_id", "source", "scenario", "source_excerpt"]).lower()
+        if any(needle in haystack for needle in needles):
+            selected_id = item.get("example_id")
+            break
+    if not selected_id:
+        return catalog
+    updated = dict(catalog)
+    updated["default_example_id"] = selected_id
+    for item in examples:
+        if isinstance(item, dict):
+            item["is_default"] = item.get("example_id") == selected_id
+    return updated
+
+
+def build_applicability_contract(
+    *,
+    task: str,
+    classification: dict[str, Any],
+    algorithm_archetype: dict[str, Any],
+    adapter_spec: dict[str, Any],
+    tutorial_catalog: dict[str, Any],
+    bio_contract: dict[str, Any],
+    maturity: dict[str, Any],
+) -> dict[str, Any]:
+    bio = _bio_contract_body({"bio_contract": bio_contract})
+    modality = _contract_value(((bio.get("modality") or {}).get("primary") or {}))
+    selected = selected_candidate(tutorial_catalog)
+    adapter_status = str(adapter_spec.get("status") or "dry_run_only")
+    maturity_level = str(maturity.get("level") or "L1")
+    real_execution_allowed = adapter_status == "verified" and maturity_level in {"L2", "L3", "L4"}
+    allowed_modes = ["preflight", "plan", "dry_run"]
+    if real_execution_allowed:
+        allowed_modes.append("verified_run")
+    return {
+        "supported_task": task,
+        "domain": classification.get("domain") or "not_confirmed",
+        "modality": str(modality) if modality is not None else "not_confirmed",
+        "language": classification.get("language") or "not_confirmed",
+        "archetype": algorithm_archetype.get("archetype") or "not_confirmed",
+        "default_example_id": tutorial_catalog.get("default_example_id") or "not_confirmed",
+        "default_example_source": selected.get("source") or selected.get("path") or "not_confirmed",
+        "adapter_status": adapter_status,
+        "maturity_level": maturity_level,
+        "allowed_execution_modes": allowed_modes,
+        "real_execution_allowed": real_execution_allowed,
+        "evidence_priority": ["official_tutorial", "official_repo", "paper_method", "static_inference"],
+        "refusal_rules": [
+            {
+                "code": "unsupported_task",
+                "when": "requested analysis goal does not match applicability.supported_task",
+                "action": "refuse and explain the supported task boundary",
+            },
+            {
+                "code": "contract_only_maturity",
+                "when": "applicability.maturity_level is L1 and the user requests real execution",
+                "action": "allow preflight/plan only; require a promoted non-demo run trace first",
+            },
+            {
+                "code": "adapter_not_verified",
+                "when": "applicability.adapter_status is not verified and the user requests real execution",
+                "action": "refuse real execution; run preflight/plan or request promotion evidence",
+            },
+            {
+                "code": "bio_contract_mismatch",
+                "when": "manifest format, matrix_state, metadata, organism, genome build, or modality violates recorded contracts",
+                "action": "stop before adapter execution and report structured refusal_reasons",
+            },
+            {
+                "code": "demo_manifest_not_promotable",
+                "when": "the only available evidence is assets/demo_input_manifest.yaml or a demo-mode trace",
+                "action": "treat as smoke evidence only; do not promote or interpret biologically",
+            },
+        ],
+    }
+
+
+def build_recommended_execution(adapter_spec: dict[str, Any], tutorial_catalog: dict[str, Any], maturity: dict[str, Any]) -> dict[str, Any]:
+    adapter_status = str(adapter_spec.get("status") or "dry_run_only")
+    maturity_level = str(maturity.get("level") or "L1")
+    core_api = {
+        "adapter_type": adapter_spec.get("adapter_type"),
+        "entrypoint": adapter_spec.get("entrypoint"),
+        "command": adapter_spec.get("command"),
+        "module": adapter_spec.get("module"),
+        "function": adapter_spec.get("function"),
+    }
+    return {
+        "default_manifest": "assets/official_attempt_manifest.yaml",
+        "template_manifest": "assets/input_manifest_template.yaml",
+        "smoke_manifest": "assets/demo_input_manifest.yaml",
+        "default_example_id": tutorial_catalog.get("default_example_id") or "not_confirmed",
+        "entrypoints": {
+            "preflight": "python scripts/preflight.py --manifest assets/official_attempt_manifest.yaml",
+            "plan": "python scripts/plan.py --manifest assets/official_attempt_manifest.yaml",
+            "run": "python scripts/run.py --manifest assets/official_attempt_manifest.yaml",
+            "validate_outputs": "python scripts/validate_outputs.py --result result",
+        },
+        "core_api": {key: value for key, value in core_api.items() if value not in (None, "", [])},
+        "adapter_status": adapter_status,
+        "maturity_level": maturity_level,
+        "real_execution_requires": [
+            "adapter_status=verified",
+            "non_demo_run_trace",
+            "adapter_report.status=pass",
+            "output_validation.status=pass",
+        ],
+        "can_execute_real_data": adapter_status == "verified" and maturity_level in {"L2", "L3", "L4"},
     }
 
 
@@ -726,7 +919,6 @@ def generate_skill(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_yaml(root / "references" / "algorithm_contract.yaml", public_context["algorithm_contract"])
     write_yaml(root / "references" / "adapter_spec.yaml", public_context["adapter_spec"])
     write_yaml(root / "references" / "adapter_review.yaml", public_context["adapter_review"])
-    write_yaml(root / "references" / "examples_catalog.yaml", public_context["examples_catalog"])
     write_yaml(root / "references" / "tutorial_catalog.yaml", public_context["tutorial_catalog"])
     write_yaml(root / "references" / "maturity.yaml", public_context["maturity"])
     write_yaml(root / "references" / "environment_spec.yaml", public_context["environment_spec"])
@@ -804,7 +996,7 @@ def write_source_snapshot(context: dict[str, Any], root: Path) -> None:
 
 def source_snapshot_relative_paths(context: dict[str, Any], source_root: Path) -> list[Path]:
     paths: list[Path] = []
-    examples = ((context.get("examples_catalog") or {}).get("examples") or [])
+    examples = ((context.get("tutorial_catalog") or context.get("examples_catalog") or {}).get("examples") or [])
     for example in examples:
         if isinstance(example, dict):
             paths.extend(_repo_relative_candidates(example.get("source"), source_root))
@@ -970,7 +1162,6 @@ def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:
     write_json(root / "workflow_dag.json", public_context["workflow"].get("workflow_dag", {"nodes": [], "edges": []}))
     write_yaml(root / "adapter_spec.preview.yaml", public_context["adapter_spec"])
     write_yaml(root / "adapter_review.preview.yaml", public_context["adapter_review"])
-    write_yaml(root / "examples_catalog.preview.yaml", public_context["examples_catalog"])
     write_yaml(root / "tutorial_catalog.preview.yaml", public_context["tutorial_catalog"])
     write_json(root / "notebook_execution_policy.json", public_context["notebook_execution_policy"])
     write_yaml(root / "algorithm_contract.preview.yaml", public_context["algorithm_contract"])
@@ -983,15 +1174,18 @@ def plan_outputs(context: dict[str, Any], out_dir: str | Path) -> Path:
 def execution_plan(context: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
-        "pipeline": [
-            "collect_sources",
-            "normalize_evidence",
-            "build_tutorial_graph",
-            "rank_execution_candidates",
-            "run_candidate",
-            "synthesize_contracts",
-            "promote_skill",
-            "evaluate_maturity",
+        "pipeline": ["thin_plan", "run", "promotion_plan", "child_skill"],
+        "thin_plan_tasks": [
+            "collect tutorial-first source evidence",
+            "catalog tutorials/examples independently",
+            "rank a reviewed minimal execution candidate",
+            "synthesize initial adapter/input/output/bio/environment contracts",
+        ],
+        "promotion_gates": [
+            "non_demo_run_trace",
+            "adapter_report_status_pass",
+            "output_validation_status_pass",
+            "example_present_in_tutorial_catalog",
         ],
         "algorithm": context["algorithm_contract"].get("algorithm", {}),
         "default_example_id": context["tutorial_catalog"].get("default_example_id"),
@@ -1001,6 +1195,8 @@ def execution_plan(context: dict[str, Any]) -> dict[str, Any]:
         "run_gate": {
             "requires_explicit_confirmation": True,
             "verified_requires_run_trace": True,
+            "verified_requires_adapter_report_pass": True,
+            "demo_mode_promotes_adapter": False,
             "static_inference_status": "dry_run_only",
         },
     }
@@ -1057,7 +1253,7 @@ def evidence_summary_markdown(context: dict[str, Any]) -> str:
         f"- Default example: `{selected.get('example_id', 'not_confirmed')}`",
         f"- Default data kind: `{selected.get('data_kind', 'not_confirmed')}`",
         "",
-        "Verified execution requires a passing run trace and output validation. Static evidence remains contract-only.",
+        "Verified execution requires a non-demo run trace, adapter_report.status=pass, and output validation. Static evidence remains contract-only.",
         "",
     ]
     return "\n".join(lines)
@@ -1101,124 +1297,6 @@ def _public_context(context: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
-def build_examples_catalog(
-    tutorial_trace: dict[str, Any],
-    adapter_spec: dict[str, Any],
-    repo_evidence: dict[str, Any],
-    classification: dict[str, Any],
-    *,
-    user_data_urls: list[str] | None = None,
-) -> dict[str, Any]:
-    examples: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    user_data_urls = user_data_urls or []
-    for index, tutorial in enumerate(tutorial_trace.get("tutorials", []) or [], start=1):
-        if not isinstance(tutorial, dict):
-            continue
-        path = str(tutorial.get("path") or f"tutorial_{index}")
-        text = "\n".join(_flatten_strings(tutorial))
-        urls = sorted(dict.fromkeys([*extract_data_urls(text), *user_data_urls_for_tutorial(text, user_data_urls)]))
-        scenario = classify_example_scenario(path, text)
-        example_id = example_id_from_path(path, fallback_index=index)
-        if example_id in seen:
-            example_id = f"{example_id}_{index:03d}"
-        seen.add(example_id)
-        examples.append(
-            {
-                "example_id": example_id,
-                "is_default": not examples,
-                "source": path,
-                "source_type": "notebook" if path.lower().endswith(".ipynb") else "tutorial",
-                "source_excerpt": text[:2000],
-                "scenario": scenario,
-                "priority": example_priority(scenario, path, text),
-                "data_sources": [{"type": "url", "url": url, "filename": filename_from_url(url)} for url in urls],
-                "adapter": {
-                    "adapter_type": adapter_spec.get("adapter_type"),
-                    "status": adapter_spec.get("status", "dry_run_only"),
-                    "entrypoint": adapter_spec.get("entrypoint"),
-                    "command": adapter_spec.get("command"),
-                    "official_command": adapter_spec.get("official_command"),
-                    "official_script": adapter_spec.get("official_script"),
-                    "module": adapter_spec.get("module"),
-                    "function": adapter_spec.get("function"),
-                },
-                "output_contract": default_output_contract(adapter_spec),
-                "verification": {"status": "not_run"},
-                "caveats": ["Tutorial demo context is the primary evidence for this example; paper context is background only."],
-            }
-        )
-    if not examples:
-        examples.append(
-            {
-                "example_id": DEFAULT_EXAMPLE_ID,
-                "is_default": True,
-                "source": "not_confirmed",
-                "source_type": "generated",
-                "scenario": "quickstart",
-                "priority": 100,
-                "data_sources": [{"type": "manifest", "path": "assets/official_attempt_manifest.yaml"}],
-                "adapter": {
-                    "adapter_type": adapter_spec.get("adapter_type"),
-                    "status": adapter_spec.get("status", "dry_run_only"),
-                    "entrypoint": adapter_spec.get("entrypoint"),
-                    "command": adapter_spec.get("command"),
-                    "official_command": adapter_spec.get("official_command"),
-                    "official_script": adapter_spec.get("official_script"),
-                    "module": adapter_spec.get("module"),
-                    "function": adapter_spec.get("function"),
-                },
-                "output_contract": default_output_contract(adapter_spec),
-                "verification": {"status": "not_run"},
-                "caveats": ["No explicit tutorial example was mined; this is a generated dry-run placeholder."],
-            }
-        )
-    examples.sort(key=lambda item: (item.get("priority", 100), str(item.get("example_id"))))
-    for index, item in enumerate(examples):
-        item["is_default"] = index == 0
-    return {
-        "schema_version": 1,
-        "selection_policy": "official small/test data > quickstart > package dataset > notebook demo > full tutorial",
-        "default_example_id": examples[0]["example_id"],
-        "examples": examples,
-        "adapter_status_values": ["dry_run_only", "verified"],
-        "notes": ["Adapter verification is per example; one verified example does not verify other examples."],
-        "repo_package_type": repo_evidence.get("package_type"),
-        "language": classification.get("language"),
-    }
-
-
-def extract_data_urls(text: str) -> list[str]:
-    pattern = re.compile(r"https?://[^\s'\"),]+(?:\?[^\s'\"),]+)?")
-    return [url for match in pattern.finditer(text) if (url := clean_data_url(match.group(0))) is not None]
-
-
-def user_data_urls_for_tutorial(text: str, urls: list[str]) -> list[str]:
-    if not urls:
-        return []
-    if len(urls) == 1:
-        return urls
-    lowered = text.lower()
-    matched = []
-    for url in urls:
-        filename = filename_from_url(url)
-        stem = Path(filename).stem.lower()
-        tokens = {url.lower(), filename.lower(), stem}
-        if any(token and token in lowered for token in tokens):
-            matched.append(url)
-    return matched
-
-
-def clean_data_url(value: str) -> str | None:
-    url = value.rstrip("`].\\")
-    lowered = url.lower()
-    if "#egg=" in lowered or "git+" in lowered:
-        return None
-    if "github.com" in lowered and not re.search(r"\.(h5ad|rds|rda|csv|tsv|txt)(?:\?|$)", lowered):
-        return None
-    return url
-
-
 def filename_from_url(url: str) -> str:
     lowered = url.lower()
     if "pancreas.h5ad" in lowered:
@@ -1227,44 +1305,6 @@ def filename_from_url(url: str) -> str:
         return "train_kang.h5ad"
     tail = url.split("?", 1)[0].rstrip("/").split("/")[-1]
     return tail or "downloaded_example_data"
-
-
-def example_id_from_path(path: str, *, fallback_index: int) -> str:
-    name = Path(path).stem if path and path != "not_confirmed" else f"official_example_{fallback_index:03d}"
-    value = slugify(name, default=f"official-example-{fallback_index:03d}").replace("-", "_")
-    return value or f"official_example_{fallback_index:03d}"
-
-
-def classify_example_scenario(path: str, text: str) -> str:
-    lowered = f"{path}\n{text}".lower()
-    if "test data" in lowered or "/tests/" in lowered or "tests/data" in lowered:
-        return "official_test_data"
-    if "batch" in lowered and ("removal" in lowered or "correction" in lowered):
-        return "batch_removal"
-    if "perturb" in lowered or "stimulated" in lowered:
-        return "perturbation_prediction"
-    if "quickstart" in lowered or "getting started" in lowered:
-        return "quickstart"
-    if path.lower().endswith(".ipynb"):
-        return "notebook_demo"
-    return "tutorial_demo"
-
-
-def example_priority(scenario: str, path: str, text: str) -> int:
-    lowered = f"{path}\n{text}".lower()
-    if scenario == "official_test_data":
-        return 0
-    if "small" in lowered or "toy" in lowered or "minimal" in lowered:
-        return 5
-    if scenario == "quickstart":
-        return 10
-    if "package" in lowered and "data(" in lowered:
-        return 20
-    if scenario in {"batch_removal", "perturbation_prediction"}:
-        return 30
-    if scenario == "notebook_demo":
-        return 40
-    return 50
 
 
 def default_output_contract(adapter_spec: dict[str, Any]) -> dict[str, Any]:
@@ -1320,8 +1360,17 @@ def _claims_from_context(contract: dict[str, Any], workflow: dict[str, Any]) -> 
 
 
 def _demo_manifest(context: dict[str, Any]) -> dict[str, Any]:
+    algorithm = (context.get("algorithm_contract") or {}).get("algorithm") or {}
     return {
+        "purpose": "smoke_only",
+        "promotion_allowed": False,
+        "note": "Demo manifest is for local smoke/demo behavior only. It is not an official execution candidate and cannot promote an adapter.",
         "inputs": {
+            "analysis": {
+                "task": algorithm.get("task", context.get("task", "algorithm_execution")),
+                "domain": algorithm.get("domain", "not_confirmed"),
+                "modality": algorithm.get("modality", "not_confirmed"),
+            },
             "primary_data": {"path": "assets/demo_input.csv", "format": "csv", "exists": True},
             "metadata": {"sample_key": "sample", "condition_key": "condition"},
             "algorithm": {"mode": "demo", "parameters": context["parameters"] or {"summary_column": "value"}},
@@ -1338,6 +1387,8 @@ def _official_attempt_manifest(context: dict[str, Any]) -> dict[str, Any]:
     primary_contract = _contract_primary_data(context)
     bio = _bio_contract_body(context)
     data_source = _official_data_source(context, _contract_value(primary_contract.get("format")) or "csv")
+    algorithm = (context.get("algorithm_contract") or {}).get("algorithm") or {}
+    bio_context = _manifest_bio_context(primary_contract, bio)
     primary_data = {
         "path": data_source["path"],
         "format": _contract_value(primary_contract.get("format")) or data_source["format"],
@@ -1355,8 +1406,14 @@ def _official_attempt_manifest(context: dict[str, Any]) -> dict[str, Any]:
         primary_data["modalities"] = modalities
     return {
         "inputs": {
+            "analysis": {
+                "task": algorithm.get("task", context.get("task", "algorithm_execution")),
+                "domain": algorithm.get("domain", "not_confirmed"),
+                "modality": bio_context.get("modality", algorithm.get("modality", "not_confirmed")),
+            },
             "primary_data": primary_data,
             "metadata": _manifest_metadata(primary_contract, bio),
+            "bio_context": bio_context,
             "external_resources": {
                 "official_tutorials": _official_tutorial_paths(context),
                 "note": "Contract-aware official example attempt. Generated adapters remain dry_run_only until run_trace and output validation pass.",
@@ -1454,6 +1511,18 @@ def _manifest_metadata(primary_contract: dict[str, Any], bio: dict[str, Any]) ->
     return metadata
 
 
+def _manifest_bio_context(primary_contract: dict[str, Any], bio: dict[str, Any]) -> dict[str, Any]:
+    modality = _contract_value(((bio.get("modality") or {}).get("primary") or {}))
+    context = {
+        "modality": str(modality) if modality is not None else "not_confirmed",
+        "matrix_state": _manifest_matrix_state(primary_contract, bio),
+        "organism": _manifest_organism(primary_contract, bio),
+        "metadata_requirements": _manifest_metadata(primary_contract, bio),
+        "interpretation_boundary": bio.get("interpretation_boundary") or {},
+    }
+    return {key: value for key, value in context.items() if value not in ({}, None)}
+
+
 def _primary_modality_key(bio: dict[str, Any]) -> str | None:
     value = _contract_value(((bio.get("modality") or {}).get("primary") or {}))
     if value is None:
@@ -1512,7 +1581,7 @@ def _official_data_source(context: dict[str, Any], expected_format: str) -> dict
 
 
 def _official_data_source_from_examples(context: dict[str, Any], expected_format: str) -> dict[str, Any] | None:
-    catalog = context.get("examples_catalog") or {}
+    catalog = context.get("tutorial_catalog") or context.get("examples_catalog") or {}
     examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
     default_id = catalog.get("default_example_id")
     selected = next((item for item in examples if isinstance(item, dict) and item.get("example_id") == default_id), None)

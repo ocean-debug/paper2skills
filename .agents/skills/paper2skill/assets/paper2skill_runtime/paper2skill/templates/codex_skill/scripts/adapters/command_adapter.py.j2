@@ -140,7 +140,7 @@ def run_reviewed_command(kind: str, manifest: dict[str, Any], out: Path, manifes
             "adapter_type": kind,
             "adapter_status": "dry_run_only",
             "example_id": example_id,
-            "message": "Selected example is missing from examples_catalog.yaml.",
+            "message": "Selected example is missing from tutorial_catalog.yaml.",
         }
     adapter = selected_adapter(example_id, spec)
     adapter_status = str(adapter.get("status") or "dry_run_only")

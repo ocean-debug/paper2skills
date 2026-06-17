@@ -98,7 +98,7 @@ def expected_contract(validation_manifest: Path | None, *, result: Path, example
     selected_outputs = output_contract.get("required_files") or selected.get("expected_outputs") or review_outputs
     selected_values = selected.get("expected_output_values") if isinstance(selected.get("expected_output_values"), dict) else review_values
     return {
-        "source": "examples_catalog" if selected else "adapter_review",
+        "source": "tutorial_catalog" if selected else "adapter_review",
         "example_id": selected_example_id,
         "expected_outputs": normalize_expected_outputs(selected_outputs if isinstance(selected_outputs, list) else []),
         "expected_output_values": selected_values,

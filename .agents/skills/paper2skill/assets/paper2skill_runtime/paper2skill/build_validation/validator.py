@@ -12,7 +12,7 @@ import yaml
 
 from paper2skill.build_validation.skill_package import validate_skill_package
 from paper2skill.collectors.path_sanitizer import public_data
-from paper2skill.compiler import ingest_run_directory, promote_from_run_trace
+from paper2skill.compiler import annotate_run_trace_promotion, ingest_run_directory, promote_from_run_trace, update_algorithm_contract_after_promotion
 
 
 VALIDATION_DEPTHS = ("dry_run", "data_smoke", "live_execute")
@@ -512,7 +512,6 @@ def mark_verified(root: Path, *, execution: dict[str, Any], gate: dict[str, Any]
     write_yaml_file(root / "references" / "adapter_spec.yaml", result["adapter_spec"])
     write_yaml_file(root / "references" / "adapter_review.yaml", result["adapter_review"])
     write_yaml_file(root / "references" / "tutorial_catalog.yaml", result["tutorial_catalog"])
-    write_yaml_file(root / "references" / "examples_catalog.yaml", result["tutorial_catalog"])
     write_yaml_file(root / "references" / "maturity.yaml", result["maturity"])
     write_yaml_file(root / "references" / "contracts" / "algorithm_contract.yaml", updated_algorithm_contract)
     write_yaml_file(root / "references" / "contracts" / "adapter_contract.yaml", result["adapter_spec"])
@@ -533,17 +532,7 @@ def run_trace_from_execution(root: Path, *, execution: dict[str, Any], example_i
     if expected_outputs and "expected_outputs" not in output_validation:
         output_validation = {**output_validation, "expected_outputs": expected_outputs}
     trace["output_validation"] = output_validation
-    return trace
-
-
-def update_algorithm_contract_after_promotion(algorithm_contract: dict[str, Any], adapter_spec: dict[str, Any], maturity: dict[str, Any]) -> dict[str, Any]:
-    updated = dict(algorithm_contract)
-    algorithm = dict(updated.get("algorithm") or {})
-    algorithm["adapter_status"] = adapter_spec.get("status", algorithm.get("adapter_status"))
-    algorithm["maturity_level"] = maturity.get("level", algorithm.get("maturity_level"))
-    updated["algorithm"] = algorithm
-    updated["maturity"] = maturity
-    return updated
+    return annotate_run_trace_promotion(trace)
 
 
 def write_yaml_file(path: Path, data: dict[str, Any]) -> None:

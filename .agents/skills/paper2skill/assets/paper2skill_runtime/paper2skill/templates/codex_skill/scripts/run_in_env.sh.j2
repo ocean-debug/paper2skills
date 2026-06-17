@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_NAME="${PAPER2SKILL_ENV_NAME:-{{ skill_name }}-env}"
 ENV_PREFIX="${PAPER2SKILL_ENV_PREFIX:-}"
-MANIFEST="${1:-$ROOT/assets/demo_input_manifest.yaml}"
+MANIFEST="${1:-$ROOT/assets/official_attempt_manifest.yaml}"
 OUT="${2:-$ROOT/result}"
 
 if [ -n "${CONDA_SH:-}" ] && [ -f "$CONDA_SH" ]; then

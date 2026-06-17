@@ -28,9 +28,10 @@ REQUIRED_SKILL_FILES = [
     "references/workflow_dag.json",
     "references/adapter_spec.yaml",
     "references/adapter_review.yaml",
-    "references/examples_catalog.yaml",
+    "references/tutorial_catalog.yaml",
     "references/notebook_execution_policy.json",
     "references/evidence_graph.json",
+    "assets/official_attempt_manifest.yaml",
     "assets/environment_spec.yaml",
     "assets/env/paper2skill.environment.yml",
     "assets/env/normalization_report.json",
@@ -38,6 +39,7 @@ REQUIRED_SKILL_FILES = [
 
 REQUIRED_DIRS = ["scripts/adapters"]
 PACKAGE_SCAN_SKIP_DIRS = {
+    "agentic_run",
     "build_validation",
     "__pycache__",
     ".pytest_cache",
