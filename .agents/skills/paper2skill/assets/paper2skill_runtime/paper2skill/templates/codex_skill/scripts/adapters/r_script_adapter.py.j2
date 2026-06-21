@@ -1,0 +1,14 @@
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+from adapters.command_adapter import run_reviewed_command
+
+
+def run(manifest: dict, out: Path, manifest_path: Path | None = None, example_id: str | None = None, verification_run: bool = False) -> dict:
+    default_command = None
+    if shutil.which("Rscript"):
+        default_script = Path(__file__).with_suffix(".R")
+        default_command = ["Rscript", str(default_script), str(manifest_path or ""), str(out)]
+    return run_reviewed_command("r_script", manifest, out, manifest_path, default_command=default_command, example_id=example_id, verification_run=verification_run)

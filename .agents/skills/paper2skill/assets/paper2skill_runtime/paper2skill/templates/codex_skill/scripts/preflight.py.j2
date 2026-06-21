@@ -1,0 +1,592 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+UNCONFIRMED_VALUES = {"", "unknown", "not_confirmed", "none", "null", "na", "n/a"}
+NORMALIZED_TOKENS = {"normalized", "normalized_tpm", "tpm", "cpm", "fpkm", "rpkm", "log_normalized", "log1p", "log_transformed"}
+BATCH_CORRECTED_TOKENS = {"batch_corrected", "combat", "harmony", "integrated", "corrected_batch"}
+RAW_COUNT_TOKENS = {"raw_counts", "raw_count", "counts", "count_matrix", "umi_counts", "raw"}
+FORMAT_COMPATIBILITY = {
+    "csv": {"csv"},
+    "tsv": {"tsv", "txt"},
+    "txt": {"txt", "tsv"},
+    "count_matrix": {"count_matrix", "tabular_count_matrix", "csv", "tsv", "txt"},
+    "tabular_count_matrix": {"count_matrix", "tabular_count_matrix", "csv", "tsv", "txt"},
+    "h5ad": {"h5ad", "anndata_object"},
+    "anndata_object": {"anndata_object", "h5ad"},
+    "rds": {"rds", "rda", "seurat_object", "singlecellexperiment_object"},
+    "10x_mtx": {"10x_mtx", "mtx", "directory"},
+    "mtx": {"mtx", "10x_mtx"},
+    "loom": {"loom"},
+    "hdf5": {"hdf5", "h5"},
+}
+METADATA_ALIASES = {
+    "sample_key": {"sample", "sample_id", "sampleid", "sample_name", "sampleid"},
+    "condition_key": {"condition", "group", "treatment", "phenotype"},
+    "celltype_key": {"cell_type", "celltype", "cell_type_col", "cell.type", "cell type"},
+    "cell_type_key": {"cell_type", "celltype", "cell_type_col", "cell.type", "cell type"},
+    "batch_key": {"batch", "batch_id", "batchid"},
+    "label_key": {"label", "label_col", "class"},
+    "seqtype_key": {"seqtype", "seq_type", "sequencing_type", "SeqType"},
+    "perturbation_key": {"perturbation", "perturbation_key", "guide", "target"},
+}
+
+
+def load_json_yaml(path: Path) -> dict:
+    return env_manager.load_json_yaml(path)
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_optional_contract(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        return load_json_yaml(path)
+    except Exception as exc:
+        return {"_load_error": "could not load %s: %s" % (path.name, exc)}
+
+
+def load_contract(name: str) -> dict:
+    modern_path = ROOT / "references" / "contracts" / name
+    legacy_path = ROOT / "references" / name
+    if modern_path.exists():
+        return load_optional_contract(modern_path)
+    return load_optional_contract(legacy_path)
+
+
+def normalize_token(value: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+
+
+def is_unconfirmed(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return normalize_token(value) in UNCONFIRMED_VALUES
+    return False
+
+
+def confirmed_value(field: object) -> object | None:
+    if isinstance(field, dict):
+        value = field.get("value")
+        if field.get("confidence") == "low":
+            return None
+    else:
+        value = field
+    if is_unconfirmed(value):
+        return None
+    return value
+
+
+def flatten_strings(value: object) -> list[str]:
+    if isinstance(value, dict):
+        result = []
+        for item in value.values():
+            result.extend(flatten_strings(item))
+        return result
+    if isinstance(value, list):
+        result = []
+        for item in value:
+            result.extend(flatten_strings(item))
+        return result
+    if value is None:
+        return []
+    return [str(value)]
+
+
+def contract_primary_data(io_contract: dict) -> dict:
+    return ((((io_contract.get("input_contract") or {}).get("required") or {}).get("primary_data") or {}))
+
+
+def bio_contract_body(bio_contract: dict) -> dict:
+    return bio_contract.get("bio_contract") if isinstance(bio_contract.get("bio_contract"), dict) else bio_contract
+
+
+def validate_contracts(manifest: dict, io_contract: dict, bio_contract: dict) -> list[str]:
+    errors: list[str] = []
+    for contract in [io_contract, bio_contract]:
+        if contract.get("_load_error"):
+            errors.append(contract["_load_error"])
+    if is_demo_manifest(manifest):
+        return errors
+    primary = ((manifest.get("inputs") or {}).get("primary_data") or {})
+    errors.extend(validate_format(primary, contract_primary_data(io_contract)))
+    errors.extend(validate_matrix_state(primary, io_contract, bio_contract))
+    errors.extend(validate_metadata(manifest, io_contract, bio_contract))
+    errors.extend(validate_organism(manifest, io_contract, bio_contract))
+    errors.extend(validate_paired_modalities(manifest, bio_contract))
+    return errors
+
+
+def validate_applicability(manifest: dict, algorithm_contract: dict) -> list[str]:
+    errors: list[str] = []
+    if algorithm_contract.get("_load_error") or is_demo_manifest(manifest):
+        return errors
+    applicability = algorithm_contract.get("applicability") if isinstance(algorithm_contract.get("applicability"), dict) else {}
+    expected_task = confirmed_value(applicability.get("supported_task"))
+    expected_domain = confirmed_value(applicability.get("domain"))
+    expected_modality = confirmed_value(applicability.get("modality"))
+    actual_task = manifest_analysis_value(manifest, ["task", "goal", "analysis_task"], algorithm_keys=["task", "goal"])
+    actual_domain = manifest_analysis_value(manifest, ["domain", "analysis_domain"])
+    actual_modality = manifest_analysis_value(manifest, ["modality", "data_modality"], primary_keys=["modality"], bio_context_keys=["modality"])
+    if expected_task is not None and actual_task is not None and not semantic_value_matches(expected_task, actual_task):
+        errors.append("inputs.analysis.task violates applicability.supported_task: expected %s, got %s" % (expected_task, actual_task))
+    if expected_domain is not None and actual_domain is not None and not semantic_value_matches(expected_domain, actual_domain):
+        errors.append("inputs.analysis.domain violates applicability.domain: expected %s, got %s" % (expected_domain, actual_domain))
+    if expected_modality is not None and actual_modality is not None and not semantic_value_matches(expected_modality, actual_modality):
+        errors.append("inputs.analysis.modality violates applicability.modality: expected %s, got %s" % (expected_modality, actual_modality))
+    return errors
+
+
+def manifest_analysis_value(
+    manifest: dict,
+    analysis_keys: list[str],
+    *,
+    algorithm_keys: list[str] | None = None,
+    primary_keys: list[str] | None = None,
+    bio_context_keys: list[str] | None = None,
+) -> object | None:
+    inputs = manifest.get("inputs") or {}
+    analysis = inputs.get("analysis") if isinstance(inputs.get("analysis"), dict) else {}
+    algorithm = inputs.get("algorithm") if isinstance(inputs.get("algorithm"), dict) else {}
+    primary = inputs.get("primary_data") if isinstance(inputs.get("primary_data"), dict) else {}
+    bio_context = inputs.get("bio_context") if isinstance(inputs.get("bio_context"), dict) else {}
+    for source, keys in [
+        (analysis, analysis_keys),
+        (algorithm, algorithm_keys or []),
+        (primary, primary_keys or []),
+        (bio_context, bio_context_keys or []),
+    ]:
+        for key in keys:
+            value = confirmed_value(source.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def semantic_value_matches(expected: object, actual: object) -> bool:
+    expected_key = normalize_token(expected)
+    actual_key = normalize_token(actual)
+    if expected_key == actual_key:
+        return True
+    if expected_key in actual_key or actual_key in expected_key:
+        return True
+    aliases = {
+        "scrna_seq": {"single_cell_rna_seq", "single_cell_rnaseq", "sc_rna_seq", "scrnaseq"},
+        "single_cell_rna_seq": {"scrna_seq", "sc_rna_seq", "scrnaseq"},
+        "bulk_rna_seq": {"bulk_rnaseq", "rnaseq"},
+    }
+    return actual_key in aliases.get(expected_key, set()) or expected_key in aliases.get(actual_key, set())
+
+
+def is_demo_manifest(manifest: dict) -> bool:
+    mode = (((manifest.get("inputs") or {}).get("algorithm") or {}).get("mode"))
+    return str(mode).lower() == "demo"
+
+
+def validate_format(primary: dict, contract_primary: dict) -> list[str]:
+    expected = confirmed_value((contract_primary.get("format") or {}))
+    if expected is None:
+        return []
+    actual = manifest_format(primary)
+    if actual is None:
+        return ["inputs.primary_data.format is required by io_contract: %s" % expected]
+    if not format_matches(expected, actual):
+        return ["inputs.primary_data.format violates io_contract: expected %s, got %s" % (expected, actual)]
+    return []
+
+
+def manifest_format(primary: dict) -> str | None:
+    for key in ["format", "file_format", "type"]:
+        value = confirmed_value(primary.get(key))
+        if value is not None:
+            return str(value)
+    path = confirmed_value(primary.get("path"))
+    return infer_format_from_path(str(path)) if path is not None else None
+
+
+def infer_format_from_path(path: str) -> str | None:
+    lower = path.lower().replace("\\", "/")
+    name = lower.rsplit("/", 1)[-1]
+    if name == "matrix.mtx" or lower.endswith("/matrix.mtx"):
+        return "10x_mtx"
+    if lower.endswith(".h5ad"):
+        return "h5ad"
+    if lower.endswith((".rds", ".rda")):
+        return "rds"
+    if lower.endswith(".mtx"):
+        return "mtx"
+    if lower.endswith(".csv"):
+        return "csv"
+    if lower.endswith(".tsv"):
+        return "tsv"
+    if lower.endswith(".txt"):
+        return "txt"
+    if lower.endswith(".loom"):
+        return "loom"
+    if lower.endswith((".h5", ".hdf5")):
+        return "hdf5"
+    return None
+
+
+def format_matches(expected: object, actual: object) -> bool:
+    expected_key = normalize_token(expected)
+    actual_key = normalize_token(actual)
+    if expected_key == actual_key:
+        return True
+    return actual_key in FORMAT_COMPATIBILITY.get(expected_key, {expected_key})
+
+
+def validate_matrix_state(primary: dict, io_contract: dict, bio_contract: dict) -> list[str]:
+    expected = expected_matrix_state(io_contract, bio_contract)
+    disallow_normalized = normalized_input_disallowed(bio_contract)
+    disallow_batch = batch_corrected_input_disallowed(bio_contract)
+    actual = manifest_matrix_state(primary)
+    errors: list[str] = []
+    actual_key = normalize_token(actual) if actual is not None else ""
+    actual_text_tokens = {normalize_token(item) for item in flatten_strings(primary)}
+    if expected:
+        if actual is None:
+            errors.append("inputs.primary_data.matrix_state is required by bio/io contract: %s" % expected)
+        elif not matrix_state_matches(expected, actual_key):
+            if normalize_token(expected) == "raw_counts" and has_any_token(actual_key, actual_text_tokens, NORMALIZED_TOKENS):
+                errors.append("raw counts required but normalized input was provided")
+            else:
+                errors.append("inputs.primary_data.matrix_state violates bio/io contract: expected %s, got %s" % (expected, actual))
+    if disallow_normalized and has_any_token(actual_key, actual_text_tokens, NORMALIZED_TOKENS):
+        errors.append("normalized input is disallowed by bio_contract")
+    if disallow_batch and has_any_token(actual_key, actual_text_tokens, BATCH_CORRECTED_TOKENS):
+        errors.append("batch-corrected input is disallowed by bio_contract")
+    return sorted(dict.fromkeys(errors))
+
+
+def expected_matrix_state(io_contract: dict, bio_contract: dict) -> str | None:
+    bio = bio_contract_body(bio_contract)
+    matrix = bio.get("input_matrix_state") or {}
+    if confirmed_value(matrix.get("raw_counts_required")) is True:
+        return "raw_counts"
+    if confirmed_value(matrix.get("preprocessed_required")) is True:
+        return "preprocessed"
+    contract_primary = contract_primary_data(io_contract)
+    value = confirmed_value(contract_primary.get("matrix_state"))
+    if value is not None:
+        return str(value)
+    return None
+
+
+def normalized_input_disallowed(bio_contract: dict) -> bool:
+    matrix = (bio_contract_body(bio_contract).get("input_matrix_state") or {})
+    return confirmed_value(matrix.get("normalized_input_disallowed")) is True
+
+
+def batch_corrected_input_disallowed(bio_contract: dict) -> bool:
+    matrix = (bio_contract_body(bio_contract).get("input_matrix_state") or {})
+    return confirmed_value(matrix.get("batch_corrected_input_disallowed")) is True
+
+
+def manifest_matrix_state(primary: dict) -> str | None:
+    for key in ["matrix_state", "state", "input_state"]:
+        value = confirmed_value(primary.get(key))
+        if value is not None:
+            return str(value)
+    tokens = {normalize_token(item) for item in flatten_strings(primary)}
+    if tokens & NORMALIZED_TOKENS:
+        return "normalized"
+    if tokens & RAW_COUNT_TOKENS:
+        return "raw_counts"
+    return None
+
+
+def matrix_state_matches(expected: str, actual_key: str) -> bool:
+    expected_key = normalize_token(expected)
+    if expected_key == actual_key:
+        return True
+    if expected_key == "raw_counts":
+        return actual_key in RAW_COUNT_TOKENS
+    if expected_key == "preprocessed":
+        return actual_key in {"preprocessed", "normalized", "log1p", "log_normalized"}
+    if expected_key == "normalized":
+        return actual_key in {"normalized", "normalized_tpm", "tpm", "cpm", "fpkm", "rpkm"}
+    if expected_key == "log1p":
+        return actual_key in {"log1p", "log_transformed", "log_normalized"}
+    return False
+
+
+def has_any_token(actual_key: str, tokens: set[str], disallowed: set[str]) -> bool:
+    values = {actual_key, *tokens}
+    return any(value == token or value.startswith(token + "_") or token in value for value in values for token in disallowed)
+
+
+def validate_metadata(manifest: dict, io_contract: dict, bio_contract: dict) -> list[str]:
+    requirements = metadata_requirements(io_contract, bio_contract)
+    if not requirements:
+        return []
+    inputs = manifest.get("inputs") or {}
+    metadata = inputs.get("metadata") or {}
+    terms = metadata_terms(inputs)
+    errors: list[str] = []
+    for logical_key, options in sorted(requirements.items()):
+        provided = metadata.get(logical_key) if isinstance(metadata, dict) else None
+        if not is_unconfirmed(provided):
+            if value_matches_options(provided, options):
+                continue
+            errors.append(
+                "metadata field %s violates bio/io contract: expected %s, got %s"
+                % (logical_key, "/".join(sorted(options)), provided)
+            )
+            continue
+        if terms & {normalize_token(option) for option in options}:
+            continue
+        errors.append("missing required metadata field: %s (expected %s)" % (logical_key, "/".join(sorted(options))))
+    return errors
+
+
+def metadata_requirements(io_contract: dict, bio_contract: dict) -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    sources = []
+    primary = contract_primary_data(io_contract)
+    sources.append(primary.get("metadata_keys") or {})
+    bio = bio_contract_body(bio_contract)
+    sources.append(bio.get("metadata_requirements") or {})
+    modality_key = primary_modality_key(bio)
+    modality_contracts = bio.get("modality_contracts") or {}
+    if modality_key and isinstance(modality_contracts.get(modality_key), dict):
+        sources.append((modality_contracts[modality_key].get("metadata") or {}))
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for logical_key, spec in source.items():
+            value = confirmed_value(spec)
+            if value is None:
+                continue
+            options = {str(value)}
+            if isinstance(spec, dict):
+                options.update(str(item) for item in spec.get("aliases") or [] if not is_unconfirmed(item))
+            options.update(METADATA_ALIASES.get(str(logical_key), set()))
+            result.setdefault(str(logical_key), set()).update(options)
+    return result
+
+
+def primary_modality_key(bio: dict) -> str | None:
+    value = confirmed_value(((bio.get("modality") or {}).get("primary") or {}))
+    if value is None:
+        return None
+    token = normalize_token(value)
+    if "ribo" in token and "rna" in token:
+        return "ribo_rna_seq"
+    if "scrna" in token or "single_cell" in token:
+        return "scrna_seq"
+    if "bulk" in token and "rna" in token:
+        return "bulk_rna_seq"
+    if "perturb" in token:
+        return "perturb_seq"
+    if "spatial" in token:
+        return "spatial"
+    return None
+
+
+def metadata_terms(inputs: dict) -> set[str]:
+    values: list[str] = []
+    metadata = inputs.get("metadata") or {}
+    if isinstance(metadata, dict):
+        values.extend(flatten_strings(metadata))
+    primary = inputs.get("primary_data") or {}
+    for key in ["metadata", "metadata_keys", "metadata_columns", "columns", "obs_columns", "col_data"]:
+        if isinstance(primary, dict) and key in primary:
+            values.extend(flatten_strings(primary[key]))
+    return {normalize_token(value) for value in values if not is_unconfirmed(value)}
+
+
+def value_matches_options(value: object, options: set[str]) -> bool:
+    value_tokens = {normalize_token(item) for item in flatten_strings(value)}
+    option_tokens = {normalize_token(option) for option in options}
+    return bool(value_tokens & option_tokens)
+
+
+def validate_organism(manifest: dict, io_contract: dict, bio_contract: dict) -> list[str]:
+    primary = ((manifest.get("inputs") or {}).get("primary_data") or {})
+    organism = ((manifest.get("inputs") or {}).get("organism") or {})
+    contract_primary = contract_primary_data(io_contract)
+    contract_organism = contract_primary.get("organism") or {}
+    bio_organism = bio_contract_body(bio_contract).get("organism") or {}
+    errors = []
+    expected_species = confirmed_value(contract_organism.get("species")) or confirmed_value(bio_organism.get("species_supported"))
+    if expected_species is not None:
+        actual_species = confirmed_value(primary.get("species")) or confirmed_value(organism.get("species"))
+        if actual_species is None:
+            errors.append("inputs.primary_data.species is required by bio_contract: %s" % expected_species)
+        elif canonical_species(actual_species) != canonical_species(expected_species):
+            errors.append("inputs.primary_data.species violates bio_contract: expected %s, got %s" % (expected_species, actual_species))
+    expected_build = confirmed_value(contract_organism.get("genome_build")) or confirmed_value(bio_organism.get("genome_build"))
+    if expected_build is not None:
+        actual_build = confirmed_value(primary.get("genome_build")) or confirmed_value(organism.get("genome_build"))
+        if actual_build is None:
+            errors.append("inputs.primary_data.genome_build is required by bio_contract: %s" % expected_build)
+        elif canonical_build(actual_build) != canonical_build(expected_build):
+            errors.append("inputs.primary_data.genome_build violates bio_contract: expected %s, got %s" % (expected_build, actual_build))
+    return errors
+
+
+def canonical_species(value: object) -> str:
+    token = normalize_token(value)
+    if token in {"human", "homo_sapiens", "hsapiens"}:
+        return "human"
+    if token in {"mouse", "mus_musculus", "mmusculus"}:
+        return "mouse"
+    return token
+
+
+def canonical_build(value: object) -> str:
+    token = normalize_token(value)
+    return {"hg38": "grch38", "hg19": "grch37", "mm10": "grcm38", "mm39": "grcm39"}.get(token, token)
+
+
+def validate_paired_modalities(manifest: dict, bio_contract: dict) -> list[str]:
+    bio = bio_contract_body(bio_contract)
+    modality = confirmed_value(((bio.get("modality") or {}).get("primary") or {}))
+    modality_token = normalize_token(modality) if modality is not None else ""
+    if not ("ribo" in modality_token and "rna" in modality_token):
+        return []
+    inputs = manifest.get("inputs") or {}
+    input_tokens = {normalize_token(item) for item in flatten_strings(inputs)}
+    input_text = " ".join(input_tokens)
+    has_ribo = "ribo" in input_text or "riboseq" in input_text or "ribo_seq" in input_text
+    has_rna = "rna" in input_text or "rnaseq" in input_text or "rna_seq" in input_text
+    if has_ribo and has_rna:
+        return []
+    return ["paired Ribo-seq/RNA-seq inputs require both ribo and rna count paths in the input manifest"]
+
+
+def validate_inputs(manifest: dict) -> dict:
+    errors = []
+    primary = ((manifest.get("inputs") or {}).get("primary_data") or {})
+    input_path = primary.get("path")
+    if not input_path and not declares_non_file_source(primary):
+        errors.append("inputs.primary_data.path is required")
+    elif input_path:
+        candidate = ROOT / input_path
+        if primary.get("exists", True) and not candidate.exists():
+            errors.append("primary data does not exist: %s" % env_manager.public_path(str(input_path)))
+    algorithm = ((manifest.get("inputs") or {}).get("algorithm") or {})
+    if "mode" not in algorithm:
+        errors.append("inputs.algorithm.mode is required")
+    io_contract = load_contract("io_contract.yaml")
+    bio_contract = load_contract("bio_contract.yaml")
+    algorithm_contract = load_contract("algorithm_contract.yaml")
+    errors.extend(validate_applicability(manifest, algorithm_contract))
+    errors.extend(validate_contracts(manifest, io_contract, bio_contract))
+    details = refusal_details(errors)
+    return {
+        "status": "pass" if not errors else "blocked_input_invalid",
+        "errors": errors,
+        "error_details": details,
+        "refusal_reasons": details,
+    }
+
+
+def refusal_details(errors: list[str]) -> list[dict]:
+    return [refusal_detail(error) for error in errors]
+
+
+def refusal_detail(error: str) -> dict:
+    text = str(error)
+    lowered = text.lower()
+    if "primary data does not exist" in lowered:
+        return refusal("input_file_missing", text, "inputs.primary_data.path")
+    if "inputs.primary_data.path is required" in lowered:
+        return refusal("input_path_required", text, "inputs.primary_data.path")
+    if "inputs.algorithm.mode is required" in lowered:
+        return refusal("algorithm_mode_required", text, "inputs.algorithm.mode")
+    if "applicability.supported_task" in lowered:
+        return refusal("unsupported_task", text, "inputs.analysis.task")
+    if "applicability.domain" in lowered:
+        return refusal("unsupported_domain", text, "inputs.analysis.domain")
+    if "applicability.modality" in lowered:
+        return refusal("unsupported_modality", text, "inputs.analysis.modality")
+    if "format violates" in lowered or "format is required" in lowered:
+        return refusal("input_format_contract_mismatch", text, "inputs.primary_data.format")
+    if "raw counts required" in lowered or "matrix_state" in lowered or "normalized input is disallowed" in lowered or "batch-corrected input is disallowed" in lowered:
+        return refusal("matrix_state_contract_mismatch", text, "inputs.primary_data.matrix_state")
+    if "metadata field" in lowered or "missing required metadata field" in lowered:
+        return refusal("metadata_contract_mismatch", text, "inputs.metadata")
+    if "species" in lowered:
+        return refusal("species_contract_mismatch", text, "inputs.primary_data.species")
+    if "genome_build" in lowered:
+        return refusal("genome_build_contract_mismatch", text, "inputs.primary_data.genome_build")
+    if "paired ribo-seq/rna-seq" in lowered:
+        return refusal("paired_modality_input_missing", text, "inputs.primary_data.modalities")
+    if "could not load" in lowered:
+        return refusal("contract_load_error", text, "references/contracts")
+    return refusal("input_contract_violation", text, "inputs")
+
+
+def refusal(code: str, message: str, path: str) -> dict:
+    return {
+        "code": code,
+        "message": message,
+        "path": path,
+        "action": "fix_manifest_or_choose_a_supported_dataset_before_running",
+    }
+
+
+def declares_non_file_source(primary: dict) -> bool:
+    source = confirmed_value(primary.get("source")) or confirmed_value(primary.get("data_source"))
+    dataset_name = confirmed_value(primary.get("dataset_name"))
+    package = confirmed_value(primary.get("package"))
+    if dataset_name is not None or package is not None:
+        return True
+    if source is None:
+        return False
+    token = normalize_token(source)
+    return token in {
+        "package_dataset",
+        "scanpy_dataset",
+        "tutorial_dataset",
+        "tutorial_reference",
+        "generated_fixture",
+        "remote_url",
+        "url",
+        "user_provided_or_tutorial_dataset",
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", default=str(ROOT / "assets" / "official_attempt_manifest.yaml"))
+    parser.add_argument("--out", default=str(ROOT / "result"))
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    manifest = load_json_yaml(Path(args.manifest))
+    input_validation = validate_inputs(manifest)
+    public_input_validation = env_manager.public_data(input_validation)
+    write_json(out / "qc" / "input_validation.json", public_input_validation)
+    spec = env_manager.load_json_yaml(ROOT / "assets" / "environment_spec.yaml")
+    report = env_manager.inspect_environment(spec)
+    plan = env_manager.build_install_plan(report, spec)
+    env_manager.write_outputs(report, plan, out)
+    public_report = env_manager.public_environment_report(report)
+    status = input_validation["status"] if input_validation["status"] != "pass" else report["status"]
+    write_json(out / "qc" / "qc_summary.json", {"status": status, "input": public_input_validation, "environment": public_report})
+    if status != "pass":
+        print(json.dumps({"status": status, "input": public_input_validation, "environment": public_report}, indent=2))
+        return 2
+    print(json.dumps({"status": "pass"}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,362 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+EXECUTABLE_ADAPTER_STATUSES = {"verified"}
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_json_yaml(path: Path) -> dict:
+    return env_manager.load_json_yaml(path)
+
+
+def public_cli_path(value: str) -> str:
+    return env_manager.public_path(value)
+
+
+def preflight_status(out: Path) -> str:
+    summary_path = out / "qc" / "qc_summary.json"
+    if summary_path.exists():
+        return load_json(summary_path).get("status", "fail")
+    return "fail"
+
+
+def summarize_csv(path: Path) -> dict:
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    values = []
+    for row in rows:
+        try:
+            values.append(float(row.get("value", 0)))
+        except ValueError:
+            pass
+    return {"rows": len(rows), "value_sum": sum(values), "value_mean": sum(values) / len(values) if values else None}
+
+
+def adapter_type() -> str:
+    return adapter_spec().get("adapter_type", "dry_run_only")
+
+
+def adapter_spec() -> dict:
+    spec_path = ROOT / "references" / "adapter_spec.yaml"
+    if spec_path.exists():
+        return load_json_yaml(spec_path)
+    contract = load_json_yaml(ROOT / "references" / "algorithm_contract.yaml")
+    return {
+        "adapter_type": contract.get("algorithm", {}).get("adapter_type", "dry_run_only"),
+        "status": "dry_run_only",
+        "entrypoint": None,
+        "command": None,
+        "module": None,
+        "function": None,
+        "evidence": [],
+        "caveats": ["adapter_spec.yaml was not generated"],
+    }
+
+
+def is_demo_run(manifest: dict, spec: dict) -> bool:
+    mode = (((manifest.get("inputs") or {}).get("algorithm") or {}).get("mode"))
+    return mode == "demo"
+
+
+def selected_example_id(manifest: dict, cli_value: str | None = None) -> str | None:
+    if cli_value:
+        return cli_value
+    algorithm = ((manifest.get("inputs") or {}).get("algorithm") or {})
+    if algorithm.get("example_id"):
+        return str(algorithm.get("example_id"))
+    catalog = examples_catalog()
+    return catalog.get("default_example_id")
+
+
+def explicit_example_missing(example_id: str | None) -> bool:
+    if not example_id:
+        return False
+    catalog = examples_catalog()
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    return not any(isinstance(item, dict) and item.get("example_id") == example_id for item in examples)
+
+
+def examples_catalog() -> dict:
+    path = ROOT / "references" / "tutorial_catalog.yaml"
+    if not path.exists():
+        path = ROOT / "references" / "examples_catalog.yaml"
+    return load_json_yaml(path) if path.exists() else {}
+
+
+def maturity_contract() -> dict:
+    path = ROOT / "references" / "maturity.yaml"
+    return load_json_yaml(path) if path.exists() else {}
+
+
+def algorithm_contract() -> dict:
+    modern_path = ROOT / "references" / "contracts" / "algorithm_contract.yaml"
+    legacy_path = ROOT / "references" / "algorithm_contract.yaml"
+    path = modern_path if modern_path.exists() else legacy_path
+    return load_json_yaml(path) if path.exists() else {}
+
+
+def real_execution_contract_gate(contract: dict) -> dict:
+    applicability = contract.get("applicability") if isinstance(contract.get("applicability"), dict) else {}
+    recommended = contract.get("recommended_execution") if isinstance(contract.get("recommended_execution"), dict) else {}
+    reasons = []
+    if applicability.get("real_execution_allowed") is False:
+        reasons.append("applicability.real_execution_allowed=false")
+    allowed_modes = applicability.get("allowed_execution_modes")
+    if isinstance(allowed_modes, list) and "verified_run" not in allowed_modes:
+        reasons.append("applicability.allowed_execution_modes lacks verified_run")
+    if recommended.get("can_execute_real_data") is False:
+        reasons.append("recommended_execution.can_execute_real_data=false")
+    return {"allowed": not reasons, "reasons": reasons}
+
+
+def selected_example_adapter_status(example_id: str | None, spec: dict) -> str:
+    catalog = examples_catalog()
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    if not examples:
+        return str(spec.get("status") or "dry_run_only")
+    target = example_id or catalog.get("default_example_id")
+    for item in examples:
+        if isinstance(item, dict) and item.get("example_id") == target:
+            adapter = item.get("adapter") if isinstance(item.get("adapter"), dict) else {}
+            return str(adapter.get("status") or "dry_run_only")
+    return "dry_run_only"
+
+
+def run_adapter(kind: str, manifest: dict, out: Path, manifest_path: Path | None = None, example_id: str | None = None, verification_run: bool = False) -> dict:
+    if kind == "python_api":
+        from adapters import python_api_adapter
+
+        return python_api_adapter.run(manifest, out, manifest_path, example_id, verification_run)
+    if kind == "cli":
+        from adapters import cli_adapter
+
+        return cli_adapter.run(manifest, out, manifest_path, example_id, verification_run)
+    if kind == "notebook":
+        from adapters import notebook_adapter
+
+        return notebook_adapter.run(manifest, out, manifest_path, example_id, verification_run)
+    if kind == "workflow_engine":
+        from adapters import workflow_engine_adapter
+
+        return workflow_engine_adapter.run(manifest, out, manifest_path, example_id, verification_run)
+    if kind == "r_script":
+        from adapters import r_script_adapter
+
+        return r_script_adapter.run(manifest, out, manifest_path, example_id, verification_run)
+    return {"status": "blocked", "adapter_type": kind, "message": "No executable adapter is configured."}
+
+
+def annotate_adapter_report(adapter_report: dict, *, demo_run: bool, verification_run: bool) -> dict:
+    adapter_report["demo_mode"] = bool(demo_run)
+    adapter_report["verification_run"] = bool(verification_run)
+    return adapter_report
+
+
+def write_blocked_result(out: Path, selected_adapter: str, adapter_report: dict, manifest: dict) -> dict:
+    result_status = adapter_report.get("status") if str(adapter_report.get("status", "")).startswith("blocked_") else "blocked_adapter_not_ready"
+    result = {
+        "status": result_status,
+        "skill_name": "{{ skill_name }}",
+        "algorithm": "{{ algorithm_name }}",
+        "maturity_level": "{{ maturity_level }}",
+        "input_validation": load_json(out / "qc" / "input_validation.json"),
+        "environment": load_json(out / "qc" / "environment_report.json"),
+        "parameter_resolution": env_manager.public_data(((manifest.get("inputs") or {}).get("algorithm") or {}).get("parameters", {})),
+        "workflow_summary": load_json(out / "workflow" / "plan.json"),
+        "adapter": adapter_report,
+        "outputs": [],
+        "caveats": adapter_report.get("caveats") or ["adapter is dry_run_only; verification must pass before non-demo execution"],
+        "evidence_used": load_json(out / "workflow" / "plan.json").get("evidence_used", []),
+    }
+    write_json(out / "result.json", env_manager.public_data(result))
+    (out / "logs").mkdir(parents=True, exist_ok=True)
+    (out / "logs" / "run.log").write_text("blocked; adapter_type=%s; adapter_status=%s\n" % (selected_adapter, adapter_report.get("status")), encoding="utf-8")
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--manifest", default=str(ROOT / "assets" / "official_attempt_manifest.yaml"))
+    parser.add_argument("--out", default=str(ROOT / "result"))
+    parser.add_argument("--example-id", default=None)
+    parser.add_argument("--dry-run", action="store_true", help="Plan and render the selected adapter without executing it.")
+    parser.add_argument("--verification-run", action="store_true", help="Build-time controlled execution used by data_smoke/live_execute verification.")
+    args = parser.parse_args(argv)
+    out = Path(args.out)
+    preflight = subprocess.run([sys.executable, str(ROOT / "scripts" / "preflight.py"), "--manifest", args.manifest, "--out", str(out)], text=True)
+    if preflight.returncode != 0:
+        write_json(out / "result.json", {"status": preflight_status(out), "skill_name": "{{ skill_name }}", "algorithm": "{{ algorithm_name }}"})
+        return preflight.returncode
+    manifest = load_json_yaml(Path(args.manifest))
+    spec = adapter_spec()
+    selected_adapter = spec.get("adapter_type", adapter_type())
+    example_id = selected_example_id(manifest, args.example_id)
+    example_adapter_status = selected_example_adapter_status(example_id, spec)
+    adapter_report = {"status": "dry_run_only", "adapter_type": selected_adapter, "example_id": example_id, "message": "Dry-run only adapter was planned."}
+    demo_run = is_demo_run(manifest, spec)
+    adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+    if explicit_example_missing(example_id):
+        (out / "workflow").mkdir(parents=True, exist_ok=True)
+        write_json(out / "workflow" / "plan.json", {"status": "blocked", "evidence_used": []})
+        adapter_report = {
+            "status": "fail",
+            "adapter_type": selected_adapter,
+            "example_id": example_id,
+            "adapter_status": "dry_run_only",
+            "global_adapter_status": spec.get("status"),
+            "entrypoint": spec.get("entrypoint"),
+            "message": "Selected example is missing from tutorial_catalog.yaml.",
+            "caveats": spec.get("caveats", []),
+        }
+        adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+        write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+        blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+        print(json.dumps(blocked, indent=2))
+        return 2
+    plan_command = [sys.executable, str(ROOT / "scripts" / "plan.py"), "--manifest", args.manifest, "--out", str(out)]
+    if example_id:
+        plan_command.extend(["--example-id", example_id])
+    subprocess.run(plan_command, check=True)
+    if args.dry_run:
+        adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+        write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+        write_json(out / "result.json", {"status": "dry_run", "adapter": adapter_report, "outputs": []})
+        print(json.dumps({"status": "dry_run", "adapter": adapter_report}, indent=2))
+        return 0
+    if not demo_run:
+        gate = real_execution_contract_gate(algorithm_contract())
+        if not gate["allowed"] and not args.verification_run:
+            adapter_report = {
+                "status": "blocked_applicability_contract",
+                "adapter_type": selected_adapter,
+                "example_id": example_id,
+                "adapter_status": example_adapter_status,
+                "global_adapter_status": spec.get("status"),
+                "entrypoint": spec.get("entrypoint"),
+                "message": "Algorithm contract does not allow real execution for this child skill state.",
+                "refusal_reasons": [
+                    {"code": "real_execution_not_allowed", "path": "references/contracts/algorithm_contract.yaml", "message": reason}
+                    for reason in gate["reasons"]
+                ],
+                "caveats": spec.get("caveats", []),
+            }
+            adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
+        maturity = maturity_contract()
+        if maturity.get("level") == "L1" and not args.verification_run:
+            adapter_report = {
+                "status": "blocked_contract_only",
+                "adapter_type": selected_adapter,
+                "example_id": example_id,
+                "adapter_status": example_adapter_status,
+                "global_adapter_status": spec.get("status"),
+                "entrypoint": spec.get("entrypoint"),
+                "message": "This skill is L1 contract-only; run_trace and output validation are required before real execution.",
+                "caveats": spec.get("caveats", []),
+            }
+            adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
+        if example_adapter_status not in EXECUTABLE_ADAPTER_STATUSES and not args.verification_run:
+            adapter_report = {
+                "status": "dry_run_only",
+                "adapter_type": selected_adapter,
+                "example_id": example_id,
+                "adapter_status": example_adapter_status,
+                "global_adapter_status": spec.get("status"),
+                "entrypoint": spec.get("entrypoint"),
+                "message": "Adapter status is dry_run_only; run_trace and output validation must pass before real execution.",
+                "caveats": spec.get("caveats", []),
+            }
+            adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
+        adapter_report = run_adapter(selected_adapter, manifest, out, Path(args.manifest), example_id, args.verification_run)
+        adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+        if adapter_report.get("status") != "pass":
+            write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+            blocked = write_blocked_result(out, selected_adapter, adapter_report, manifest)
+            print(json.dumps(blocked, indent=2))
+            return 2
+    adapter_report = annotate_adapter_report(adapter_report, demo_run=demo_run, verification_run=args.verification_run)
+    write_json(out / "workflow" / "adapter_report.json", env_manager.public_data(adapter_report))
+    outputs = adapter_report.get("outputs", [])
+    if demo_run:
+        rel_input = manifest["inputs"]["primary_data"]["path"]
+        summary = summarize_csv(ROOT / rel_input)
+        write_json(out / "results" / "summary.json", summary)
+        outputs = ["results/summary.json"]
+    else:
+        summary_path = out / "results" / "summary.json"
+        if summary_path.exists() and "results/summary.json" not in outputs:
+            outputs = [*outputs, "results/summary.json"]
+    write_json(out / "parameters" / "resolved_parameters.json", env_manager.public_data(manifest["inputs"]["algorithm"].get("parameters", {})))
+    write_json(out / "parameters" / "parameter_sources.json", {"source": "input_manifest"})
+    write_json(out / "workflow" / "executed_steps.json", {"status": "pass", "executed": [step.get("id") for step in load_json(out / "workflow" / "plan.json").get("steps", [])]})
+    repro = out / "reproducibility"
+    repro.mkdir(parents=True, exist_ok=True)
+    for name in ["source_manifest.json", "algorithm_contract.yaml", "adapter_spec.yaml", "adapter_review.yaml", "bio_contract.yaml", "tutorial_catalog.yaml", "maturity.yaml", "notebook_execution_policy.json"]:
+        src = ROOT / "references" / name
+        if src.exists():
+            shutil.copyfile(src, repro / name)
+    contracts_src = ROOT / "references" / "contracts"
+    if contracts_src.exists():
+        shutil.copytree(contracts_src, repro / "contracts", dirs_exist_ok=True)
+    shutil.copyfile(ROOT / "assets" / "environment_spec.yaml", repro / "environment_spec.yaml")
+    (repro / "command_history.sh").write_text("python scripts/run.py --manifest %s\n" % public_cli_path(args.manifest), encoding="utf-8")
+    (out / "logs").mkdir(parents=True, exist_ok=True)
+    (out / "logs" / "run.log").write_text("run completed; adapter_type=%s; adapter_status=%s\n" % (selected_adapter, adapter_report.get("status")), encoding="utf-8")
+    (out / "README.md").write_text("# Result\n\nRun completed with adapter status `%s`.\n" % adapter_report.get("status"), encoding="utf-8")
+    if demo_run:
+        (out / "report.md").write_text("# Report\n\nDemo summary: `%s`.\n" % summary, encoding="utf-8")
+    else:
+        (out / "report.md").write_text("# Report\n\nAdapter execution completed with status `%s`.\n" % adapter_report.get("status"), encoding="utf-8")
+    result = {
+        "status": "pass",
+        "skill_name": "{{ skill_name }}",
+        "algorithm": "{{ algorithm_name }}",
+        "maturity_level": "{{ maturity_level }}",
+        "input_validation": load_json(out / "qc" / "input_validation.json"),
+        "environment": load_json(out / "qc" / "environment_report.json"),
+        "parameter_resolution": load_json(out / "parameters" / "resolved_parameters.json"),
+        "workflow_summary": load_json(out / "workflow" / "plan.json"),
+        "adapter": load_json(out / "workflow" / "adapter_report.json"),
+        "outputs": outputs,
+        "caveats": ["demo run is not user-data biological validation", "demo summary output is not a real algorithm execution unless adapter.status is pass"],
+        "evidence_used": load_json(out / "workflow" / "plan.json").get("evidence_used", []),
+    }
+    write_json(out / "result.json", result)
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

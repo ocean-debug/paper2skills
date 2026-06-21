@@ -1,7 +1,0 @@
-cell,cell.type,condition
-cell_1,Tcell,control
-cell_2,Tcell,control
-cell_3,Tcell,stimulated
-cell_4,Bcell,control
-cell_5,Bcell,stimulated
-cell_6,Bcell,stimulated

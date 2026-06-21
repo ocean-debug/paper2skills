@@ -1,0 +1,279 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+from pathlib import Path
+import sys
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_DIR))
+import env_manager
+
+REQUIRED = [
+    "result.json",
+    "qc/input_validation.json",
+    "qc/environment_report.json",
+    "qc/missing_dependencies.json",
+    "qc/output_validation.json",
+    "qc/qc_summary.json",
+    "workflow/plan.json",
+    "workflow/plan.md",
+    "workflow/executed_steps.json",
+    "parameters/resolved_parameters.json",
+    "parameters/parameter_sources.json",
+    "results/summary.json",
+    "reproducibility/source_manifest.json",
+    "reproducibility/algorithm_contract.yaml",
+    "reproducibility/bio_contract.yaml",
+    "reproducibility/environment_spec.yaml",
+]
+
+
+def write_json(path: Path, data: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def load_json_yaml(path: Path) -> dict:
+    return env_manager.load_json_yaml(path)
+
+
+def load_optional_mapping(path: Path | None) -> dict:
+    if path is None or not path.exists():
+        return {}
+    try:
+        data = load_json_yaml(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_required_mapping(path: Path, label: str) -> tuple[dict, list[dict]]:
+    if not path.exists():
+        return {}, [{"path": str(path), "reason": f"{label}_not_found"}]
+    try:
+        data = load_json_yaml(path)
+    except Exception as exc:
+        return {}, [{"path": str(path), "reason": f"{label}_load_error", "message": str(exc)}]
+    if not isinstance(data, dict):
+        return {}, [{"path": str(path), "reason": f"{label}_must_be_mapping"}]
+    return data, []
+
+
+def expected_contract(validation_manifest: Path | None, *, result: Path, example_id: str | None = None) -> dict:
+    executed_example_id = example_id or adapter_report_example_id(result)
+    if validation_manifest is not None:
+        manifest, contract_errors = load_required_mapping(validation_manifest, "validation_manifest")
+        resolved_example_id = manifest.get("example_id") or executed_example_id
+        expected_outputs = manifest.get("expected_outputs") if isinstance(manifest.get("expected_outputs"), list) else []
+        expected_values = manifest.get("expected_output_values") if isinstance(manifest.get("expected_output_values"), dict) else {}
+        output_contract = manifest.get("output_contract") if isinstance(manifest.get("output_contract"), dict) else {}
+        catalog = load_tutorial_catalog()
+        selected, selected_errors, selected_example_id = selected_catalog_example(catalog, str(resolved_example_id) if resolved_example_id else None)
+        if selected_errors:
+            contract_errors.extend(selected_errors)
+        if not output_contract:
+            output_contract = selected.get("output_contract") if isinstance(selected.get("output_contract"), dict) else {}
+        if not expected_outputs and output_contract:
+            required = output_contract.get("required_files")
+            expected_outputs = required if isinstance(required, list) else []
+        return {
+            "source": "validation_manifest",
+            "expected_outputs": normalize_expected_outputs(expected_outputs),
+            "expected_output_values": expected_values,
+            "output_contract": output_contract,
+            "manifest": env_manager.public_data(manifest),
+            "contract_errors": contract_errors,
+            "example_id": selected_example_id or resolved_example_id,
+        }
+    review = load_optional_mapping(ROOT / "references" / "adapter_review.yaml")
+    review_outputs = review.get("expected_outputs") if isinstance(review.get("expected_outputs"), list) else []
+    review_values = review.get("expected_output_values") if isinstance(review.get("expected_output_values"), dict) else {}
+    catalog = load_tutorial_catalog()
+    selected, selected_errors, selected_example_id = selected_catalog_example(catalog, executed_example_id)
+    output_contract = selected.get("output_contract") if isinstance(selected.get("output_contract"), dict) else {}
+    selected_outputs = output_contract.get("required_files") or selected.get("expected_outputs") or review_outputs
+    selected_values = selected.get("expected_output_values") if isinstance(selected.get("expected_output_values"), dict) else review_values
+    return {
+        "source": "tutorial_catalog" if selected else "adapter_review",
+        "example_id": selected_example_id,
+        "expected_outputs": normalize_expected_outputs(selected_outputs if isinstance(selected_outputs, list) else []),
+        "expected_output_values": selected_values,
+        "output_contract": output_contract,
+        "manifest": {},
+        "contract_errors": selected_errors,
+    }
+
+
+def adapter_report_example_id(result: Path) -> str | None:
+    report = load_optional_mapping(result / "workflow" / "adapter_report.json")
+    value = report.get("example_id")
+    return str(value) if value else None
+
+
+def selected_catalog_example(catalog: dict, example_id: str | None) -> tuple[dict, list[dict], str | None]:
+    examples = catalog.get("examples") if isinstance(catalog.get("examples"), list) else []
+    if not examples:
+        return {}, [], example_id
+    if not example_id:
+        if len(examples) == 1 and isinstance(examples[0], dict):
+            return examples[0], [], str(examples[0].get("example_id") or "")
+        return {}, [{"reason": "example_id_required_for_multiple_examples"}], None
+    for item in examples:
+        if isinstance(item, dict) and item.get("example_id") == example_id:
+            return item, [], example_id
+    return {}, [{"reason": "unknown_example_id", "example_id": example_id}], example_id
+
+
+def load_tutorial_catalog() -> dict:
+    catalog = load_optional_mapping(ROOT / "references" / "tutorial_catalog.yaml")
+    if catalog:
+        return catalog
+    return load_optional_mapping(ROOT / "references" / "examples_catalog.yaml")
+
+
+def normalize_expected_outputs(values: list) -> list[str]:
+    outputs: list[str] = []
+    for item in values:
+        if isinstance(item, str) and item:
+            outputs.append(item)
+        elif isinstance(item, dict):
+            value = item.get("path") or item.get("file") or item.get("relpath")
+            if isinstance(value, str) and value:
+                outputs.append(value)
+    return sorted(dict.fromkeys(outputs))
+
+
+def compare_expected_output_values(result: Path, expected_values: dict) -> list[dict]:
+    mismatches: list[dict] = []
+    for rel, expected in expected_values.items():
+        path = result / str(rel)
+        actual = load_optional_mapping(path)
+        if not path.exists():
+            mismatches.append({"path": str(rel), "reason": "expected_json_output_missing"})
+            continue
+        if not isinstance(expected, dict):
+            mismatches.append({"path": str(rel), "expected": expected, "actual": actual, "reason": "expected_value_contract_must_be_mapping"})
+            continue
+        for key, expected_value in expected.items():
+            actual_value = nested_get(actual, str(key))
+            if actual_value != expected_value:
+                mismatches.append({"path": str(rel), "field": str(key), "expected": expected_value, "actual": actual_value})
+    return mismatches
+
+
+def validate_output_contract(result: Path, contract: dict) -> dict:
+    if not isinstance(contract, dict):
+        contract = {}
+    errors: list[dict] = []
+    json_checks = contract.get("json") if isinstance(contract.get("json"), dict) else {}
+    for rel, spec in json_checks.items():
+        path = result / str(rel)
+        data = load_optional_mapping(path)
+        if not path.exists():
+            errors.append({"path": str(rel), "reason": "json_output_missing"})
+            continue
+        required_keys = spec.get("required_keys") if isinstance(spec, dict) and isinstance(spec.get("required_keys"), list) else []
+        for key in required_keys:
+            if nested_get(data, str(key)) is None:
+                errors.append({"path": str(rel), "field": str(key), "reason": "required_json_key_missing"})
+    nonempty = contract.get("nonempty") if isinstance(contract.get("nonempty"), list) else []
+    for rel in nonempty:
+        path = result / str(rel)
+        if path.exists() and path.is_file() and path.stat().st_size <= 0:
+            errors.append({"path": str(rel), "reason": "empty_output_file"})
+    tables = contract.get("tables") if isinstance(contract.get("tables"), dict) else {}
+    for rel, spec in tables.items():
+        errors.extend(validate_table_contract(result / str(rel), str(rel), spec if isinstance(spec, dict) else {}))
+    log_patterns = contract.get("log_must_not_contain") if isinstance(contract.get("log_must_not_contain"), list) else []
+    errors.extend(validate_logs(result, [str(item) for item in log_patterns]))
+    return {"status": "pass" if not errors else "fail", "errors": errors}
+
+
+def validate_table_contract(path: Path, rel: str, spec: dict) -> list[dict]:
+    errors: list[dict] = []
+    if not path.exists():
+        errors.append({"path": rel, "reason": "table_output_missing"})
+        return errors
+    delimiter = "\t" if path.suffix.lower() in {".tsv", ".txt"} else ","
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle, delimiter=delimiter))
+    except Exception as exc:
+        return [{"path": rel, "reason": "table_read_error", "message": str(exc)}]
+    required_columns = [str(item) for item in spec.get("required_columns", [])] if isinstance(spec.get("required_columns"), list) else []
+    missing_columns = [column for column in required_columns if column not in (rows[0].keys() if rows else [])]
+    for column in missing_columns:
+        errors.append({"path": rel, "field": column, "reason": "required_table_column_missing"})
+    min_rows = int(spec.get("min_rows", 1) or 0)
+    if len(rows) < min_rows:
+        errors.append({"path": rel, "reason": "table_shape_mismatch", "expected_min_rows": min_rows, "actual_rows": len(rows)})
+    min_cols = int(spec.get("min_columns", 1) or 0)
+    actual_cols = len(rows[0].keys()) if rows else 0
+    if actual_cols < min_cols:
+        errors.append({"path": rel, "reason": "table_shape_mismatch", "expected_min_columns": min_cols, "actual_columns": actual_cols})
+    return errors
+
+
+def validate_logs(result: Path, patterns: list[str]) -> list[dict]:
+    if not patterns:
+        return []
+    errors: list[dict] = []
+    logs = result / "logs"
+    if not logs.exists():
+        return errors
+    lowered_patterns = [pattern.lower() for pattern in patterns]
+    for path in logs.rglob("*.log"):
+        text = path.read_text(encoding="utf-8", errors="ignore").lower()
+        for pattern in lowered_patterns:
+            if pattern and pattern in text:
+                errors.append({"path": str(path.relative_to(result)).replace("\\", "/"), "reason": "forbidden_log_pattern", "pattern": pattern})
+    return errors
+
+
+def nested_get(data: dict, key: str) -> object:
+    current: object = data
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--result", default=str(ROOT / "result"))
+    parser.add_argument("--validation-manifest", default=None)
+    parser.add_argument("--example-id", default=None)
+    args = parser.parse_args(argv)
+    result = Path(args.result)
+    manifest_path = Path(args.validation_manifest) if args.validation_manifest else None
+    contract = expected_contract(manifest_path, result=result, example_id=args.example_id)
+    contract_errors = contract.get("contract_errors", [])
+    missing_required = [rel for rel in REQUIRED if not (result / rel).exists() and rel != "qc/output_validation.json"]
+    missing_expected = [rel for rel in contract["expected_outputs"] if not (result / rel).exists()]
+    value_mismatches = compare_expected_output_values(result, contract["expected_output_values"])
+    contract_validation = validate_output_contract(result, contract.get("output_contract") or {})
+    status = "pass" if not contract_errors and not missing_required and not missing_expected and not value_mismatches and contract_validation["status"] == "pass" else "fail"
+    output = {
+        "status": status,
+        "contract_source": contract["source"],
+        "example_id": contract.get("example_id"),
+        "contract_errors": contract_errors,
+        "missing_required_outputs": missing_required,
+        "missing_expected_outputs": missing_expected,
+        "value_mismatches": value_mismatches,
+        "contract_validation": contract_validation,
+        "expected_outputs": contract["expected_outputs"],
+        "expected_output_values_checked": sorted(contract["expected_output_values"].keys()),
+    }
+    write_json(result / "qc" / "output_validation.json", output)
+    print(json.dumps(output, indent=2))
+    return 0 if status == "pass" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

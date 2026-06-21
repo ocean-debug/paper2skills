@@ -1,4 +1,0 @@
-[project]
-name = "notebook-heavy-omics"
-version = "0.1.0"
-dependencies = ["omicsnotebook"]

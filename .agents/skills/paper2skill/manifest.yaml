@@ -1,0 +1,31 @@
+name: paper2skill
+version: 0.2.0
+description: >
+  Declarative loading manifest for the Paper2Skill builder skill. SKILL.md uses
+  this file to keep the router small while loading the workflow and safety
+  contract that apply to every build.
+always_load:
+  - references/workflow.md
+  - references/safety_policy.md
+axes:
+  validation_depth:
+    detect: >
+      Choose build-time validation depth only from the user's request or from
+      the validation goal. Default to dry_run when the user has not provided
+      reviewed data or adapter evidence. data_smoke and live_execute require an
+      explicit reviewed validation manifest.
+    values:
+      dry_run: references/validation_modes.md#dry_run
+      data_smoke: references/validation_modes.md#data_smoke
+      live_execute: references/validation_modes.md#live_execute
+    multi: false
+references:
+  on_demand:
+    - condition: explain or choose build-time validation depth, manifest gates, or repair boundaries
+      path: references/validation_modes.md
+    - condition: run or explain independent gold-standard benchmark evaluation
+      path: references/benchmark_levels.md
+    - condition: inspect the compiler workflow or generated child skill contract
+      path: references/workflow.md
+    - condition: review execution, installation, data, or adapter safety boundaries
+      path: references/safety_policy.md

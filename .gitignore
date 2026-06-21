@@ -1,50 +1,31 @@
 # Local tooling state
-.agents/
-.understand-anything/
+.agents/*
+!.agents/skills/
+!.agents/skills/paper2skill/
+!.agents/skills/paper2skill/**
 .vscode/
 .idea/
 
-# Python caches and test output
+# Runtime caches and local output
 __pycache__/
 *.py[cod]
 .pytest_cache/
-.pytest-tmp/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Python environments and packaging output
 .venv/
 venv/
 env/
-dist/
-build/
-*.egg-info/
 
 # Local environment files
 .env
 .env.*
 !.env.example
 
-# Generated Paper2Skill outputs
+# Generated Paper2Skill outputs and scratch space
 generated/
 paper2skill_plan/
 .paper2skill-smoke-result/
-.paper2skill-smoke-leaks.txt
-.paper2skill_desensitize_smoke.sh
-.paper2skills-sync.tar
-.paper2skills-l2-live-sync*.tar
 .paper2skill-resolve/
 .paper2skill_collection/
-
-# Local planning / product notes, not release artifacts
-prd.md
-PRD.md
-next.md
-CODEX_*.md
-*_PLAN.md
-*_plan.md
+test/
 
 # Logs, temp files, and OS metadata
 *.log
