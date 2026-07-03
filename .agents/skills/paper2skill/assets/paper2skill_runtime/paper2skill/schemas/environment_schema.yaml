@@ -1,8 +1,0 @@
-required:
-  - install_policy
-  - python
-  - r
-  - executables
-properties:
-  install_policy:
-    enum: [never, ask, current_env, isolated_env]

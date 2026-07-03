@@ -1,12 +1,10 @@
-# Local tooling state
-.agents/*
-!.agents/skills/
-!.agents/skills/paper2skill/
-!.agents/skills/paper2skill/**
+# Local Codex/app state
+.agents/
+.codex/
 .vscode/
 .idea/
 
-# Runtime caches and local output
+# Runtime caches and local Python state
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -19,13 +17,11 @@ env/
 .env.*
 !.env.example
 
-# Generated Paper2Skill outputs and scratch space
+# Generated Papert2Skills outputs and scratch space
+runs/
 generated/
-paper2skill_plan/
-.paper2skill-smoke-result/
-.paper2skill-resolve/
-.paper2skill_collection/
-test/
+child_skill/
+.papert2skills/
 
 # Logs, temp files, and OS metadata
 *.log

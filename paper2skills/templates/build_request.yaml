@@ -1,0 +1,42 @@
+schema_version: "1.0"
+package_name: "example-package"
+method_name: "Example Package"
+repo_url: "https://github.com/owner/example-package"
+tutorial_links:
+  - "https://example.org/tutorial"
+doc_links:
+  - "https://example.org/docs"
+paper_links: []
+paper_dois: []
+api_names: []
+source_material_paths: []
+target_agent: "codex"
+language_backend: "python"
+execution_grounded: false
+execution_traces: []
+execution_replay_results: []
+eval_results: []
+agent_rollout_results: []
+smoke_test_results: []
+require_smoke_test: false
+e2e_acceptance_results: []
+require_e2e_acceptance: false
+execution_environment:
+  mode: "unspecified"
+  host: null
+  working_directory: null
+  environment_name: null
+  node: null
+  cores: null
+  remote_only: false
+  notes: []
+existing_skills_dirs: []
+# Builder CLI --out is the actual run directory; keep this for provenance.
+output_dir: "./runs/example-package"
+requested_task_types: []
+fetch_sources: false
+max_fetch_bytes: 5000000
+max_index_files: 500
+max_index_bytes: 250000
+review_iterations: 3
+review_min_score_ratio: 0.875

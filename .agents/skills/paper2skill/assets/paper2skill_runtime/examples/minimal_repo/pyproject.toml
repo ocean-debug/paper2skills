@@ -1,6 +1,0 @@
-[project]
-name = "minimal-paper2skill-repo"
-version = "0.1.0"
-dependencies = [
-  "scanpy>=1.9",
-]
