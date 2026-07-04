@@ -266,14 +266,14 @@ request -> request audit -> request fingerprint -> builder runtime audit -> agen
   and gate discipline.
 - `review_cursor.py`: review-loop cursor, stop reason, resumability, and
   per-iteration state completeness.
-- `patch_application.py`: planned and applied deterministic patch-action audit.
+- `patch_application.py`: planned and applied agent proposal patch-action audit.
 - `review_remediation_audit.py`: review finding remediation accounting across
   patch actions, cleared findings, gate acceptance, and final blockers.
 - `review_optimizer_state.py`: review iteration hashes, cache key, strict
   improvement policy, and rejected-edit buffer.
-- `patch_safety_audit.py`: deterministic patch action safety audit for allowed
+- `patch_safety_audit.py`: bounded agent patch action safety audit for allowed
   artifacts and non-execution boundaries.
-- `patch_operation_contracts.py`: static patch operation contract audit for
+- `patch_operation_contracts.py`: static agent patch operation contract audit for
   operation names, required fields, plan/application alignment, and
   same-iteration finding links.
 - `review_discipline_audit.py`: review-loop state-machine discipline,

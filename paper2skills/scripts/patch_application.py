@@ -1,4 +1,4 @@
-"""Audit deterministic review patch plans and their application."""
+"""Audit agent-driven review patch plans and their application."""
 
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def build_patch_application(
         "records": records,
         "findings": findings,
         "policy": [
-            "Patch application is an audit artifact for deterministic review patches.",
+            "Patch application is an audit artifact for bounded agent-driven review patches.",
             "It records planned and applied actions but does not mutate files by itself.",
         ],
     }

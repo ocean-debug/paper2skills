@@ -1,4 +1,4 @@
-"""Safety audit for deterministic review patch actions."""
+"""Safety audit for bounded agent-driven review patch actions."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def audit_patch_safety(
         "records": records,
         "findings": findings,
         "policy": [
-            "Review patches are deterministic edits to in-memory build artifacts only.",
+            "Review patches are agent-authored but bounded to in-memory build artifacts only.",
             "Patch records must not contain shell commands, network actions, package installation, file paths, or file mutation instructions.",
             "Task catalog and task router are the only patchable artifacts in the current builder loop.",
         ],

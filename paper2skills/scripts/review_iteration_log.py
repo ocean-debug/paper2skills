@@ -121,7 +121,7 @@ def render_review_iteration_log_markdown(log: dict[str, Any]) -> str:
     ]
     lines = [
         f"# {title} Review Iteration Log",
-        "This run artifact summarizes the deterministic self-review loop for human audit.",
+        "This run artifact summarizes the agent-driven self-review loop for human audit.",
         "## Summary",
         md_table(["Field", "Value"], summary_rows),
     ]

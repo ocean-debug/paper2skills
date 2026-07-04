@@ -322,12 +322,14 @@ for the child skill's `task_type` router, not a package execution test.
 
 ## SkillOpt-Style Iterative Self Review
 
-The self-review loop uses bounded draft, critic, patch-plan, revision, and gate
-states. The current implementation is deterministic so builds are reproducible,
-but the state shape is designed so an agentic reviewer can replace the critic
-or patch planner later.
+The self-review loop is agent-driven. Python computes the current rubric,
+findings, cursor, and safe operation contract; Codex or another agent authors
+the bounded edit proposal in `agent_skillopt_proposals`; Python then validates
+and applies only allowed in-memory edits before rescoring. This mirrors the
+init/next-step/proposal/apply/finalize shape of a SkillOpt loop while keeping
+the generated child skill as a Codex skill.
 
-The loop checks, scores, and patches draft artifacts for:
+The loop checks and scores draft artifacts for:
 
 - overclaimed support
 - missing evidence references
@@ -340,8 +342,11 @@ The loop checks, scores, and patches draft artifacts for:
 - missing validation rules
 - accidental verified claims without execution trace
 
-The loop is bounded by `review_iterations` and stops when the rubric gate passes
-or no deterministic patch is available.
+The loop is bounded by `review_iterations` and stops when the rubric gate
+passes, the iteration budget is exhausted, or the run is awaiting an agent
+proposal. When `review_summary.status` is `needs_agent`, run
+`python scripts/papert2skills.py skillopt-next-step --run <run_dir>`, copy the
+returned proposal template into `agent_skillopt_proposals`, and rerun the build.
 
 Review evolution summarizes each iteration's score ratio, blocking status,
 focus areas, patch changes, and gate reason into `review_evolution.yaml`. The
@@ -373,8 +378,8 @@ one of the required scientific-skill checks.
 
 Review cursor records the current review phase, stop reason, resumability, and
 required per-iteration states. Patch application records planned and applied
-deterministic patch actions. Together they make the self-review loop resumable
-and auditable without executing package code.
+agent proposal actions. Together they make the self-review loop resumable and
+auditable without executing package code.
 
 Review remediation audit accounts for every non-info review finding as patched,
 cleared, accepted by a passing gate, or still unresolved. It blocks publish

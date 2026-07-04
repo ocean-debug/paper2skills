@@ -49,9 +49,12 @@ def current_cursor(review_result: dict[str, Any]) -> dict[str, Any]:
     if review_result.get("status") == "passed":
         phase = "complete"
         resumable = False
-    elif stop_reason == "no_deterministic_patch_available":
-        phase = "needs_manual_or_agentic_review"
-        resumable = False
+    elif stop_reason == "awaiting_agent_proposal":
+        phase = "awaiting_agent_skillopt_proposal"
+        resumable = True
+    elif stop_reason == "agent_proposal_rejected":
+        phase = "agent_skillopt_proposal_rejected"
+        resumable = True
     elif stop_reason == "iteration_budget_exhausted":
         phase = "iteration_budget_exhausted"
         resumable = True
@@ -104,5 +107,6 @@ def build_review_cursor(
         "policy": [
             "Every review iteration must expose draft_snapshot, critic, patch_plan, and gate states.",
             "The cursor records resumability and stop reason; it does not execute review or apply patches.",
+            "awaiting_agent_skillopt_proposal means Codex must author a bounded proposal and rerun the build.",
         ],
     }

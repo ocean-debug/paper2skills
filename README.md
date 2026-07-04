@@ -292,9 +292,12 @@ publish blockers, candidate gate status, candidate evolution status, Codex
 publish adapter status, install readiness, and publish manifest audit status as
 a run artifact after publish manifest audit.
 
-The iterative review loop writes human-readable evolution and iteration-log
-summaries plus machine-readable prompt contract, cursor, plot, and application
-artifacts.
+The iterative review loop is agent-driven. Python records findings, rubric
+scores, prompt contracts, cursor state, proposal templates, strict improvement
+state, and bounded apply results; Codex or another agent writes
+`agent_skillopt_proposals` and reruns the build. When a run stops with
+`review_summary.status: needs_agent`, use `skillopt-next-step --run <run_dir>`
+to retrieve the next proposal template.
 `review_prompt_contracts.yaml` records required state roles, fields, allowed
 actions, and forbidden actions for draft, critic, patch-plan, revision, and
 gate states. `review_prompt_materials.yaml` records static prompt material,
@@ -302,11 +305,11 @@ allowed inputs, required outputs, and forbidden outputs for each role.
 `review_prompt_suite_audit.yaml` records required review duty
 coverage across grounding, task split, contracts, refusals, validation,
 verification, patch planning, and gate discipline. `review_cursor.yaml` records the current review state and
-resumability; `patch_application.yaml` records planned and applied deterministic
-patch actions; `review_optimizer_state.yaml` records
+resumability; `patch_application.yaml` records planned and applied agent
+proposal actions; `review_optimizer_state.yaml` records
 state hashes, cache key, strict improvement policy, and rejected edits;
 `patch_safety_audit.yaml` blocks patch records that mention paths, commands,
-installs, network actions, or artifacts outside the allowed deterministic set.
+installs, network actions, or artifacts outside the allowed agent-edit set.
 `patch_operation_contracts.yaml` checks operation names, required action
 fields, plan/application alignment, and same-iteration finding traceability.
 `review_discipline_audit.yaml` checks state-machine consistency, stop reasons,
@@ -351,6 +354,7 @@ execution_traces: []
 execution_replay_results: []
 eval_results: []
 agent_rollout_results: []
+agent_skillopt_proposals: []
 smoke_test_results: []
 require_smoke_test: false
 e2e_acceptance_results: []
@@ -488,6 +492,7 @@ python paper2skills/scripts/papert2skills.py judge-agent-rollout-results \
   --eval-leakage-audit runs/example-package/eval_leakage_audit.yaml
 python paper2skills/scripts/papert2skills.py audit-protocol-compliance --run runs/example-package
 python paper2skills/scripts/papert2skills.py audit-build-timeline --run runs/example-package
+python paper2skills/scripts/papert2skills.py skillopt-next-step --run runs/example-package
 python paper2skills/scripts/papert2skills.py verify-run-manifest --run runs/example-package
 python paper2skills/scripts/papert2skills.py audit-agent-metadata --skill paper2skills
 python paper2skills/scripts/papert2skills.py audit-public-origin \
@@ -622,7 +627,7 @@ paper2skills/scripts/
   patch_application.py      # planned/applied patch-action audit
   review_remediation_audit.py # review finding remediation accounting
   review_optimizer_state.py # review state hashes, cache key, and rejected edits
-  patch_safety_audit.py     # deterministic patch action safety audit
+  patch_safety_audit.py     # bounded agent patch action safety audit
   patch_operation_contracts.py # patch operation names, fields, and finding links
   review_discipline_audit.py # review loop state-machine discipline audit
   rubric_grounding_audit.py # per-item rubric grounding audit

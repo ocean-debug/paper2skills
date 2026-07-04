@@ -25,14 +25,14 @@ CONTRACTS: list[dict[str, Any]] = [
     },
     {
         "role": "patch_plan",
-        "purpose": "Describe deterministic in-memory patches for fixable findings.",
+        "purpose": "Describe bounded agent-authored edit proposals for fixable findings.",
         "required_fields": ["role", "changed", "actions", "summary"],
-        "allowed_actions": ["plan task_catalog edits", "plan task_type_router rebuilds"],
+        "allowed_actions": ["plan task_catalog edits", "plan task_type_router rebuilds", "request Codex-authored proposal"],
         "forbidden_actions": ["shell commands", "filesystem mutations", "network access", "dependency installation"],
     },
     {
         "role": "revision",
-        "purpose": "Record the in-memory artifact changes applied by the deterministic patch planner.",
+        "purpose": "Record the in-memory artifact changes applied from an accepted agent proposal.",
         "required_fields": ["role", "changed", "changed_artifacts", "summary"],
         "allowed_actions": ["record applied in-memory changes"],
         "forbidden_actions": ["edit generated child files directly", "hide unresolved findings"],
@@ -147,6 +147,6 @@ def build_review_prompt_contracts(
         "policy": [
             "Review prompt contracts define allowed state roles and required fields for each self-review iteration.",
             "The contract layer is static and non-executing; it audits the review loop shape before publish.",
-            "Patch planning must stay deterministic and in-memory unless a later explicit execution path is added.",
+            "Patch planning must be agent-authored, bounded to declared operations, and applied only through audited in-memory artifacts.",
         ],
     }

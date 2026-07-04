@@ -55,13 +55,16 @@ Do not mark a task as verified unless validated execution evidence exists.
    reuse/update/create decision and the field-level match quality.
 8. Draft a task-type router, task partition audit, task conflict matrix, and
    static routing fixture for the single child skill.
-9. Run the iterative self-review loop against evidence, tutorial, environment,
-   API/interface grounding, parameter contracts, refusals, and validation.
+9. Run the agent-driven SkillOpt-style self-review loop against evidence,
+   tutorial, environment, API/interface grounding, parameter contracts,
+   refusals, and validation. If the rubric does not pass and no agent proposal
+   is supplied, stop at `needs_agent`; run `skillopt-next-step --run <run_dir>`,
+   add a bounded `agent_skillopt_proposals` entry to the request, and rerun.
    Record review evolution and a run-level SVG plot so score movement, patch
    actions, and stop reasons remain auditable. Record review prompt contracts so draft, critic,
    patch-plan, revision, and gate states have required fields and allowed
    actions. Record review cursor and patch-application artifacts so iteration
-   state, resumability, and deterministic edits are explicit. Record optimizer
+   state, resumability, and agent proposals are explicit. Record optimizer
    state and patch-safety audits so strict improvement policy,
    rejected edits, state hashes, and allowed patch boundaries are explicit.
    Audit review discipline so stop reasons, gate states, and patch score
@@ -386,16 +389,16 @@ Module responsibilities:
   and gate discipline.
 - `review_cursor.py`: records the current review cursor, stop reason,
   resumability, and required per-iteration states.
-- `patch_application.py`: audits planned and applied deterministic patch
+- `patch_application.py`: audits planned and applied agent proposal patch
   actions from the review loop.
 - `review_remediation_audit.py`: accounts for every non-info review finding as
   patched, cleared, gate-accepted, or still unresolved.
 - `review_optimizer_state.py`: records review iteration hashes, cache key,
   strict improvement policy, and rejected edits.
-- `patch_safety_audit.py`: checks patch records stay within deterministic
+- `patch_safety_audit.py`: checks patch records stay within bounded in-memory
   artifact boundaries and contain no commands, installs, network actions, or
   file targets.
-- `patch_operation_contracts.py`: checks deterministic patch operation names,
+- `patch_operation_contracts.py`: checks agent proposal patch operation names,
   required action fields, plan/application alignment, and finding traceability.
 - `review_discipline_audit.py`: audits review-loop state-machine consistency,
   stop reasons, patch/gate agreement, and score regressions.

@@ -17,6 +17,7 @@ execution_traces: []
 execution_replay_results: []
 eval_results: []
 agent_rollout_results: []
+agent_skillopt_proposals: []
 smoke_test_results: []
 require_smoke_test: false
 e2e_acceptance_results: []

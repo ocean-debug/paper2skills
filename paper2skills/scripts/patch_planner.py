@@ -81,68 +81,99 @@ def enforce_verification_boundaries(task: dict[str, Any]) -> bool:
     return False
 
 
-def apply_review_patches(
+def task_matches(task: dict[str, Any], task_type: str | None) -> bool:
+    return task_type in {None, "", "*"} or str(task.get("task_type")) == str(task_type)
+
+
+def apply_agent_review_proposal(
     task_catalog: dict[str, Any],
     router: dict[str, Any],
+    proposal: dict[str, Any],
     findings: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Apply a bounded agent-authored SkillOpt edit proposal."""
     patched_catalog = deepcopy(task_catalog)
     changed = False
-    refusal_codes = finding_codes(findings, {"refusal", "unsupported", "missing_required_input"})
-    contract_codes = finding_codes(findings, {"contract", "input", "output", "validation"})
-    verification_codes = finding_codes(findings, {"verification", "verified", "trace", "execution"})
     actions: list[dict[str, Any]] = []
-    for task in patched_catalog.get("tasks", []):
-        task_type = task.get("task_type")
-        if ensure_task_refusals(task):
-            actions.append(
-                {
-                    "artifact": "task_catalog",
-                    "task_type": task_type,
-                    "operation": "ensure_refusal_boundaries",
-                    "action": "add required refusal boundaries",
-                    "finding_codes": refusal_codes,
-                }
-            )
-            changed = True
-        if ensure_contract_grounding_notes(task):
-            actions.append(
-                {
-                    "artifact": "task_catalog",
-                    "task_type": task_type,
-                    "operation": "ensure_contract_grounding_notes",
-                    "action": "add contract grounding notes and minimum validation fallback",
-                    "finding_codes": contract_codes,
-                }
-            )
-            changed = True
-        if enforce_verification_boundaries(task):
-            actions.append(
-                {
-                    "artifact": "task_catalog",
-                    "task_type": task_type,
-                    "operation": "downgrade_execution_verification_without_trace",
-                    "action": "downgrade execution verification without execution evidence",
-                    "finding_codes": verification_codes,
-                }
-            )
-            changed = True
-    patched_router = build_router(patched_catalog) if changed else router
-    if changed:
-        router_codes = sorted(
+    rejected_operations: list[dict[str, Any]] = []
+    allowed_operations = {
+        "ensure_refusal_boundaries",
+        "ensure_contract_grounding_notes",
+        "downgrade_execution_verification_without_trace",
+        "rebuild_task_type_router",
+    }
+    operations = proposal.get("operations", [])
+    requested_router_rebuild = False
+    if not isinstance(operations, list):
+        operations = []
+        rejected_operations.append(
             {
-                code
-                for action in actions
-                for code in action.get("finding_codes", [])
+                "operation": None,
+                "reason": "proposal_operations_must_be_list",
             }
         )
+
+    for operation in operations:
+        if not isinstance(operation, dict):
+            rejected_operations.append({"operation": None, "reason": "operation_must_be_mapping"})
+            continue
+        op_name = str(operation.get("operation") or "")
+        task_type = operation.get("task_type")
+        if op_name not in allowed_operations:
+            rejected_operations.append(
+                {
+                    "operation": op_name,
+                    "task_type": task_type,
+                    "reason": "unsupported_agent_skillopt_operation",
+                }
+            )
+            continue
+        if op_name == "rebuild_task_type_router":
+            requested_router_rebuild = True
+            continue
+        matched = False
+        for task in patched_catalog.get("tasks", []):
+            if not task_matches(task, task_type):
+                continue
+            matched = True
+            task_changed = False
+            if op_name == "ensure_refusal_boundaries":
+                task_changed = ensure_task_refusals(task)
+            elif op_name == "ensure_contract_grounding_notes":
+                task_changed = ensure_contract_grounding_notes(task)
+            elif op_name == "downgrade_execution_verification_without_trace":
+                task_changed = enforce_verification_boundaries(task)
+            if task_changed:
+                actions.append(
+                    {
+                        "artifact": "task_catalog",
+                        "task_type": task.get("task_type"),
+                        "operation": op_name,
+                        "action": operation.get("rationale") or f"apply agent proposal operation {op_name}",
+                        "proposal_id": proposal.get("proposal_id"),
+                        "finding_codes": finding_codes(findings, {op_name.replace("_", " ")}),
+                    }
+                )
+                changed = True
+        if not matched:
+            rejected_operations.append(
+                {
+                    "operation": op_name,
+                    "task_type": task_type,
+                    "reason": "task_type_not_found",
+                }
+            )
+
+    patched_router = build_router(patched_catalog) if changed else router
+    if changed and (requested_router_rebuild or not any(action.get("artifact") == "task_type_router" for action in actions)):
         actions.append(
             {
                 "artifact": "task_type_router",
                 "operation": "rebuild_task_type_router",
-                "action": "rebuild routes from reviewed task catalog",
-                "finding_codes": router_codes,
+                "action": "rebuild routes from agent-reviewed task catalog",
+                "proposal_id": proposal.get("proposal_id"),
                 "source_artifacts": ["task_catalog"],
+                "finding_codes": finding_codes(findings, {"routing", "task"}),
             }
         )
     return {
@@ -150,6 +181,8 @@ def apply_review_patches(
         "task_catalog": patched_catalog,
         "router": patched_router,
         "actions": actions,
-        "patch_summary": "Applied deterministic review patches." if changed else "No deterministic patch available.",
+        "rejected_operations": rejected_operations,
+        "patch_summary": "Applied agent SkillOpt proposal." if changed else "Agent SkillOpt proposal made no allowed changes.",
         "finding_count": len(findings),
+        "proposal_id": proposal.get("proposal_id"),
     }

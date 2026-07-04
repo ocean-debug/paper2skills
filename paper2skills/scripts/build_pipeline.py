@@ -527,10 +527,14 @@ def build(request_path: Path, out: Path) -> dict:
     review_summary = {
         "schema_version": source_grounding["schema_version"],
         "status": review_result["status"],
+        "mode": review_result.get("mode"),
+        "agent_driven": review_result.get("agent_driven"),
         "final_score": review_result["final_score"],
         "final_findings": review_result["final_findings"],
         "iteration_count": len(review_result["iterations"]),
         "stop_reason": review_result.get("stop_reason"),
+        "candidate_versions": review_result.get("candidate_versions", []),
+        "next_step": review_result.get("next_step"),
     }
     review_evolution = build_review_evolution(request, review_result)
     review_evolution_plot = build_review_evolution_plot(request, review_evolution)
@@ -579,7 +583,7 @@ def build(request_path: Path, out: Path) -> dict:
         "completed",
         inputs=["discovery_report.yaml", "source_grounding.yaml", "task_catalog.yaml", "task_type_router.yaml"],
         outputs=["review_iterations.jsonl", "review_log.jsonl", "review_summary.yaml"],
-        gates=["bounded iterative review", "deterministic patch loop"],
+        gates=["bounded agent-driven review", "Codex-authored proposal required for non-passing drafts", "strict improvement gate"],
     )
     record_phase(
         phase_state,
@@ -635,7 +639,7 @@ def build(request_path: Path, out: Path) -> dict:
         "completed",
         inputs=["review_iterations.jsonl"],
         outputs=["patch_application.yaml"],
-        gates=["planned deterministic patch actions match applied patch records"],
+        gates=["planned agent proposal actions match applied patch records"],
     )
     record_phase(
         phase_state,

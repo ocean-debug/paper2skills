@@ -147,20 +147,20 @@ def build_review_discipline_audit(
                 "A changed review patch must record at least one action.",
                 iteration_index,
             )
-        if changed and gate_reason != "patched_for_next_iteration":
+        if changed and gate_reason not in {"patched_for_next_iteration", "agent_proposal_applied_for_next_iteration"}:
             add_finding(
                 findings,
                 "error",
                 "changed_patch_wrong_gate_reason",
-                "A changed review patch must close the iteration with patched_for_next_iteration.",
+                "A changed review patch must close the iteration with a patch-for-next-iteration gate reason.",
                 iteration_index,
             )
-        if not changed and not passed and gate_reason != "no_deterministic_patch_available":
+        if not changed and not passed and gate_reason not in {"awaiting_agent_proposal", "agent_proposal_rejected"}:
             add_finding(
                 findings,
                 "error",
                 "stopped_iteration_wrong_gate_reason",
-                "A failed iteration without a patch must record no_deterministic_patch_available.",
+                "A failed iteration without a patch must record a recognized no-patch or awaiting-agent gate reason.",
                 iteration_index,
             )
 
@@ -198,12 +198,19 @@ def build_review_discipline_audit(
             "stop_reason_pass_without_passed_last_iteration",
             "rubric_gate_passed requires the last iteration to pass.",
         )
-    if stop_reason == "no_deterministic_patch_available" and (last_passed or last_changed):
+    if stop_reason == "awaiting_agent_proposal" and (last_passed or last_changed):
         add_finding(
             findings,
             "error",
-            "stop_reason_no_patch_inconsistent",
-            "no_deterministic_patch_available requires a failed last iteration with no patch.",
+            "stop_reason_awaiting_agent_inconsistent",
+            "awaiting_agent_proposal requires a failed last iteration with no applied patch.",
+        )
+    if stop_reason == "agent_proposal_rejected" and (last_passed or last_changed):
+        add_finding(
+            findings,
+            "error",
+            "stop_reason_agent_rejected_inconsistent",
+            "agent_proposal_rejected requires a failed last iteration with no accepted patch.",
         )
     if stop_reason == "iteration_budget_exhausted" and iteration_count != max_iterations:
         add_finding(
@@ -235,5 +242,6 @@ def build_review_discipline_audit(
         "policy": [
             "Review discipline audits the self-review state machine; it does not execute package code.",
             "Each iteration must expose draft, critic, patch-plan, revision/gate semantics and consistent stop reasons.",
+            "Agent-driven SkillOpt iterations may stop at awaiting_agent_proposal until Codex supplies an edit proposal.",
         ],
     }

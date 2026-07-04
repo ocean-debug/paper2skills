@@ -221,6 +221,10 @@ def main(argv: list[str] | None = None) -> int:
     baseline_audit_parser.add_argument("--repo-root", default=None, help="Repository root containing README.md.")
     baseline_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
 
+    skillopt_next_parser = sub.add_parser("skillopt-next-step", help="Print the next agent-driven SkillOpt proposal step for a run directory.")
+    skillopt_next_parser.add_argument("--run", required=True, help="Run artifact directory.")
+    skillopt_next_parser.add_argument("--out", default=None, help="Optional next-step report path.")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "build":
@@ -301,6 +305,22 @@ def main(argv: list[str] | None = None) -> int:
                 write_data(Path(args.out), report)
             print(json.dumps(report, indent=2, ensure_ascii=False))
             return 0 if report["status"] == "pass" else 1
+        if args.command == "skillopt-next-step":
+            run_dir = Path(args.run)
+            review_summary = load_data(run_dir / "review_summary.yaml")
+            report = {
+                "schema_version": review_summary.get("schema_version"),
+                "status": "pass" if review_summary.get("next_step") else "complete",
+                "review_status": review_summary.get("status"),
+                "mode": review_summary.get("mode"),
+                "agent_driven": review_summary.get("agent_driven"),
+                "stop_reason": review_summary.get("stop_reason"),
+                "next_step": review_summary.get("next_step"),
+            }
+            if args.out:
+                write_data(Path(args.out), report)
+            print(json.dumps(report, indent=2, ensure_ascii=False))
+            return 0
         if args.command == "audit-completion":
             run_dir = Path(args.run)
             request = load_data(run_dir / "request.yaml")

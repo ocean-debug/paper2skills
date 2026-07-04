@@ -49,7 +49,7 @@ REVIEW_DUTIES: list[dict[str, Any]] = [
         "duty": "patch_planning",
         "required_signals": ["patch_plan"],
         "required_roles": ["patch_plan"],
-        "purpose": "Check deterministic patch planning is represented as a bounded state.",
+        "purpose": "Check agent-driven patch planning is represented as a bounded state.",
     },
     {
         "duty": "gate_discipline",

@@ -14,7 +14,7 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "description": "Normalized build request reused by follow-up audits and handoff commands.",
         "required_fields": ["schema_version", "repo_url", "target_agent", "language_backend", "output_dir", "execution_grounded", "execution_environment", "fetch_sources", "max_fetch_bytes", "max_index_files", "max_index_bytes", "review_iterations", "review_min_score_ratio", "require_smoke_test"],
         "dict_fields": ["execution_environment"],
-        "list_fields": ["tutorial_links", "doc_links", "paper_links", "paper_dois", "api_names", "source_material_paths", "existing_skills_dirs", "requested_task_types", "execution_traces", "execution_replay_results", "eval_results", "agent_rollout_results", "smoke_test_results", "e2e_acceptance_results"],
+        "list_fields": ["tutorial_links", "doc_links", "paper_links", "paper_dois", "api_names", "source_material_paths", "existing_skills_dirs", "requested_task_types", "execution_traces", "execution_replay_results", "eval_results", "agent_rollout_results", "agent_skillopt_proposals", "smoke_test_results", "e2e_acceptance_results"],
     },
     "request_audit": {
         "description": "Normalized build request contract, source-support, and execution-boundary audit.",
@@ -383,9 +383,9 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "required_fields": ["schema_version", "builder_version", "child_skill", "backend"],
     },
     "review_summary": {
-        "description": "Self-review loop final status and findings.",
-        "required_fields": ["schema_version", "status", "final_score", "final_findings", "iteration_count"],
-        "list_fields": ["final_findings"],
+        "description": "Agent-driven self-review loop final status, findings, cursor, and candidate versions.",
+        "required_fields": ["schema_version", "status", "mode", "agent_driven", "final_score", "final_findings", "iteration_count", "stop_reason", "candidate_versions"],
+        "list_fields": ["final_findings", "candidate_versions"],
     },
     "review_evolution": {
         "description": "Self-review score, patch, and gate trajectory summary.",
@@ -427,7 +427,7 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "list_fields": ["iterations", "findings"],
     },
     "patch_application": {
-        "description": "Audit of planned and applied deterministic review patches.",
+        "description": "Audit of planned and applied agent-driven review patches.",
         "required_fields": ["schema_version", "status", "iteration_count", "changed_iteration_count", "changed_artifacts", "records", "findings"],
         "list_fields": ["changed_artifacts", "records", "findings"],
     },
@@ -444,12 +444,12 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "list_fields": ["iterations", "rejected_edits", "findings", "policy"],
     },
     "patch_safety_audit": {
-        "description": "Safety audit for deterministic review patch actions.",
+        "description": "Safety audit for bounded agent-driven review patch actions.",
         "required_fields": ["schema_version", "status", "review_status", "optimizer_state_status", "allowed_patch_artifacts", "patch_action_count", "records", "findings", "policy"],
         "list_fields": ["allowed_patch_artifacts", "records", "findings", "policy"],
     },
     "patch_operation_contracts": {
-        "description": "Contract audit for deterministic review patch operation names, fields, and finding traceability.",
+        "description": "Contract audit for agent-driven review patch operation names, fields, and finding traceability.",
         "required_fields": ["schema_version", "status", "review_status", "patch_application_status", "patch_safety_status", "contract_count", "operation_contracts", "allowed_artifacts", "iteration_count", "action_count", "records", "findings", "policy"],
         "dict_fields": ["operation_contracts"],
         "list_fields": ["allowed_artifacts", "records", "findings", "policy"],

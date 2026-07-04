@@ -1,4 +1,4 @@
-"""Contract audit for deterministic review patch operations."""
+"""Contract audit for bounded agent-driven review patch operations."""
 
 from __future__ import annotations
 
@@ -12,25 +12,25 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     "ensure_refusal_boundaries": {
         "artifact": "task_catalog",
         "required_fields": ["artifact", "task_type", "operation", "action", "finding_codes"],
-        "optional_fields": [],
+        "optional_fields": ["proposal_id"],
         "purpose": "Add required refusal boundaries to a task_type record.",
     },
     "ensure_contract_grounding_notes": {
         "artifact": "task_catalog",
         "required_fields": ["artifact", "task_type", "operation", "action", "finding_codes"],
-        "optional_fields": [],
+        "optional_fields": ["proposal_id"],
         "purpose": "Add grounding notes and minimum validation fallbacks to task contracts.",
     },
     "downgrade_execution_verification_without_trace": {
         "artifact": "task_catalog",
         "required_fields": ["artifact", "task_type", "operation", "action", "finding_codes"],
-        "optional_fields": [],
+        "optional_fields": ["proposal_id"],
         "purpose": "Remove execution_verified status when no successful trace is present.",
     },
     "rebuild_task_type_router": {
         "artifact": "task_type_router",
         "required_fields": ["artifact", "operation", "action", "finding_codes", "source_artifacts"],
-        "optional_fields": [],
+        "optional_fields": ["proposal_id"],
         "purpose": "Rebuild task_type routes after task_catalog review patches.",
     },
 }

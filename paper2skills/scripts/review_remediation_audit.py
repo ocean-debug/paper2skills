@@ -1,4 +1,4 @@
-"""Audit review finding remediation across deterministic review iterations."""
+"""Audit review finding remediation across agent-driven review iterations."""
 
 from __future__ import annotations
 

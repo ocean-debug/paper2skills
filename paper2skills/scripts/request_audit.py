@@ -21,6 +21,7 @@ LIST_FIELDS = {
     "execution_replay_results",
     "eval_results",
     "agent_rollout_results",
+    "agent_skillopt_proposals",
     "smoke_test_results",
     "e2e_acceptance_results",
 }

@@ -19,6 +19,7 @@ def normalize_request(raw: dict[str, Any], out: Path) -> dict[str, Any]:
     request.setdefault("execution_replay_results", [])
     request.setdefault("eval_results", [])
     request.setdefault("agent_rollout_results", [])
+    request.setdefault("agent_skillopt_proposals", [])
     request.setdefault("smoke_test_results", [])
     request.setdefault("require_smoke_test", False)
     request.setdefault("e2e_acceptance_results", [])

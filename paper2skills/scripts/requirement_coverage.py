@@ -282,7 +282,7 @@ def build_requirement_coverage(
         },
         {
             "requirement_id": "self_review_iteration",
-            "requirement": "SkillOpt-style self-review records review state, patch plan, optimizer state, patch safety, and gate discipline.",
+            "requirement": "Agent-driven SkillOpt-style self-review records review state, agent proposal plan, optimizer state, patch safety, and gate discipline.",
             "status": status_from([
                 review_optimizer_state.get("status") == "pass",
                 review_prompt_contracts.get("status") == "pass",

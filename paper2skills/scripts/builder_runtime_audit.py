@@ -34,6 +34,7 @@ REQUIRED_TEMPLATE_FIELDS = [
     "execution_replay_results",
     "eval_results",
     "agent_rollout_results",
+    "agent_skillopt_proposals",
     "smoke_test_results",
     "require_smoke_test",
     "e2e_acceptance_results",
@@ -91,6 +92,7 @@ REQUIRED_CLI_COMMANDS = [
     "audit-skill-package",
     "audit-module-inventory",
     "audit-builder-baseline",
+    "skillopt-next-step",
 ]
 
 REQUIRED_OPENAI_INTERFACE_FIELDS = [
