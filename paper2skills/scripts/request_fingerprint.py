@@ -20,7 +20,7 @@ CONTROL_FIELDS = [
     "max_index_bytes",
     "review_iterations",
     "review_min_score_ratio",
-    "agent_skillopt_proposals",
+    "agent_review_proposals",
 ]
 IDENTIFIER_FIELDS = [
     "package_name",

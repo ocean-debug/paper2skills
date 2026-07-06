@@ -1,4 +1,4 @@
-"""SkillOpt-style self-review checks for generated drafts."""
+"""Static source-grounding checks for generated drafts."""
 
 from __future__ import annotations
 
@@ -103,6 +103,15 @@ def self_review(
                     "message": "Task is missing evidence references.",
                 }
             )
+        if task.get("evidence_support") == "fallback_only":
+            findings.append(
+                {
+                    "severity": "error",
+                    "check": "evidence_refs",
+                    "task_type": task_type,
+                    "message": "Task has only fallback package-level evidence; do not publish it as a supported biology workflow.",
+                }
+            )
         if task_type not in route_task_types:
             findings.append(
                 {
@@ -121,6 +130,44 @@ def self_review(
                     "message": "Task has no routing cues.",
                 }
             )
+        operational_recipe = task.get("operational_recipe") or {}
+        if not operational_recipe:
+            findings.append(
+                {
+                    "severity": "error",
+                    "check": "operational_recipe",
+                    "task_type": task_type,
+                    "message": "Task is missing an agent-usable operational recipe.",
+                }
+            )
+        else:
+            if not operational_recipe.get("workflow_steps"):
+                findings.append(
+                    {
+                        "severity": "error",
+                        "check": "operational_recipe",
+                        "task_type": task_type,
+                        "message": "Operational recipe is missing concrete workflow steps.",
+                    }
+                )
+            if not operational_recipe.get("api_sequence"):
+                findings.append(
+                    {
+                        "severity": "error",
+                        "check": "operational_recipe",
+                        "task_type": task_type,
+                        "message": "Operational recipe has no source-grounded API sequence.",
+                    }
+                )
+            if operational_recipe.get("status") == "needs_agent_review":
+                findings.append(
+                    {
+                        "severity": "error",
+                        "check": "operational_recipe",
+                        "task_type": task_type,
+                        "message": "Operational recipe needs agent review before execution because no primary API was selected.",
+                    }
+                )
         input_contract = task.get("input_contract") or {}
         output_contract = task.get("output_contract") or {}
         if not input_contract.get("required_from_user"):

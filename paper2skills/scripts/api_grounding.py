@@ -95,8 +95,6 @@ def build_api_grounding(
             add_candidate(candidates, seen, str(symbol), "function", record, cards)
         for symbol in record.get("api_calls", [])[:120]:
             add_candidate(candidates, seen, str(symbol), "api_call", record, cards)
-        for symbol in record.get("imports", [])[:80]:
-            add_candidate(candidates, seen, str(symbol), "import", record, cards)
 
     by_task_type: dict[str, dict[str, Any]] = {}
     for candidate in candidates:

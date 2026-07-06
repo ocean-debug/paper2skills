@@ -1,5 +1,5 @@
 interface:
-  display_name: "Papert2Skills"
+  display_name: "paper2skills"
   short_description: "Build source-grounded Codex skills with task_type contracts, refusal rules, and evidence."
   default_prompt: "Use $paper2skills to build a source-grounded Codex child skill for this scientific package with task_type contracts, refusal rules, and evidence."
 

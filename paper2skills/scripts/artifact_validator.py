@@ -141,6 +141,10 @@ REQUIRED_TOP_LEVEL_ARTIFACTS = [
     "run_manifest",
 ]
 
+POST_CLEANUP_ARTIFACTS = [
+    "output_retention",
+]
+
 PRE_PUBLISH_ARTIFACTS = [
     "request",
     "phase_state",
@@ -2100,7 +2104,7 @@ def validate_artifact_bundle(
                 "Run manifest file_count must match the number of file records.",
                 "run_manifest",
             )
-        role_counts = {"run_artifact": 0, "child_skill_file": 0}
+        role_counts = {"run_artifact": 0, "child_skill_file": 0, "retained_process_artifact": 0}
         seen_paths: set[str] = set()
         for record in files:
             if not isinstance(record, dict):
@@ -2122,7 +2126,7 @@ def validate_artifact_bundle(
             if rel == "run_manifest.yaml":
                 add_finding(findings, "error", "run_manifest_records_itself", "Run manifest must not record itself.", "run_manifest")
             if role not in role_counts:
-                add_finding(findings, "error", "run_manifest_invalid_role", "Run manifest record role must be run_artifact or child_skill_file.", "run_manifest")
+                add_finding(findings, "error", "run_manifest_invalid_role", "Run manifest record role must be run_artifact, child_skill_file, or retained_process_artifact.", "run_manifest")
             else:
                 role_counts[role] += 1
             if not record.get("sha256"):
@@ -2143,6 +2147,14 @@ def validate_artifact_bundle(
                 "error",
                 "run_manifest_child_file_count_mismatch",
                 "Run manifest child_skill_file_count must match child_skill_file records.",
+                "run_manifest",
+            )
+        if run_manifest.get("retained_process_artifact_count") != role_counts["retained_process_artifact"]:
+            add_finding(
+                findings,
+                "error",
+                "run_manifest_retained_process_artifact_count_mismatch",
+                "Run manifest retained_process_artifact_count must match retained_process_artifact records.",
                 "run_manifest",
             )
 

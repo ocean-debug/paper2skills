@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from action_policy import REUSE_EXISTING
-from common import now_utc
+from common import now_utc, public_child_skill_path
 from constants import REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -64,7 +64,7 @@ def build_install_readiness(
             "package_name": request.get("package_name"),
             "method_name": request.get("method_name") or request.get("package_name"),
             "status": "not_applicable",
-            "child_skill_path": str(child_skill_dir),
+            "child_skill_path": public_child_skill_path(child_skill_dir),
             "expected_files": expected,
             "actual_files": actual,
             "release_manifest_files": release_files,
@@ -76,7 +76,7 @@ def build_install_readiness(
         }
 
     if not child_skill_dir.exists():
-        add_finding(findings, "error", "missing_child_skill_dir", "Child skill directory does not exist.", str(child_skill_dir))
+        add_finding(findings, "error", "missing_child_skill_dir", "Child skill directory does not exist.", public_child_skill_path(child_skill_dir))
 
     for path in expected:
         full_path = child_skill_dir / path
@@ -113,7 +113,7 @@ def build_install_readiness(
         "package_name": request.get("package_name"),
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
-        "child_skill_path": str(child_skill_dir),
+        "child_skill_path": public_child_skill_path(child_skill_dir),
         "expected_files": expected,
         "actual_files": actual,
         "release_manifest_files": release_files,

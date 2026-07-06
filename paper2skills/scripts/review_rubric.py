@@ -12,6 +12,7 @@ RUBRIC_ITEMS = [
     "environment_contract",
     "tutorial_catalog",
     "parameter_constraints",
+    "operational_recipes",
     "task_partition",
     "task_routing",
     "input_contracts",
@@ -138,9 +139,68 @@ def score_artifacts(
         findings.append({"severity": "warning", "check": "parameter_constraints", "message": "Interfaces were inspected, but no parameters were mined."})
         item_results.append(item_result("parameter_constraints", "pass_with_warning", 1, ["interface_grounding.interfaces"], "Interfaces were inspected, but no parameters were mined."))
 
-    if task_catalog.get("tasks"):
+    tasks = task_catalog.get("tasks", [])
+    missing_recipes = [
+        task.get("task_type")
+        for task in tasks
+        if not task.get("operational_recipe") or not task.get("operational_recipe", {}).get("workflow_steps")
+    ]
+    abstract_recipes = [
+        task.get("task_type")
+        for task in tasks
+        if task.get("operational_recipe") and not task.get("operational_recipe", {}).get("api_sequence")
+    ]
+    needs_agent_review_recipes = [
+        task.get("task_type")
+        for task in tasks
+        if task.get("operational_recipe", {}).get("status") == "needs_agent_review"
+    ]
+    if tasks and not missing_recipes and not abstract_recipes and not needs_agent_review_recipes:
         score += 1
-        item_results.append(item_result("task_partition", "pass", 1, ["task_catalog.tasks"]))
+        item_results.append(
+            item_result(
+                "operational_recipes",
+                "pass",
+                1,
+                ["task_catalog.tasks.operational_recipe.api_sequence"],
+                "",
+            )
+        )
+    else:
+        failing_tasks = sorted({str(task) for task in missing_recipes + abstract_recipes + needs_agent_review_recipes if task})
+        findings.append(
+            {
+                "severity": "error",
+                "check": "operational_recipes",
+                "message": "Task entries must include execution-ready operational recipes with source-grounded API sequences before drafting.",
+                "task_types": failing_tasks,
+            }
+        )
+        item_results.append(
+            item_result(
+                "operational_recipes",
+                "fail",
+                0,
+                ["task_catalog.tasks"],
+                "Task entries must include execution-ready operational recipes with source-grounded API sequences before drafting.",
+            )
+        )
+
+    if task_catalog.get("tasks"):
+        fallback_tasks = [task.get("task_type") for task in task_catalog.get("tasks", []) if task.get("evidence_support") == "fallback_only"]
+        if fallback_tasks:
+            findings.append(
+                {
+                    "severity": "error",
+                    "check": "task_partition",
+                    "message": "Some task_type entries have only fallback package-level evidence.",
+                    "task_types": fallback_tasks,
+                }
+            )
+            item_results.append(item_result("task_partition", "fail", 0, ["task_catalog.tasks"], "Task_type entries require task-specific evidence."))
+        else:
+            score += 1
+            item_results.append(item_result("task_partition", "pass", 1, ["task_catalog.tasks"]))
     else:
         findings.append({"severity": "error", "check": "task_partition", "message": "No task_type entries produced."})
         item_results.append(item_result("task_partition", "fail", 0, [], "No task_type entries produced."))
@@ -152,7 +212,6 @@ def score_artifacts(
         findings.append({"severity": "error", "check": "task_routing", "message": "No task_type routes produced."})
         item_results.append(item_result("task_routing", "fail", 0, [], "No task_type routes produced."))
 
-    tasks = task_catalog.get("tasks", [])
     if tasks and all(task.get("input_contract", {}).get("evidence_observed") or task.get("evidence_refs") for task in tasks):
         score += 1
         item_results.append(item_result("input_contracts", "pass", 1, ["task_catalog.tasks.input_contract", "task_catalog.tasks.evidence_refs"]))

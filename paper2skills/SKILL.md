@@ -3,9 +3,9 @@ name: paper2skills
 description: Build lightweight Codex child skills for scientific algorithm packages from official source repositories, tutorials, documentation, and papers. Use when an agent needs source-grounded task_type routing, input-output contracts, refusal boundaries, validation guidance, and evidence references for a package.
 ---
 
-# Papert2Skills
+# paper2skills
 
-Papert2Skills builds one lightweight child skill per scientific algorithm
+paper2skills builds one lightweight child skill per scientific algorithm
 package. The child skill is not a code summary. It is an agent-readable
 operational guide: what the package can do, what it cannot do, which
 `task_type` to choose, what inputs are required, what outputs should exist, how
@@ -14,7 +14,7 @@ to validate them, and when to refuse.
 ## First Principles
 
 Agents fail on scientific packages when they guess across missing boundaries.
-Papert2Skills reduces guessing by compiling official package evidence into a
+paper2skills reduces guessing by compiling official package evidence into a
 small skill with:
 
 - task-type routing
@@ -49,24 +49,34 @@ Do not mark a task as verified unless validated execution evidence exists.
 5. Build the backend contract, static environment hints, and non-downloading
    model/checkpoint/data resource inventory.
 6. Partition package capabilities into `task_type` entries and attach parameter
-   constraints. Record a task partition decision log so accepted task_type
+   constraints. Attach operational recipes that turn tutorial/API/interface
+   evidence into task-specific Quick Workflows, API sequences, outputs, and
+   validation checks. Record a task partition decision log so accepted task_type
    candidates and rejected tutorial-shaped split candidates are explicit.
 7. Run final Discovery with the inferred `task_type` set and audit both the
    reuse/update/create decision and the field-level match quality.
 8. Draft a task-type router, task partition audit, task conflict matrix, and
    static routing fixture for the single child skill.
-9. Run the agent-driven SkillOpt-style self-review loop against evidence,
-   tutorial, environment, API/interface grounding, parameter contracts,
-   refusals, and validation. If the rubric does not pass and no agent proposal
-   is supplied, stop at `needs_agent`; run `skillopt-next-step --run <run_dir>`,
-   add a bounded `agent_skillopt_proposals` entry to the request, and rerun.
+9. Run the agent-driven paper2skills review loop against evidence, tutorial,
+   environment, API/interface grounding, operational recipes, parameter
+   contracts, refusals, and validation. Python records `record_score`, rollout-plan, analyst,
+   merge, ranking, apply, strict-gate, and slow-update state; Codex supplies
+    the optimizer JSON through `agent_review_proposals`. The proposal must
+    include non-empty analyst, merge, ranking, and slow-update payloads; every
+    operation must include a stable `operation_id` and cite same-iteration
+    `finding_codes`; ranking must select by `operation_ids` or
+    `operation_indices` before apply. If the rubric does
+   not pass and no complete agent proposal is supplied, stop at `needs_agent`;
+   run `review-next-step --run <run_dir>`, add the bounded proposal entry to
+   the request, and rerun.
    Record review evolution and a run-level SVG plot so score movement, patch
-   actions, and stop reasons remain auditable. Record review prompt contracts so draft, critic,
-   patch-plan, revision, and gate states have required fields and allowed
+   actions, and stop reasons remain auditable. Record review prompt contracts so draft, record-score,
+   rollout-plan, critic, analyst, merge, ranking, slow-update, patch-plan, revision, and gate states have required fields and allowed
    actions. Record review cursor and patch-application artifacts so iteration
    state, resumability, and agent proposals are explicit. Record optimizer
-   state and patch-safety audits so strict improvement policy,
-   rejected edits, state hashes, and allowed patch boundaries are explicit.
+   state, score cache, rejected buffer, and patch-safety audits so strict
+   improvement policy, rejected edits, state hashes, and allowed patch
+   boundaries are explicit.
    Audit review discipline so stop reasons, gate states, and patch score
    movement are checked before publish. Audit rubric grounding so every awarded
    score has a recorded support signal. Audit the review trajectory so
@@ -85,7 +95,9 @@ Do not mark a task as verified unless validated execution evidence exists.
     Build a lineage graph from source evidence to task contracts and
     child-skill files. Split cases into train, selection, and test eval sets,
     and judge only explicitly supplied eval results.
-13. Generate the lightweight child skill.
+13. Generate the lightweight child skill, including a task-specific Quick
+    Workflow/API sequence and a first-principles workflow DAG for every
+    `task_type` in the child `SKILL.md`.
 14. Audit rendered verification claims, child metadata, child package purity, lint the child skill, check draft readiness, audit output/public package
     boundaries, create a plan-only skill update plan, audit update/reuse safety, create a plan-only
     forward-test plan, create a plan-only agent rollout harness, audit E2E
@@ -102,6 +114,9 @@ Do not mark a task as verified unless validated execution evidence exists.
     acceptance handoff package, audit final completion,
     record and audit the build timeline, render the run scorecard, and record
     the run manifest before publishing.
+15. Run output retention: keep `child_skill/`, copy iteration/version artifacts
+    into `iteration_versions/`, write `generation_process.md`, and delete
+    builder-generated process files when `cleanup_process_files` is true.
 
 ## Design Principles
 
@@ -132,13 +147,13 @@ pretending to be runnable.
 
 ## Builder Architecture
 
-The CLI entrypoint lives at `scripts/papert2skills.py`; phase logic is split
+The CLI entrypoint lives at `scripts/paper2skills.py`; phase logic is split
 across focused modules in `scripts/`. Standalone audit commands such as
 `audit-protocol-compliance` recompute reports from saved artifacts without
 executing package code.
 
 ```bash
-python scripts/papert2skills.py build --request templates/build_request.yaml --out runs/method
+python scripts/paper2skills.py build --request templates/build_request.yaml --out runs/method
 ```
 
 Module responsibilities:
@@ -183,7 +198,7 @@ Module responsibilities:
 - `phase_state_audit.py`: audits phase ledger structure, phase gates, artifact
   contracts for YAML outputs, and output ownership.
 - `source_fetch.py`: safely fetches or registers official source material when
-  explicitly enabled.
+  explicitly enabled, with run-local cache reuse for successful downloads.
 - `source_fetch_boundary_audit.py`: audits fetch opt-in, run-directory
   containment, and archive extraction safety before source parsing.
 - `source_grounding.py`: records official evidence sources.
@@ -248,7 +263,8 @@ Module responsibilities:
 - `agent_rollout_harness.py`: builds a plan-only rollout queue from
   forward-test, routing, and eval artifacts while keeping judge metadata out of
   agent prompts.
-- `task_partition.py`: maps package capabilities to `task_type`.
+- `task_partition.py`: maps package capabilities to `task_type` and attaches
+  operational recipes from tutorial, API, interface, and parameter evidence.
 - `task_partition_decision_log.py`: records accepted, merged/deferred, and
   rejected task_type candidates.
 - `parameter_miner.py`: mines static parameter constraints from inspected
@@ -288,7 +304,8 @@ Module responsibilities:
   boundaries.
 - `child_reference_coverage.py`: checks that generated references consume
   source parsing coverage, environment install boundaries, tutorial replay
-  plans, evidence precedence, task conflicts, and task_type entries.
+  plans, evidence precedence, task conflicts, operational recipes, and
+  task_type entries.
 - `routing_metadata_audit.py`: checks task_type router scope, rendered routing
   guidance, refusal boundaries, and ambiguity fixtures.
 - `workflow_invariant_audit.py`: checks one-package-one-skill, task_type,
@@ -338,6 +355,9 @@ Module responsibilities:
   final score, quality, protocol, release, completion, and timeline artifacts.
 - `run_manifest.py`: records generated artifact and child-skill file hashes for
   run-level provenance.
+- `output_retention.py`: retains the final child skill, iteration/version
+  artifacts, and generation process document, then removes process files when
+  cleanup is enabled.
 - `grounding_gate.py`: checks task API/interface grounding before publish.
 - `agent_rollout_audit.py`: checks plan-only rollout scenario mapping, leakage
   controls, judge-only metadata separation, and rollout count consistency.
@@ -368,12 +388,15 @@ Module responsibilities:
   ungrounded code-fence API calls.
 - `public_safety_audit.py`: checks generated public Markdown for credentials,
   private keys, contact identifiers, and long copied excerpts.
-- `skill_draft.py`: renders the lightweight child skill.
-- `self_review.py`: checks overclaims, evidence gaps, contracts, refusals, and
-  verification labels.
+- `skill_draft.py`: renders the lightweight child skill, including one
+  task-specific Quick Workflow/API sequence and one first-principles workflow
+  DAG per `task_type`.
+- `self_review.py`: checks overclaims, evidence gaps, operational recipes,
+  contracts, refusals, and verification labels.
 - `review_rubric.py`, `patch_planner.py`, and `review_loop.py`: run bounded
-  draft, critic, patch-plan, revision, and gate iterations with deterministic
-  artifact repair.
+  agent-driven paper2skills review loop iterations with recipe scoring, record-score,
+  rollout-plan, analyst, merge, ranking, apply, strict-gate, and slow-update
+  states.
 - `review_evolution.py`: summarizes review score trajectory, patch actions, and
   gate reasons.
 - `review_evolution_plot.py`: renders a run-level SVG review trajectory from
@@ -431,6 +454,11 @@ Module responsibilities:
 
 It writes machine-readable build artifacts and a lightweight child skill under
 `child_skill/<method-name>/`.
+
+By default the post-build retained output contains only `child_skill/`,
+`iteration_versions/`, and `generation_process.md`. Set
+`cleanup_process_files: false` to keep the full process artifact set for
+debugging.
 
 ## Child Skill Shape
 

@@ -50,6 +50,9 @@ def replay_template(job: dict[str, Any]) -> dict[str, Any]:
         "command": None,
         "notebook": None,
         "script": None,
+        "script_path": None,
+        "script_sha256": None,
+        "command_transport": "script_or_notebook_preferred_for_remote_execution",
         "failure_reason": None,
         "notes": [],
         "source_run_id": None,
@@ -164,7 +167,7 @@ def render_acceptance_handoff_markdown(handoff: dict[str, Any]) -> str:
         item_rows = [["none", "none", "No handoff items were generated."]]
     return "\n\n".join(
         [
-            f"# {handoff.get('method_name') or handoff.get('package_name') or 'Papert2Skills'} Acceptance Handoff",
+            f"# {handoff.get('method_name') or handoff.get('package_name') or 'paper2skills'} Acceptance Handoff",
             "This run artifact lists external validation results that must be filled before full completion can be claimed.",
             "## Summary",
             md_table(["Field", "Value"], rows),

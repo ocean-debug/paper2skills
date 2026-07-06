@@ -119,7 +119,7 @@ def render_run_scorecard_markdown(
     build_timeline_audit: dict[str, Any],
 ) -> str:
     """Render a concise Markdown scorecard for human review."""
-    title = scorecard.get("method_name") or scorecard.get("package_name") or "Papert2Skills Run"
+    title = scorecard.get("method_name") or scorecard.get("package_name") or "paper2skills Run"
     summary_rows = [
         ["Completion", _status(scorecard.get("verdict_status"))],
         ["Recommended action", _status(scorecard.get("recommended_action"))],

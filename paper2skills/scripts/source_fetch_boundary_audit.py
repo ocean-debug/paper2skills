@@ -10,6 +10,7 @@ from constants import SCHEMA_VERSION
 
 
 PATH_FIELDS = ("local_path", "extract_path")
+CACHE_PATH_FIELDS = ("cache_path",)
 HTTP_STATUSES_WITHOUT_FETCH = {"skipped_fetch_disabled"}
 UNSAFE_EXTRACT_STATUSES = {"blocked_unsafe_zip_member"}
 
@@ -54,9 +55,12 @@ def audit_source_fetch_boundaries(
     findings: list[dict[str, Any]] = []
     output_dir = resolved(request.get("output_dir") or ".")
     allowed_root = output_dir / "sources"
+    reported_cache_root = source_fetch_report.get("source_cache_dir")
+    allowed_cache_root = resolved(str(reported_cache_root)) if reported_cache_root else output_dir / ".source_cache"
     fetch_enabled = bool(source_fetch_report.get("fetch_enabled"))
     max_fetch_bytes = int(source_fetch_report.get("max_fetch_bytes") or 0)
     path_records: list[dict[str, Any]] = []
+    cache_path_records: list[dict[str, Any]] = []
 
     if fetch_enabled and max_fetch_bytes <= 0:
         add_finding(
@@ -64,6 +68,15 @@ def audit_source_fetch_boundaries(
             "error",
             "invalid_max_fetch_bytes",
             "Fetch is enabled but max_fetch_bytes is not a positive integer.",
+        )
+
+    if reported_cache_root and not is_within(allowed_cache_root, output_dir):
+        add_finding(
+            findings,
+            "error",
+            "source_cache_root_outside_output_dir",
+            "Fetched source cache root must stay inside the run output directory.",
+            path=str(allowed_cache_root),
         )
 
     for source in source_fetch_report.get("sources", []):
@@ -114,6 +127,30 @@ def audit_source_fetch_boundaries(
                     path=str(actual),
                 )
 
+        for field in CACHE_PATH_FIELDS:
+            value = source.get(field)
+            if not value:
+                continue
+            actual = resolved(value)
+            within = is_within(actual, allowed_cache_root)
+            cache_path_records.append(
+                {
+                    "evidence_id": evidence_id,
+                    "field": field,
+                    "path": str(actual),
+                    "within_cache_root": within,
+                }
+            )
+            if not within:
+                add_finding(
+                    findings,
+                    "error",
+                    "source_cache_outside_run_cache_root",
+                    "Fetched source cache paths must stay under the reported run cache directory.",
+                    evidence_id=evidence_id,
+                    path=str(actual),
+                )
+
         extract = source.get("extract") or {}
         extract_status = str(extract.get("status") or "")
         if extract_status in UNSAFE_EXTRACT_STATUSES:
@@ -127,9 +164,17 @@ def audit_source_fetch_boundaries(
         if extract_status == "skipped_too_many_files":
             add_finding(
                 findings,
-                "warning",
+                "error",
                 "archive_too_many_files",
                 "Archive extraction was skipped because it exceeded the file-count safety limit.",
+                evidence_id=evidence_id,
+            )
+        if extract_status == "skipped_too_many_uncompressed_bytes":
+            add_finding(
+                findings,
+                "error",
+                "archive_too_many_uncompressed_bytes",
+                "Archive extraction was skipped because it exceeded the uncompressed-size safety limit.",
                 evidence_id=evidence_id,
             )
 
@@ -144,9 +189,12 @@ def audit_source_fetch_boundaries(
         "max_fetch_bytes": max_fetch_bytes,
         "output_dir": str(output_dir),
         "allowed_sources_root": str(allowed_root),
+        "allowed_cache_root": str(allowed_cache_root),
         "source_count": len(source_fetch_report.get("sources", [])),
         "path_record_count": len(path_records),
+        "cache_path_record_count": len(cache_path_records),
         "path_records": path_records,
+        "cache_path_records": cache_path_records,
         "findings": findings,
         "policy": [
             "Remote source fetching must remain explicit opt-in.",

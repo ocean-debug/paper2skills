@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from common import now_utc
+from common import canonical_task_type, now_utc
 from constants import CLAIM_KEYWORDS, EVIDENCE_PRIORITY, SCHEMA_VERSION
 
 
@@ -107,14 +107,14 @@ def task_claim_items(
     sources: dict[str, dict[str, Any]],
     execution_trace_validation: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    task_type = str(task.get("task_type") or "")
+    task_type = canonical_task_type(str(task.get("task_type") or ""), "task")
     refs = {str(ref) for ref in task.get("evidence_refs", []) if ref}
     for card_id, card in cards.items():
         if task_type in [str(item) for item in card.get("task_type_candidates", [])]:
             refs.add(card_id)
     items = [evidence_item(ref, cards, sources) for ref in sorted(refs)]
     for record in execution_trace_validation.get("records", []):
-        if record.get("task_type") != task_type:
+        if canonical_task_type(str(record.get("task_type") or ""), "task") != task_type:
             continue
         if not record.get("success") or record.get("missing_fields") or not record.get("known_task_type"):
             continue

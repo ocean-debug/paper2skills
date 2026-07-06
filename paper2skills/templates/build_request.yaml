@@ -1,4 +1,4 @@
-schema_version: "1.0"
+schema_version: "paper2skills.v0.1"
 package_name: "example-package"
 method_name: "Example Package"
 repo_url: "https://github.com/owner/example-package"
@@ -17,7 +17,7 @@ execution_traces: []
 execution_replay_results: []
 eval_results: []
 agent_rollout_results: []
-agent_skillopt_proposals: []
+agent_review_proposals: []
 smoke_test_results: []
 require_smoke_test: false
 e2e_acceptance_results: []
@@ -36,6 +36,11 @@ existing_skills_dirs: []
 output_dir: "./runs/example-package"
 requested_task_types: []
 fetch_sources: false
+reuse_fetched_sources: true
+source_cache_dir: "./runs/example-package/.source_cache"
+cleanup_process_files: true
+retained_process_artifacts_dir: "iteration_versions"
+generation_process_doc: "generation_process.md"
 max_fetch_bytes: 5000000
 max_index_files: 500
 max_index_bytes: 250000

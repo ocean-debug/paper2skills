@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from common import now_utc
+from common import now_utc, public_child_skill_path
 from constants import REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -62,8 +62,9 @@ def build_child_package_purity_audit(
 
     actual_files: list[str] = []
     actual_dirs: list[str] = []
+    public_path = public_child_skill_path(child_skill_dir)
     if not child_skill_dir.exists() or not child_skill_dir.is_dir():
-        add_finding(findings, "error", "missing_child_skill_dir", "Rendered child skill directory is missing.", str(child_skill_dir))
+        add_finding(findings, "error", "missing_child_skill_dir", "Rendered child skill directory is missing.", public_path)
     else:
         actual_files = sorted(rel(path, child_skill_dir) for path in child_skill_dir.rglob("*") if path.is_file())
         actual_dirs = sorted(rel(path, child_skill_dir) for path in child_skill_dir.rglob("*") if path.is_dir())
@@ -104,7 +105,7 @@ def build_child_package_purity_audit(
         "package_name": request.get("package_name"),
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
-        "child_skill_path": str(child_skill_dir),
+        "child_skill_path": public_path,
         "required_public_files": required_files,
         "actual_public_files": actual_files,
         "actual_public_directories": actual_dirs,

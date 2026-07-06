@@ -1,6 +1,6 @@
 # Design Principles
 
-Papert2Skills builds one lightweight child skill per scientific algorithm
+paper2skills builds one lightweight child skill per scientific algorithm
 package. Its job is to turn official package evidence into operational guidance
 that an agent can use without guessing.
 
@@ -18,7 +18,7 @@ that an agent can use without guessing.
 
 ## Non-Goals
 
-Papert2Skills must not generate:
+paper2skills must not generate:
 
 - one child skill per tutorial
 - one child skill per capability

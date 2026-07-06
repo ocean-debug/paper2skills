@@ -1,4 +1,4 @@
-"""Cross-stage protocol compliance audit for Papert2Skills builds."""
+"""Cross-stage protocol compliance audit for paper2skills builds."""
 
 from __future__ import annotations
 

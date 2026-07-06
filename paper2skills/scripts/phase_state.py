@@ -1,4 +1,4 @@
-"""Phase-state artifact for the Papert2Skills build pipeline."""
+"""Phase-state artifact for the paper2skills build pipeline."""
 
 from __future__ import annotations
 

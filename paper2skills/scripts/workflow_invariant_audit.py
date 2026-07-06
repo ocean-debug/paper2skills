@@ -1,4 +1,4 @@
-"""Audit Papert2Skills first-principles workflow invariants."""
+"""Audit paper2skills first-principles workflow invariants."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def audit_workflow_invariants(
     tasks = task_set(task_catalog)
 
     if request.get("target_agent") != "codex":
-        add_finding(findings, "error", "target_agent_not_codex", "Papert2Skills must target Codex child skills.")
+        add_finding(findings, "error", "target_agent_not_codex", "paper2skills must target Codex child skills.")
     if not task_catalog.get("one_package_one_skill"):
         add_finding(findings, "error", "one_package_one_skill_false", "Task catalog must keep one package as one child skill.")
     for task in task_catalog.get("tasks", []):
@@ -191,5 +191,5 @@ def audit_workflow_invariants(
             "lightweight_child_skill_file_set",
         ],
         "findings": findings,
-        "policy": "Workflow invariants protect the Papert2Skills product shape across all generated artifacts.",
+        "policy": "Workflow invariants protect the paper2skills product shape across all generated artifacts.",
     }

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from common import now_utc
+from common import now_utc, public_child_skill_path
 from constants import REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -25,11 +25,12 @@ def best_match(discovery_report: dict[str, Any]) -> dict[str, Any]:
 
 def merge_actions(child_skill_dir: Path, missing_task_types: list[str]) -> list[dict[str, Any]]:
     files = ["SKILL.md"] + [f"references/{name}" for name in REQUIRED_CHILD_REFERENCES]
+    public_child_dir = public_child_skill_path(child_skill_dir)
     actions = []
     for rel in files:
         actions.append(
             {
-                "source_candidate_file": str(child_skill_dir / rel),
+                "source_candidate_file": f"{public_child_dir}/{rel}",
                 "target_relative_file": rel,
                 "action": "merge_review_required",
                 "reason": "Preserve existing skill content while adding or revising task_type contracts.",
@@ -81,7 +82,7 @@ def build_skill_update_plan(
         "discovery_decision": decision,
         "recommended_action": recommended_action,
         "target_existing_skill_path": target_path,
-        "candidate_child_skill_path": str(child_skill_dir),
+        "candidate_child_skill_path": public_child_skill_path(child_skill_dir),
         "covered_task_types": sorted(set(match.get("covered_task_types", []) or [])),
         "missing_task_types": missing_task_types,
         "shape_update_required": shape_update_required,

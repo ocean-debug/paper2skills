@@ -1,11 +1,11 @@
 # Builder Architecture
 
-Papert2Skills keeps the public child skill lightweight, but the builder itself
+paper2skills keeps the public child skill lightweight, but the builder itself
 is split into focused stage modules so each phase can evolve independently.
 
 ## CLI
 
-`scripts/papert2skills.py` is only the command-line dispatcher. It should stay
+`scripts/paper2skills.py` is only the command-line dispatcher. It should stay
 thin and delegate work to phase modules. Standalone audit commands, including
 `audit-protocol-compliance`, recompute reports from saved artifacts without
 executing package code.
@@ -18,14 +18,14 @@ executing package code.
 request -> request audit -> request fingerprint -> builder runtime audit -> agent metadata audit -> public origin audit -> module inventory audit -> skill package audit -> request template audit -> discovery preflight -> source grounding -> source fetch -> source fetch boundary audit -> source index
   -> evidence cards -> source manifest -> tutorial catalog
   -> API grounding -> interface grounding -> key API coverage audit
-  -> source parse report -> source parsing coverage -> source parsing audit -> source ingestion audit -> backend contract -> environment spec -> resource inventory -> task partition -> task partition decision log -> parameter catalog
+  -> source parse report -> source parsing coverage -> source parsing audit -> source ingestion audit -> backend contract -> environment spec -> resource inventory -> task partition -> task partition decision log -> parameter catalog -> operational recipes
   -> final discovery -> discovery audit -> discovery match audit
   -> routing -> task partition audit -> task conflict matrix -> routing fixture -> iterative review -> review evolution -> review evolution plot -> review iteration log -> review prompt contracts -> review prompt materials -> review cursor -> patch application -> review remediation audit -> review optimizer state -> review prompt suite audit -> patch safety audit -> patch operation contracts -> review discipline audit -> rubric grounding audit -> review trajectory audit -> evidence coverage -> optional execution trace handling
   -> execution trace validation -> evidence precedence -> eval plan -> execution plan -> environment install plan -> resource boundary audit -> tutorial reproduction plan -> contract traceability -> lineage graph -> acceptance suite
   -> eval splits -> eval result judge -> draft candidate -> child skill draft -> verification claim audit -> child metadata audit -> child package purity audit -> lint -> draft readiness -> output boundary audit -> skill update plan -> skill update audit -> forward test plan -> agent rollout harness -> agent rollout audit -> eval leakage audit -> agent rollout result judge -> E2E acceptance -> claim consistency audit -> biological claim boundary audit -> child reference coverage -> routing metadata audit -> source grounding audit -> workflow invariant audit -> requirement coverage -> completion evidence audit -> acceptance handoff
   -> protocol compliance audit -> grounding gate -> API surface audit -> artifact contracts -> artifact closure audit -> code-fence audit -> public safety audit -> phase state audit -> artifact validation -> publish gate
   -> candidate registry -> candidate selection audit -> candidate promotion audit -> release package -> final candidate audit -> candidate evolution audit -> quality report -> Codex publish adapter -> install readiness -> publish manifest -> publish manifest audit -> score report -> builder version audit -> release action audit -> architecture completeness audit -> completion audit -> build timeline -> build timeline audit
-  -> run scorecard -> run manifest
+  -> run scorecard -> run manifest -> output retention
 ```
 
 ## Stage Modules
@@ -134,7 +134,9 @@ request -> request audit -> request fingerprint -> builder runtime audit -> agen
 - `smoke_test_plan.py`: plan-only smoke coverage for child-skill files,
   task_type routing, contracts, refusals, verification labels, and publish-plan
   agreement.
-- `task_partition.py`: capability detection and `task_type` contract drafts.
+- `task_partition.py`: capability detection, `task_type` contract drafts, and
+  task-specific operational recipes from tutorial, API, interface, and
+  parameter evidence.
 - `task_partition_decision_log.py`: accepted, merged/deferred, and rejected
   task_type candidate decision log.
 - `parameter_miner.py`: signature-derived parameter constraints attached to
@@ -175,8 +177,8 @@ request -> request audit -> request fingerprint -> builder runtime audit -> agen
   claims.
 - `child_reference_coverage.py`: checks that source parsing coverage,
   environment install boundaries, tutorial replay plans, evidence precedence,
-  task conflicts, and task_type entries are rendered into the public child
-  references.
+  task conflicts, operational recipes, and task_type entries are rendered into
+  the public child references.
 - `routing_metadata_audit.py`: checks task_type router scope, rendered routing
   docs, refusal boundaries, and ambiguity fixtures.
 - `workflow_invariant_audit.py`: product-shape invariant audit for one child
@@ -228,6 +230,10 @@ request -> request audit -> request fingerprint -> builder runtime audit -> agen
   machine-readable gates.
 - `run_manifest.py`: final run-level provenance for generated artifacts and
   child-skill file hashes.
+- `output_retention.py`: post-build retention that keeps the final child skill,
+  root publish/run manifest entry files, iteration/version artifacts, and
+  generation process document while removing generated process files when
+  cleanup is enabled.
 - `grounding_gate.py`: pre-publish API/interface grounding status for
   `task_type` entries.
 - `agent_rollout_audit.py`: plan-only rollout scenario mapping, leakage-control,
@@ -241,23 +247,27 @@ request -> request audit -> request fingerprint -> builder runtime audit -> agen
 - `artifact_closure_audit.py`: static audit that required artifacts have
   contracts, pre-publish artifacts are available, and the run write plan covers
   required artifacts.
-- `skill_draft.py`: scientific-agent-skills style child skill rendering.
-- `self_review.py`: overclaim, evidence, contract, refusal, and verification
-  checks.
+- `skill_draft.py`: scientific-agent-skills style child skill rendering,
+  including one task-specific Quick Workflow/API sequence and one
+  first-principles workflow DAG per `task_type`.
+- `self_review.py`: overclaim, evidence, operational recipe, contract,
+  refusal, and verification checks.
 - `review_rubric.py`: rubric scoring for source grounding, API/interface
-  grounding, task partition, contracts, refusals, validation, and verification
-  labels.
+  grounding, task partition, operational recipes, contracts, refusals,
+  validation, and verification labels.
 - `patch_planner.py`: deterministic artifact patches for fixable review
   findings.
-- `review_loop.py`: bounded draft, critic, patch-plan, revision, and gate
-  iteration loop.
+- `review_loop.py`: agent-driven paper2skills review loop with record-score,
+  rollout-plan, analyst, merge, ranking, apply, strict-gate, and slow-update
+  states.
 - `review_evolution.py`: compact score, patch, and gate trajectory summary for
   the review loop.
 - `review_evolution_plot.py`: run-level SVG rendering of review score movement,
   blocking state, and patch state.
 - `review_iteration_log.py`: run-level Markdown summary of review iteration
   scores, blockers, patch actions, and gate reasons.
-- `review_prompt_contracts.py`: static state-role contracts for draft, critic,
+- `review_prompt_contracts.py`: static state-role contracts for draft,
+  record-score, rollout-plan, critic, analyst, merge, ranking, slow-update,
   patch-plan, revision, and gate review states.
 - `review_prompt_materials.py`: static prompt material for each review role,
   including allowed inputs, required outputs, and forbidden outputs.
@@ -316,6 +326,8 @@ as verified without explicit execution evidence. Execution-grounded
 reproduction is a separate opt-in capability.
 
 Remote source downloads are disabled unless `fetch_sources: true` is set in the
-build request. Even when enabled, fetching is size-limited and source indexing
+build request. Even when enabled, fetching is size-limited. Successful fetches
+are cached under `source_cache_dir` when `reuse_fetched_sources` is true, then
+copied back into the run-local `sources/` tree before indexing. Source indexing
 stores compact metadata, symbols, headings, and evidence summaries rather than
 long excerpts.

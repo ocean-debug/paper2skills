@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from common import now_utc, read_text
+from common import now_utc, public_child_skill_path, read_text
 from constants import SCHEMA_VERSION
 
 
@@ -100,7 +100,7 @@ def build_draft_readiness(request: dict[str, Any], child_skill_dir: Path) -> dic
             findings,
             "error",
             "no_markdown_files",
-            str(child_skill_dir),
+            public_child_skill_path(child_skill_dir),
             "Generated child skill has no Markdown files to review.",
         )
     for path in files:

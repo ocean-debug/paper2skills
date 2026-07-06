@@ -1,4 +1,4 @@
-"""Final completion audit for a Papert2Skills build run."""
+"""Final completion audit for a paper2skills build run."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ REQUIRED_COMPLETION_PHASES = [
     "backend_extension_audit",
     "task_partition",
     "task_partition_decision_log",
+    "operational_recipes",
     "task_partition_audit",
     "self_review",
     "review_iteration_log",

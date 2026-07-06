@@ -1,6 +1,6 @@
-# Papert2Skills
+# paper2skills
 
-Papert2Skills is a Codex-oriented skill builder for scientific algorithm
+paper2skills is a Codex-oriented skill builder for scientific algorithm
 packages. It turns official source repositories, tutorials, documentation, and
 papers into lightweight child skills that tell an agent how to use an algorithm
 package reliably.
@@ -11,12 +11,12 @@ supports, which inputs are valid, which metadata is required, which API path is
 recommended, what outputs should exist, how results can be checked, and when to
 refuse bad input.
 
-Papert2Skills compiles that operational knowledge into one child skill per
+paper2skills compiles that operational knowledge into one child skill per
 algorithm package.
 
 ## Design
 
-Papert2Skills is built around a few simple rules:
+paper2skills is built around a few simple rules:
 
 - Run Discovery before building, so an existing Codex child skill can be reused
   or updated instead of duplicated.
@@ -24,6 +24,8 @@ Papert2Skills is built around a few simple rules:
   package.
 - Represent each capability as a `task_type` inside that child skill.
 - Put task-type routing guidance in `SKILL.md` and `references/task-types.md`.
+- Render a task-specific Quick Workflow and API sequence for each `task_type`
+  so the child skill is directly usable by an agent, not only a contract index.
 - Keep generated child skills lightweight and evidence-grounded.
 
 Generated child skills follow the lightweight
@@ -75,6 +77,7 @@ Request Audit
   -> Task Partition
   -> Task Partition Decision Log
   -> Parameter Catalog
+  -> Operational Recipes
   -> Final Discovery
   -> Discovery Audit
   -> Discovery Match Audit
@@ -82,7 +85,7 @@ Request Audit
   -> Task Partition Audit
   -> Task Conflict Matrix
   -> Routing Fixture
-  -> SkillOpt-Style Self Review
+  -> Agent-Driven Review Loop
   -> Review Evolution
   -> Review Evolution Plot
   -> Review Iteration Log
@@ -165,6 +168,7 @@ Request Audit
   -> Build Timeline
   -> Run Scorecard
   -> Run Manifest
+  -> Output Retention
 ```
 
 Evidence priority:
@@ -173,7 +177,7 @@ Evidence priority:
 execution trace > official tutorials/docs > source code/API > paper
 ```
 
-Execution grounding is explicit. By default, Papert2Skills creates a
+Execution grounding is explicit. By default, paper2skills creates a
 `source_grounded` child skill and does not claim verified execution. When
 execution evidence is supplied, only the task types with successful validated
 evidence may be marked `verified`. Verification claim audit checks the rendered
@@ -213,8 +217,8 @@ fields, and builder runtime required template fields.
 
 Child reference coverage checks that source parsing coverage, environment
 install boundaries, tutorial replay plans, evidence precedence, task conflicts,
-parser capability matrix, and task_type entries are actually rendered into the
-public child references.
+parser capability matrix, operational recipes, and task_type entries are
+actually rendered into the public child references.
 Source grounding audit then checks evidence priority, static parsing
 boundaries, task-level evidence references, contract traceability, and rendered
 evidence sections as one publish gate.
@@ -292,16 +296,21 @@ publish blockers, candidate gate status, candidate evolution status, Codex
 publish adapter status, install readiness, and publish manifest audit status as
 a run artifact after publish manifest audit.
 
-The iterative review loop is agent-driven. Python records findings, rubric
-scores, prompt contracts, cursor state, proposal templates, strict improvement
-state, and bounded apply results; Codex or another agent writes
-`agent_skillopt_proposals` and reruns the build. When a run stops with
-`review_summary.status: needs_agent`, use `skillopt-next-step --run <run_dir>`
-to retrieve the next proposal template.
+The iterative review stage is an agent-driven paper2skills review loop. Python records
+findings, rubric selection scores, rollout-plan state, prompt contracts, cursor
+state, proposal templates, score cache, rejected buffer, strict improvement
+state, and bounded apply results; Codex or another agent writes the analyst,
+merge, ranking, slow-update, and operation JSON in
+`agent_review_proposals` and reruns the build. Each operation must include
+one stable `operation_id` and same-iteration `finding_codes`; ranking must
+select proposal operations by `operation_ids` or zero-based `operation_indices`
+before apply. When a run stops with `review_summary.status: needs_agent`, use
+`review-next-step --run <run_dir>` to retrieve the next proposal template.
 `review_prompt_contracts.yaml` records required state roles, fields, allowed
-actions, and forbidden actions for draft, critic, patch-plan, revision, and
-gate states. `review_prompt_materials.yaml` records static prompt material,
-allowed inputs, required outputs, and forbidden outputs for each role.
+actions, and forbidden actions for draft, record-score, rollout-plan, critic,
+analyst, merge, ranking, slow-update, patch-plan, revision, and gate states.
+`review_prompt_materials.yaml` records static prompt material, allowed inputs,
+required outputs, and forbidden outputs for each role.
 `review_prompt_suite_audit.yaml` records required review duty
 coverage across grounding, task split, contracts, refusals, validation,
 verification, patch planning, and gate discipline. `review_cursor.yaml` records the current review state and
@@ -335,7 +344,7 @@ Then invoke it with `$paper2skills`.
 Start from `paper2skills/templates/build_request.yaml`:
 
 ```yaml
-schema_version: "1.0"
+schema_version: "paper2skills.v0.1"
 package_name: "example-package"
 method_name: "Example Package"
 repo_url: "https://github.com/owner/example-package"
@@ -354,7 +363,7 @@ execution_traces: []
 execution_replay_results: []
 eval_results: []
 agent_rollout_results: []
-agent_skillopt_proposals: []
+agent_review_proposals: []
 smoke_test_results: []
 require_smoke_test: false
 e2e_acceptance_results: []
@@ -372,6 +381,11 @@ existing_skills_dirs: []
 output_dir: "./runs/example-package"
 requested_task_types: []
 fetch_sources: false
+reuse_fetched_sources: true
+source_cache_dir: "./runs/example-package/.source_cache"
+cleanup_process_files: true
+retained_process_artifacts_dir: "iteration_versions"
+generation_process_doc: "generation_process.md"
 max_fetch_bytes: 5000000
 max_index_files: 500
 max_index_bytes: 250000
@@ -409,7 +423,7 @@ required E2E scenarios have passing supplied results.
 The CLI entrypoint is thin; engineering logic is split by build phase:
 
 ```bash
-python paper2skills/scripts/papert2skills.py build \
+python paper2skills/scripts/paper2skills.py build \
   --request paper2skills/templates/build_request.yaml \
   --out runs/example-package
 ```
@@ -417,50 +431,50 @@ python paper2skills/scripts/papert2skills.py build \
 Additional read-only checks for generated outputs and the builder skill package:
 
 ```bash
-python paper2skills/scripts/papert2skills.py validate-run --run runs/example-package
-python paper2skills/scripts/papert2skills.py audit-child \
+python paper2skills/scripts/paper2skills.py validate-run --run runs/example-package
+python paper2skills/scripts/paper2skills.py audit-child \
   --skill runs/example-package/child_skill/example-package \
   --api-grounding runs/example-package/api_grounding.yaml \
   --interface-grounding runs/example-package/interface_grounding.yaml
-python paper2skills/scripts/papert2skills.py audit-public-child \
+python paper2skills/scripts/paper2skills.py audit-public-child \
   --skill runs/example-package/child_skill/example-package
-python paper2skills/scripts/papert2skills.py audit-child-package-purity \
+python paper2skills/scripts/paper2skills.py audit-child-package-purity \
   --skill runs/example-package/child_skill/example-package \
   --skill-spec runs/example-package/skill_spec.yaml
-python paper2skills/scripts/papert2skills.py audit-biological-claims \
+python paper2skills/scripts/paper2skills.py audit-biological-claims \
   --skill runs/example-package/child_skill/example-package \
   --task-catalog runs/example-package/task_catalog.yaml \
   --source-grounding runs/example-package/source_grounding.yaml \
   --evidence-cards runs/example-package/evidence_cards.yaml
-python paper2skills/scripts/papert2skills.py validate-forward-test-plan \
+python paper2skills/scripts/paper2skills.py validate-forward-test-plan \
   --plan runs/example-package/forward_test_plan.yaml
-python paper2skills/scripts/papert2skills.py audit-discovery-resolution \
+python paper2skills/scripts/paper2skills.py audit-discovery-resolution \
   --request runs/example-package/request.yaml \
   --discovery-preflight runs/example-package/discovery_preflight.yaml \
   --discovery-report runs/example-package/discovery_report.yaml \
   --discovery-match-audit runs/example-package/discovery_match_audit.yaml \
   --skill-update-plan runs/example-package/skill_update_plan.yaml
-python paper2skills/scripts/papert2skills.py audit-eval-leakage \
+python paper2skills/scripts/paper2skills.py audit-eval-leakage \
   --request runs/example-package/request.yaml \
   --eval-splits runs/example-package/eval_splits.yaml \
   --forward-test-plan runs/example-package/forward_test_plan.yaml \
   --agent-rollout-harness runs/example-package/agent_rollout_harness.yaml \
   --eval-result-judge runs/example-package/eval_result_judge.yaml
-python paper2skills/scripts/papert2skills.py audit-external-results \
+python paper2skills/scripts/paper2skills.py audit-external-results \
   --request runs/example-package/request.yaml
-python paper2skills/scripts/papert2skills.py audit-evidence-claim-taxonomy \
+python paper2skills/scripts/paper2skills.py audit-evidence-claim-taxonomy \
   --request runs/example-package/request.yaml \
   --task-catalog runs/example-package/task_catalog.yaml \
   --evidence-cards runs/example-package/evidence_cards.yaml \
   --source-grounding runs/example-package/source_grounding.yaml \
   --evidence-precedence runs/example-package/evidence_precedence.yaml \
   --execution-trace-validation runs/example-package/execution_trace_validation.yaml
-python paper2skills/scripts/papert2skills.py audit-execution-replay \
+python paper2skills/scripts/paper2skills.py audit-execution-replay \
   --request runs/example-package/request.yaml \
   --tutorial-reproduction-plan runs/example-package/tutorial_reproduction_plan.yaml \
   --execution-plan runs/example-package/execution_plan.yaml \
   --environment-install-plan runs/example-package/environment_install_plan.yaml
-python paper2skills/scripts/papert2skills.py audit-e2e-acceptance \
+python paper2skills/scripts/paper2skills.py audit-e2e-acceptance \
   --request runs/example-package/request.yaml \
   --task-catalog runs/example-package/task_catalog.yaml \
   --acceptance-suite runs/example-package/acceptance_suite.yaml \
@@ -470,42 +484,42 @@ python paper2skills/scripts/papert2skills.py audit-e2e-acceptance \
   --agent-rollout-result-judge runs/example-package/agent_rollout_result_judge.yaml \
   --execution-replay-orchestrator runs/example-package/execution_replay_orchestrator.yaml \
   --verification-claim-audit runs/example-package/verification_claim_audit.yaml
-python paper2skills/scripts/papert2skills.py audit-smoke-test-plan \
+python paper2skills/scripts/paper2skills.py audit-smoke-test-plan \
   --request runs/example-package/request.yaml \
   --task-catalog runs/example-package/task_catalog.yaml
-python paper2skills/scripts/papert2skills.py audit-completion-evidence \
+python paper2skills/scripts/paper2skills.py audit-completion-evidence \
   --request runs/example-package/request.yaml \
   --requirement-coverage runs/example-package/requirement_coverage.yaml \
   --agent-rollout-result-judge runs/example-package/agent_rollout_result_judge.yaml \
   --e2e-acceptance runs/example-package/e2e_acceptance.yaml \
   --execution-trace-validation runs/example-package/execution_trace_validation.yaml \
   --execution-replay-orchestrator runs/example-package/execution_replay_orchestrator.yaml
-python paper2skills/scripts/papert2skills.py build-acceptance-handoff \
+python paper2skills/scripts/paper2skills.py build-acceptance-handoff \
   --request runs/example-package/request.yaml \
   --e2e-acceptance runs/example-package/e2e_acceptance.yaml \
   --agent-rollout-harness runs/example-package/agent_rollout_harness.yaml \
   --execution-replay-orchestrator runs/example-package/execution_replay_orchestrator.yaml \
   --completion-evidence-audit runs/example-package/completion_evidence_audit.yaml
-python paper2skills/scripts/papert2skills.py judge-agent-rollout-results \
+python paper2skills/scripts/paper2skills.py judge-agent-rollout-results \
   --request runs/example-package/request.yaml \
   --agent-rollout-harness runs/example-package/agent_rollout_harness.yaml \
   --eval-leakage-audit runs/example-package/eval_leakage_audit.yaml
-python paper2skills/scripts/papert2skills.py audit-protocol-compliance --run runs/example-package
-python paper2skills/scripts/papert2skills.py audit-build-timeline --run runs/example-package
-python paper2skills/scripts/papert2skills.py skillopt-next-step --run runs/example-package
-python paper2skills/scripts/papert2skills.py verify-run-manifest --run runs/example-package
-python paper2skills/scripts/papert2skills.py audit-agent-metadata --skill paper2skills
-python paper2skills/scripts/papert2skills.py audit-public-origin \
+python paper2skills/scripts/paper2skills.py audit-protocol-compliance --run runs/example-package
+python paper2skills/scripts/paper2skills.py audit-build-timeline --run runs/example-package
+python paper2skills/scripts/paper2skills.py review-next-step --run runs/example-package
+python paper2skills/scripts/paper2skills.py verify-run-manifest --run runs/example-package
+python paper2skills/scripts/paper2skills.py audit-agent-metadata --skill paper2skills
+python paper2skills/scripts/paper2skills.py audit-public-origin \
   --repo-root . \
   --skill paper2skills
-python paper2skills/scripts/papert2skills.py audit-skill-package --skill paper2skills
-python paper2skills/scripts/papert2skills.py audit-module-inventory --skill paper2skills
-python paper2skills/scripts/papert2skills.py audit-builder-baseline --skill paper2skills
+python paper2skills/scripts/paper2skills.py audit-skill-package --skill paper2skills
+python paper2skills/scripts/paper2skills.py audit-module-inventory --skill paper2skills
+python paper2skills/scripts/paper2skills.py audit-builder-baseline --skill paper2skills
 ```
 
 ```text
 paper2skills/scripts/
-  papert2skills.py          # CLI dispatcher
+  paper2skills.py          # CLI dispatcher
   action_policy.py          # normalized create/update/reuse status policy
   agent_rollout_audit.py    # rollout scenario mapping and leakage audit
   agent_rollout_harness.py  # plan-only agent rollout queue and leakage gate
@@ -565,7 +579,7 @@ paper2skills/scripts/
   eval_result_judge.py      # explicit eval-result judge for supplied outcomes
   eval_leakage_audit.py     # split isolation and prompt leakage hard gate
   verification_claim_audit.py # rendered verification claims vs execution evidence gate
-  task_partition.py         # capability -> task_type partition
+  task_partition.py         # capability -> task_type partition and operational recipes
   task_partition_decision_log.py # accepted/rejected task_type decision log
   parameter_miner.py        # static parameter constraints from interfaces
   task_router.py            # task_type routing artifact
@@ -584,7 +598,7 @@ paper2skills/scripts/
   skill_update_audit.py     # non-destructive update/reuse safety audit
   forward_test_plan.py      # plan-only independent child-skill rehearsal cases and validation
   claim_consistency_audit.py # rendered claim-to-artifact consistency audit
-  child_reference_coverage.py # required artifact-to-reference coverage audit
+  child_reference_coverage.py # required artifact, recipe, and reference coverage audit
   routing_metadata_audit.py # task_type router rendering and refusal audit
   workflow_invariant_audit.py # product-shape invariant audit
   requirement_coverage.py  # first-principles requirement-to-artifact matrix
@@ -604,6 +618,7 @@ paper2skills/scripts/
   completion_audit.py       # final semantic completion verdict
   run_scorecard.py          # one-page Markdown run and protocol scorecard renderer
   run_manifest.py           # final file hashes and run-level provenance
+  output_retention.py       # final child skill, iteration artifacts, and process doc retention
   grounding_gate.py         # task API/interface grounding gate
   artifact_contracts.py     # machine-readable artifact field contracts
   artifact_closure_audit.py # required artifact, contract, and write-plan closure audit
@@ -612,9 +627,9 @@ paper2skills/scripts/
   code_fence_audit.py       # machine-path and ungrounded API audit
   public_safety_audit.py    # credential and long-excerpt release safety audit
   biological_claim_boundary_audit.py # high-risk biological claim boundary audit
-  skill_draft.py            # lightweight child skill rendering
-  self_review.py            # checklist review checks
-  review_rubric.py          # rubric scoring gate
+  skill_draft.py            # lightweight child skill rendering with Quick Workflows and DAGs
+  self_review.py            # checklist review checks including operational recipes
+  review_rubric.py          # rubric scoring gate including recipe concreteness
   patch_planner.py          # deterministic artifact patch planner
   review_loop.py            # draft/critic/patch/revision/gate iteration loop
   review_evolution.py       # review score and patch trajectory summary
@@ -783,9 +798,27 @@ run_manifest.yaml
 child_skill/<method-name>/
 ```
 
+With `cleanup_process_files: true` (the default), paper2skills then reduces
+the retained run directory to:
+
+```text
+generation_process.md
+publish_manifest.yaml
+run_manifest.yaml
+iteration_versions/
+child_skill/<method-name>/
+```
+
+`iteration_versions/` keeps review, candidate, release, scorecard, and manifest
+artifacts needed to understand version evolution. Root-level final entry
+artifacts stay in place so publish and manifest verification commands have
+stable paths. Other root-level process YAML/JSONL files, copied sources, and
+run-local source caches are removed after the generation process document is
+written.
+
 ## Safety And Testing
 
-Papert2Skills must not silently install dependencies, patch upstream source,
+paper2skills must not silently install dependencies, patch upstream source,
 download unbounded data, fabricate APIs, or mark unexecuted paths as verified.
 
 Testing and execution should follow the user's project environment and explicit

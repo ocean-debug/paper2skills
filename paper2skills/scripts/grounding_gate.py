@@ -49,11 +49,15 @@ def task_grounding_record(
     reasons = []
     if not api_refs and not interface_refs:
         if parseable_api_surface > 0:
-            status = "warning"
+            status = "fail"
             reasons.append("parseable_source_without_task_api_or_interface")
         else:
-            status = "warning"
+            status = "fail"
             reasons.append("no_parseable_api_surface")
+    recipe = task.get("operational_recipe") or {}
+    if recipe.get("status") != "ready" or not recipe.get("api_sequence"):
+        status = "fail"
+        reasons.append("task_without_execution_ready_operational_recipe")
     if task.get("verification_status") == "execution_verified" and not (api_refs or interface_refs):
         status = "fail"
         reasons.append("verified_task_without_grounded_api_or_interface")
@@ -98,6 +102,22 @@ def build_grounding_gate(
                 "warning",
                 "task_without_api_or_interface_grounding",
                 "No API or interface candidate is linked to this task_type; keep generated guidance conservative.",
+                task_type,
+            )
+        if "task_without_execution_ready_operational_recipe" in record.get("reasons", []):
+            add_finding(
+                findings,
+                "error",
+                "task_without_execution_ready_operational_recipe",
+                "Task_type lacks a ready operational recipe with a source-grounded API sequence.",
+                task_type,
+            )
+        if record.get("status") == "fail" and "verified_task_without_grounded_api_or_interface" not in record.get("reasons", []):
+            add_finding(
+                findings,
+                "error",
+                "task_without_api_or_interface_grounding",
+                "No API or interface candidate is linked to this task_type.",
                 task_type,
             )
     has_errors = any(finding["severity"] == "error" for finding in findings)

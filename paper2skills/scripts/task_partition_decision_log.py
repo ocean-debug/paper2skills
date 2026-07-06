@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from common import as_list, lower_join, now_utc, slugify
+from common import as_list, canonical_task_type, lower_join, now_utc, slugify
 from constants import SCHEMA_VERSION, TASK_HEURISTICS
 from task_partition_audit import TUTORIAL_SPLIT_TERMS
 
@@ -12,7 +12,7 @@ from task_partition_audit import TUTORIAL_SPLIT_TERMS
 def requested_candidates(request: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
-            "candidate": slugify(str(item), "task"),
+            "candidate": canonical_task_type(str(item), "task"),
             "source": "requested_task_types",
             "evidence_ref": None,
             "reason": "Explicitly requested in build request.",
@@ -47,7 +47,7 @@ def evidence_candidates(evidence_cards: dict[str, Any]) -> list[dict[str, Any]]:
         for task_type in card.get("task_type_candidates", []):
             records.append(
                 {
-                    "candidate": str(task_type),
+                    "candidate": canonical_task_type(str(task_type), "task"),
                     "source": "evidence_card",
                     "evidence_ref": card.get("evidence_card_id"),
                     "reason": f"Evidence card claim_type={card.get('claim_type')}",
@@ -86,6 +86,8 @@ def build_task_partition_decision_log(
     task_catalog: dict[str, Any],
 ) -> dict[str, Any]:
     accepted = {str(task.get("task_type")) for task in task_catalog.get("tasks", []) if task.get("task_type")}
+    requested = {canonical_task_type(str(item), "task") for item in as_list(request.get("requested_task_types"))}
+    requested_constraint_active = bool(requested)
     candidate_records = (
         requested_candidates(request)
         + heuristic_candidates(request, sources)
@@ -106,6 +108,9 @@ def build_task_partition_decision_log(
         elif is_tutorial_shaped(candidate) or record.get("source") == "tutorial_shape":
             decision = "rejected"
             rationale = "Tutorial/demo/notebook-shaped candidates must remain evidence, not task_type splits."
+        elif requested_constraint_active:
+            decision = "merged_or_deferred"
+            rationale = "Explicit requested_task_types are hard constraints; unrequested candidates remain evidence for review."
         else:
             decision = "merged_or_deferred"
             rationale = "Candidate was not selected as a separate task_type; preserve as evidence for review."
@@ -152,6 +157,8 @@ def build_task_partition_decision_log(
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
         "accepted_task_types": sorted(accepted),
+        "requested_task_type_constraint_active": requested_constraint_active,
+        "requested_task_types": sorted(requested),
         "decision_count": len(decisions),
         "accepted_decision_count": len(accepted_decisions),
         "rejected_tutorial_split_count": len(rejected_tutorial_splits),
@@ -159,6 +166,7 @@ def build_task_partition_decision_log(
         "findings": findings,
         "policy": [
             "Capabilities become task_type entries inside one child skill.",
+            "When requested_task_types is non-empty, it is a hard constraint on accepted task_type entries.",
             "Tutorials, examples, demos, notebooks, and quickstarts are evidence sources, not split boundaries.",
             "Unselected candidates should be merged into accepted task contracts or deferred for manual review.",
         ],

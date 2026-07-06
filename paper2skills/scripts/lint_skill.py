@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from action_policy import normalize_action
-from common import now_utc, read_text
+from common import now_utc, public_child_skill_path, read_text
 from constants import BUILDER_VERSION, REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -53,10 +53,10 @@ def build_skill_spec(
         "schema_version": SCHEMA_VERSION,
         "builder_version": BUILDER_VERSION,
         "created_at": now_utc(),
-        "product_name": "Papert2Skills",
+        "product_name": "paper2skills",
         "target_agent": "codex",
         "child_skill": {
-            "path": str(child_skill_dir),
+            "path": public_child_skill_path(child_skill_dir),
             "layout": "scientific-agent-skills-lightweight",
             "one_package_one_skill": True,
             "task_type_count": len(task_catalog["tasks"]),
@@ -141,8 +141,8 @@ def publish_manifest(
         "schema_version": SCHEMA_VERSION,
         "builder_version": BUILDER_VERSION,
         "created_at": now_utc(),
-        "product_name": "Papert2Skills",
-        "child_skill_path": str(child_skill_dir),
+        "product_name": "paper2skills",
+        "child_skill_path": public_child_skill_path(child_skill_dir),
         "status": status,
         "lint_status": lint_report["status"],
         "publish_gate_status": gate_status,

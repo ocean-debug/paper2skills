@@ -45,7 +45,7 @@ def build_review_evolution(
         "final_score": review_result.get("final_score", {}),
         "final_finding_count": len(review_result.get("final_findings", [])),
         "policy": [
-            "Review evolution summarizes the agent-driven self-review loop.",
+            "Review evolution summarizes the agent-driven paper2skills review loop.",
             "It does not replace review_iterations.jsonl, which keeps full per-iteration findings and patch actions.",
         ],
     }

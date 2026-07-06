@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from common import as_list, now_utc, read_text
+from common import as_list, now_utc, public_existing_skill_path, read_text
 from constants import REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -115,7 +115,7 @@ def scan_existing_skill(skill_dir: Path) -> dict[str, Any] | None:
     urls = sorted({normalize_url(match) for match in URL_RE.findall(text)})
     dois = sorted({normalize_text(match) for match in DOI_RE.findall(text)})
     return {
-        "path": str(skill_dir),
+        "path": public_existing_skill_path(skill_dir),
         "text": lower_text,
         "files_scanned": file_records,
         "repo_urls": urls,
@@ -256,7 +256,11 @@ def discovery(request: dict[str, Any], task_types: list[str], api_names: list[st
         "decision": decision,
         "reason": reason,
         "matches": matches,
-        "checked_existing_skill_dirs": as_list(request.get("existing_skills_dirs")),
+        "checked_existing_skill_dirs": [
+            public_existing_skill_path(path)
+            for path in as_list(request.get("existing_skills_dirs"))
+            if public_existing_skill_path(path)
+        ],
         "requested_or_inferred_task_types": requested_tasks,
         "matching_policy": [
             "Discovery scans the standard lightweight child-skill files when present.",

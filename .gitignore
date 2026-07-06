@@ -17,11 +17,11 @@ env/
 .env.*
 !.env.example
 
-# Generated Papert2Skills outputs and scratch space
+# Generated paper2skills outputs and scratch space
 runs/
 generated/
 child_skill/
-.papert2skills/
+.paper2skills/
 
 # Logs, temp files, and OS metadata
 *.log

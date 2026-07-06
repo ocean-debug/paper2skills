@@ -1,4 +1,4 @@
-"""Prompt/state contracts for the SkillOpt-style review loop."""
+"""Prompt/state contracts for the paper2skills review loop."""
 
 from __future__ import annotations
 
@@ -17,11 +17,81 @@ CONTRACTS: list[dict[str, Any]] = [
         "forbidden_actions": ["execute package code", "modify files", "claim verification"],
     },
     {
+        "role": "record_score",
+        "purpose": "Record the current candidate's selection score before optimizer reflection.",
+        "required_fields": ["role", "iteration", "candidate_hash", "score", "total", "score_ratio", "score_source", "strict_gate"],
+        "allowed_actions": ["record static rubric score", "record candidate hash"],
+        "forbidden_actions": ["accept non-improving candidates", "hide score source"],
+    },
+    {
+        "role": "rollout_plan",
+        "purpose": "Declare the plan-only agent rollout/eval inputs used by the optimizer.",
+        "required_fields": ["role", "plan_only", "target_agent", "task_types", "external_result_fields", "policy"],
+        "allowed_actions": ["record rollout contract", "name external result fields"],
+        "forbidden_actions": ["launch agents", "execute package code", "fabricate rollout results"],
+    },
+    {
         "role": "critic",
         "purpose": "Score evidence, contracts, routing, refusals, validation, and verification boundaries.",
         "required_fields": ["role", "score", "total", "score_ratio", "severity_counts", "focus_counts", "item_results", "blocking_findings"],
         "allowed_actions": ["read review artifacts", "emit findings", "emit rubric item results"],
         "forbidden_actions": ["patch artifacts", "run tutorials", "downgrade refusal requirements"],
+    },
+    {
+        "role": "analyst_error",
+        "purpose": "Analyze failure minibatches or rubric blockers and propose targeted fixes.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["analysis", "error_analysis", "failure_patterns", "proposed_fixes", "findings"],
+        "allowed_actions": ["read failures", "summarize error patterns", "propose bounded edits"],
+        "forbidden_actions": ["execute package code", "write files directly"],
+    },
+    {
+        "role": "analyst_success",
+        "purpose": "Analyze success minibatches to preserve behavior that should not regress.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["analysis", "success_patterns", "preserve", "preserved_behaviors", "findings"],
+        "allowed_actions": ["read successes", "summarize preserved patterns"],
+        "forbidden_actions": ["remove refusal boundaries", "mark unsupported tasks as supported"],
+    },
+    {
+        "role": "merge_failure",
+        "purpose": "Merge failure-derived edit proposals into a bounded candidate set.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["operations", "candidate_operations", "merged_operations", "edits"],
+        "allowed_actions": ["merge compatible failure edits"],
+        "forbidden_actions": ["merge conflicting edits", "exceed edit budget"],
+    },
+    {
+        "role": "merge_success",
+        "purpose": "Merge success-derived preservation edits into the candidate set.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["operations", "candidate_operations", "preserved_constraints", "edits"],
+        "allowed_actions": ["merge preservation edits"],
+        "forbidden_actions": ["weaken validation or refusal gates"],
+    },
+    {
+        "role": "merge_final",
+        "purpose": "Combine failure and success proposals into one final edit pool.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["operations", "final_operations", "merged_operations", "selected_operations"],
+        "allowed_actions": ["prioritize failure fixes", "deduplicate edits"],
+        "forbidden_actions": ["select duplicate or overlapping edits"],
+    },
+    {
+        "role": "ranking",
+        "purpose": "Rank final edit candidates under the edit budget before apply.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["operation_ids", "selected_operations", "ranked_operations", "chosen_operations", "operation_indices"],
+        "allowed_actions": ["rank bounded edits", "respect edit budget"],
+        "forbidden_actions": ["rank edits outside allowed operations"],
+    },
+    {
+        "role": "slow_update",
+        "purpose": "Reserve epoch-level longitudinal guidance for repeated agent-driven optimization.",
+        "required_fields": ["role", "status", "prompt_contract", "recorded_output_keys", "required_agent_output"],
+        "agent_payload_accepts_any_of": ["summary", "guidance", "lessons", "next_state", "longitudinal_update"],
+        "allowed_actions": ["record epoch-boundary guidance"],
+        "forbidden_actions": ["publish optimizer-side memory into the child skill"],
     },
     {
         "role": "patch_plan",
@@ -82,7 +152,7 @@ def build_review_prompt_contracts(
 ) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     required_roles = set(contract_by_role())
-    required_every_iteration = {"draft_snapshot", "critic", "patch_plan", "gate"}
+    required_every_iteration = {"draft_snapshot", "record_score", "rollout_plan", "critic", "patch_plan", "gate"}
 
     for iteration in review_result.get("iterations", []):
         iteration_index = int(iteration.get("iteration") or 0)
@@ -145,7 +215,7 @@ def build_review_prompt_contracts(
         "iteration_count": len(review_result.get("iterations", [])),
         "findings": findings,
         "policy": [
-            "Review prompt contracts define allowed state roles and required fields for each self-review iteration.",
+            "Review prompt contracts define allowed state roles and required fields for each paper2skills review loop iteration.",
             "The contract layer is static and non-executing; it audits the review loop shape before publish.",
             "Patch planning must be agent-authored, bounded to declared operations, and applied only through audited in-memory artifacts.",
         ],

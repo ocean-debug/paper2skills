@@ -12,7 +12,7 @@ from action_policy import (
     expected_install_statuses,
     expected_publish_statuses,
 )
-from common import now_utc
+from common import now_utc, public_existing_skill_path
 from constants import SCHEMA_VERSION
 
 
@@ -103,7 +103,7 @@ def build_release_action_audit(
     if expected_step and expected_step not in steps:
         add_finding(findings, "error", "missing_action_publish_step", "Codex publish adapter is missing the expected action step.", "codex_publish_adapter")
 
-    target_path = release_package.get("target_existing_skill_path") or skill_update_plan.get("target_existing_skill_path")
+    target_path = release_package.get("target_existing_skill_path") or public_existing_skill_path(skill_update_plan.get("target_existing_skill_path"))
     if action in {UPDATE_EXISTING, REUSE_EXISTING} and not target_path:
         add_finding(findings, "error", "missing_existing_skill_target", "Update and reuse actions require a target existing skill path.", "release_package")
     if action == REUSE_EXISTING:

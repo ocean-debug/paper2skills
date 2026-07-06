@@ -12,7 +12,7 @@ from constants import BUILDER_VERSION, SCHEMA_VERSION
 BASELINE_FAMILIES: list[dict[str, Any]] = [
     {
         "family": "request_and_cli",
-        "modules": ["request_model.py", "request_audit.py", "request_fingerprint.py", "request_template_audit.py", "papert2skills.py"],
+        "modules": ["request_model.py", "request_audit.py", "request_fingerprint.py", "request_template_audit.py", "paper2skills.py"],
     },
     {
         "family": "core_orchestration",
@@ -80,7 +80,7 @@ BASELINE_FAMILIES: list[dict[str, Any]] = [
     },
     {
         "family": "publish_and_manifest",
-        "modules": ["publish_gate.py", "codex_publish_adapter.py", "publish_manifest_audit.py", "install_readiness.py", "run_manifest.py", "run_scorecard.py", "score_report.py", "quality_report.py"],
+        "modules": ["publish_gate.py", "codex_publish_adapter.py", "publish_manifest_audit.py", "install_readiness.py", "run_manifest.py", "output_retention.py", "run_scorecard.py", "score_report.py", "quality_report.py"],
     },
     {
         "family": "timeline_and_protocol",
@@ -185,8 +185,8 @@ def build_builder_baseline_audit(skill_dir: Path, repo_root: Path | None = None)
         "builder_version": BUILDER_VERSION,
         "created_at": now_utc(),
         "status": "fail" if has_errors else "pass",
-        "skill_dir": str(skill_dir),
-        "repo_root": str(repo_root),
+        "skill_dir": ".",
+        "repo_root": ".",
         "family_count": len(families),
         "covered_family_count": sum(1 for family in families if family["passed"]),
         "module_count": sum(family["module_count"] for family in families),

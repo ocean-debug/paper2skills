@@ -30,16 +30,36 @@ def github_archive_candidates(uri: str) -> list[str]:
     return [f"{base}/main.zip", f"{base}/master.zip"]
 
 
-def safe_extract_zip(zip_path: Path, dest: Path, max_files: int = 2000) -> dict[str, Any]:
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def safe_extract_zip(
+    zip_path: Path,
+    dest: Path,
+    max_files: int = 2000,
+    max_total_bytes: int = DEFAULT_MAX_FETCH_BYTES,
+) -> dict[str, Any]:
     ensure_dir(dest)
     extracted = 0
     with zipfile.ZipFile(zip_path) as archive:
         members = archive.infolist()
         if len(members) > max_files:
             return {"status": "skipped_too_many_files", "file_count": len(members)}
+        total_size = sum(member.file_size for member in members)
+        if total_size > max_total_bytes:
+            return {
+                "status": "skipped_too_many_uncompressed_bytes",
+                "uncompressed_bytes": total_size,
+                "max_uncompressed_bytes": max_total_bytes,
+            }
         for member in members:
             target = (dest / member.filename).resolve()
-            if not str(target).startswith(str(dest.resolve())):
+            if not is_within(target, dest):
                 return {"status": "blocked_unsafe_zip_member", "member": member.filename}
             archive.extract(member, dest)
             extracted += 1
@@ -54,9 +74,37 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_limited(uri: str, dest: Path, max_bytes: int) -> dict[str, Any]:
+def cache_path_for_uri(cache_dir: Path, uri: str, suffix: str) -> Path:
+    digest = hashlib.sha256(uri.encode("utf-8")).hexdigest()[:24]
+    safe_suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    return cache_dir / f"{digest}{safe_suffix}"
+
+
+def copy_cached_source(uri: str, cache_path: Path, dest: Path, max_bytes: int) -> dict[str, Any] | None:
+    if not cache_path.exists() or not cache_path.is_file():
+        return None
+    size = cache_path.stat().st_size
+    if size > max_bytes:
+        return None
     ensure_dir(dest.parent)
-    request = urllib.request.Request(uri, headers={"User-Agent": "Papert2Skills/0.1"})
+    shutil.copy2(cache_path, dest)
+    return {
+        "status": "reused_cache",
+        "uri": uri,
+        "local_path": str(dest),
+        "bytes": dest.stat().st_size,
+        "sha256": sha256_file(dest),
+        "cache_path": str(cache_path),
+    }
+
+
+def download_limited(uri: str, dest: Path, max_bytes: int, cache_path: Path | None = None) -> dict[str, Any]:
+    ensure_dir(dest.parent)
+    if cache_path:
+        cached = copy_cached_source(uri, cache_path, dest, max_bytes)
+        if cached:
+            return cached
+    request = urllib.request.Request(uri, headers={"User-Agent": "paper2skills/0.1"})
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             data = response.read(max_bytes + 1)
@@ -65,12 +113,16 @@ def download_limited(uri: str, dest: Path, max_bytes: int) -> dict[str, Any]:
     if len(data) > max_bytes:
         return {"status": "skipped_too_large", "uri": uri, "max_bytes": max_bytes}
     dest.write_bytes(data)
+    if cache_path:
+        ensure_dir(cache_path.parent)
+        shutil.copy2(dest, cache_path)
     return {
         "status": "downloaded",
         "uri": uri,
         "local_path": str(dest),
         "bytes": len(data),
         "sha256": sha256_file(dest),
+        "cache_path": str(cache_path) if cache_path else None,
     }
 
 
@@ -100,6 +152,7 @@ def fetch_one_source(
     out: Path,
     fetch_enabled: bool,
     max_bytes: int,
+    cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     evidence_id = str(source["evidence_id"])
     uri = str(source.get("uri") or "")
@@ -119,10 +172,11 @@ def fetch_one_source(
     if source.get("type") == "repository":
         for candidate in github_archive_candidates(uri):
             archive_path = dest_root / "repositories" / f"{slugify(evidence_id)}.zip"
-            result = download_limited(candidate, archive_path, max_bytes)
-            if result["status"] == "downloaded":
+            candidate_cache = cache_path_for_uri(cache_dir, candidate, ".zip") if cache_dir else None
+            result = download_limited(candidate, archive_path, max_bytes, candidate_cache)
+            if result["status"] in {"downloaded", "reused_cache"}:
                 extract_dir = dest_root / "repositories" / slugify(evidence_id)
-                extract_result = safe_extract_zip(archive_path, extract_dir)
+                extract_result = safe_extract_zip(archive_path, extract_dir, max_total_bytes=max_bytes)
                 record.update(result)
                 record.update({"resolved_uri": candidate, "extract_path": str(extract_dir), "extract": extract_result})
                 return record
@@ -133,23 +187,40 @@ def fetch_one_source(
     parsed = urllib.parse.urlparse(uri)
     suffix = Path(parsed.path).suffix or ".txt"
     dest = dest_root / "documents" / f"{slugify(evidence_id)}{suffix}"
-    record.update(download_limited(uri, dest, max_bytes))
+    document_cache = cache_path_for_uri(cache_dir, uri, suffix) if cache_dir else None
+    record.update(download_limited(uri, dest, max_bytes, document_cache))
     return record
 
 
 def fetch_sources(request: dict[str, Any], sources: list[dict[str, Any]], out: Path) -> dict[str, Any]:
     fetch_enabled = bool(request.get("fetch_sources", False))
     max_bytes = int(request.get("max_fetch_bytes") or DEFAULT_MAX_FETCH_BYTES)
-    records = [fetch_one_source(source, out, fetch_enabled, max_bytes) for source in sources]
+    cache_enabled = bool(request.get("reuse_fetched_sources", True))
+    requested_cache_dir = Path(str(request.get("source_cache_dir") or out / ".source_cache")).expanduser() if cache_enabled else None
+    cache_dir = requested_cache_dir
+    cache_boundary = "disabled"
+    if cache_dir:
+        default_cache_dir = out / ".source_cache"
+        if is_within(cache_dir, out):
+            cache_boundary = "run_bounded"
+        else:
+            cache_dir = default_cache_dir
+            cache_boundary = "rewritten_to_run_bounded_default"
+    records = [fetch_one_source(source, out, fetch_enabled, max_bytes, cache_dir) for source in sources]
     return {
         "schema_version": SCHEMA_VERSION,
         "created_at": now_utc(),
         "fetch_enabled": fetch_enabled,
+        "cache_enabled": cache_enabled,
+        "source_cache_dir": str(cache_dir) if cache_dir else None,
+        "requested_source_cache_dir": str(requested_cache_dir) if requested_cache_dir else None,
+        "source_cache_boundary": cache_boundary,
         "max_fetch_bytes": max_bytes,
         "sources": records,
         "notes": [
             "Fetching never executes source code.",
             "Remote downloads are skipped unless fetch_sources is true.",
+            "Successful fetched sources are cached when reuse_fetched_sources is true and reused before a fresh network request.",
             "Repository archives are extracted with path traversal checks.",
         ],
     }

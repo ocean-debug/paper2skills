@@ -115,7 +115,7 @@ def render_review_evolution_svg(review_evolution: dict[str, Any]) -> str:
     stop_reason = html.escape(str(review_evolution.get("stop_reason") or "unknown"))
     return "\n".join(
         [
-            f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-label="Papert2Skills review evolution plot">',
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-label="paper2skills review evolution plot">',
             '<rect width="100%" height="100%" fill="#ffffff" />',
             f'<text x="{PAD_LEFT}" y="22" font-size="15" font-family="Arial, sans-serif" fill="#111827">{title} review evolution</text>',
             f'<text x="{WIDTH - PAD_RIGHT}" y="22" text-anchor="end" font-size="12" font-family="Arial, sans-serif" fill="#4b5563">status={status}; stop={stop_reason}</text>',

@@ -50,7 +50,7 @@ def build_candidate_promotion_audit(
     if not active:
         add_finding(findings, "error", "active_version_not_found", "Active candidate version is not present in candidate registry.")
     if draft_candidates.get("candidate_count", 0) != 1:
-        add_finding(findings, "error", "unexpected_candidate_count", "Papert2Skills must keep one child-skill candidate per package.")
+        add_finding(findings, "error", "unexpected_candidate_count", "paper2skills must keep one child-skill candidate per package.")
     if candidate_selection_audit.get("status") != "pass":
         add_finding(findings, "error", "candidate_selection_not_passed", "Active candidate cannot be promoted until selection audit passes.")
     if candidate_selection_audit.get("selected_version_id") != candidate_registry.get("active_version_id"):

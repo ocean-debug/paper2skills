@@ -1,4 +1,4 @@
-"""Requirement-to-artifact coverage matrix for Papert2Skills builds."""
+"""Requirement-to-artifact coverage matrix for paper2skills builds."""
 
 from __future__ import annotations
 
@@ -40,6 +40,24 @@ def task_has_contracts(task_catalog: dict[str, Any]) -> bool:
         if not output_contract.get("minimum_validation"):
             return False
         if not task.get("refusal_boundaries"):
+            return False
+    return bool(task_catalog.get("tasks"))
+
+
+def task_has_operational_recipes(task_catalog: dict[str, Any]) -> bool:
+    for task in task_catalog.get("tasks", []):
+        recipe = task.get("operational_recipe") or {}
+        if recipe.get("status") != "ready":
+            return False
+        if not recipe.get("api_sequence"):
+            return False
+        if not recipe.get("workflow_steps"):
+            return False
+        if not recipe.get("required_inputs"):
+            return False
+        if not recipe.get("expected_outputs"):
+            return False
+        if not recipe.get("validation_checks"):
             return False
     return bool(task_catalog.get("tasks"))
 
@@ -229,6 +247,12 @@ def build_requirement_coverage(
             "evidence_artifacts": ["task_catalog.yaml", "task_partition_decision_log.yaml", "task_partition_audit.yaml"],
         },
         {
+            "requirement_id": "agent_usable_operational_recipes",
+            "requirement": "Each task_type has a concrete agent-usable Quick Workflow with required inputs, expected outputs, and validation checks.",
+            "status": status_from([task_has_operational_recipes(task_catalog)]),
+            "evidence_artifacts": ["task_catalog.yaml", "child_skill/SKILL.md", "child_skill/references/input-output-contracts.md", "child_skill/references/validation.md"],
+        },
+        {
             "requirement_id": "task_type_router",
             "requirement": "A router chooses task_type inside the same child skill.",
             "status": status_from([task_has_router(task_catalog, router), routing_metadata_audit.get("status") == "pass"]),
@@ -282,7 +306,7 @@ def build_requirement_coverage(
         },
         {
             "requirement_id": "self_review_iteration",
-            "requirement": "Agent-driven SkillOpt-style self-review records review state, agent proposal plan, optimizer state, patch safety, and gate discipline.",
+            "requirement": "Agent-driven paper2skills review loop records review state, agent proposal plan, optimizer state, patch safety, and gate discipline.",
             "status": status_from([
                 review_optimizer_state.get("status") == "pass",
                 review_prompt_contracts.get("status") == "pass",
@@ -334,7 +358,7 @@ def build_requirement_coverage(
                 findings,
                 "error",
                 "requirement_not_covered",
-                "A core Papert2Skills requirement lacks artifact coverage.",
+                "A core paper2skills requirement lacks artifact coverage.",
                 str(row["requirement_id"]),
             )
 

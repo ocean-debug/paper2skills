@@ -1,4 +1,4 @@
-"""Optimizer-state summary for the SkillOpt-style review loop."""
+"""Optimizer-state summary for the paper2skills review loop."""
 
 from __future__ import annotations
 
@@ -108,6 +108,8 @@ def build_review_optimizer_state(
             "review_min_score_ratio": min_score_ratio,
             "iteration_hashes": [item["state_hash"] for item in iterations],
             "final_score": final_score,
+            "score_cache_keys": sorted((review_result.get("score_cache") or {}).keys()),
+            "rejected_buffer": review_result.get("rejected_buffer", []),
         }
     )
     final_ratio = final_score.get("score_ratio")
@@ -153,6 +155,9 @@ def build_review_optimizer_state(
         "min_score_ratio": min_score_ratio,
         "strict_improvement_gate": True,
         "cache_key": cache_key,
+        "score_cache_count": len(review_result.get("score_cache") or {}),
+        "rejected_buffer_count": len(review_result.get("rejected_buffer") or []),
+        "rejected_buffer": review_result.get("rejected_buffer", []),
         "iteration_count": len(iterations),
         "iterations": iterations,
         "rejected_edit_count": len(rejected_edits),
@@ -162,6 +167,6 @@ def build_review_optimizer_state(
         "policy": [
             "Optimizer state is append-only audit metadata; it does not execute package code.",
             "Each iteration receives a stable hash so repeated review states can be detected by downstream tooling.",
-            "Patch actions are accepted only when the review gate or later audits confirm they are safe and non-regressive.",
+            "Patch actions are accepted only when the immediate strict-improvement gate confirms the candidate score increased.",
         ],
     }

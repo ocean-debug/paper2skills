@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from action_policy import REUSE_EXISTING, UPDATE_EXISTING, is_publish_status_acceptable
-from common import now_utc
+from common import now_utc, public_child_skill_path, public_existing_skill_path
 from constants import BUILDER_VERSION, REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -52,9 +52,10 @@ def build_release_package(
         ]
     candidate_promotion_audit = candidate_promotion_audit or {}
     has_target = bool(skill_update_plan.get("target_existing_skill_path"))
+    public_target = public_existing_skill_path(skill_update_plan.get("target_existing_skill_path"))
     ready = (
         is_publish_status_acceptable(recommended_action, publish_gate.get("status"))
-        and candidate_promotion_audit.get("status", "pass") == "pass"
+        and candidate_promotion_audit.get("status") == "pass"
         and (recommended_action != REUSE_EXISTING or has_target)
         and (recommended_action != UPDATE_EXISTING or has_target)
     )
@@ -64,14 +65,15 @@ def build_release_package(
         "created_at": now_utc(),
         "package_name": request.get("package_name"),
         "method_name": request.get("method_name") or request.get("package_name"),
-        "child_skill_path": str(child_skill_dir),
+        "child_skill_path": public_child_skill_path(child_skill_dir),
         "status": "ready" if ready else "blocked",
         "publish_gate_status": publish_gate.get("status"),
         "candidate_promotion_audit_status": candidate_promotion_audit.get("status"),
         "recommended_action": recommended_action,
         "action_publish_status_accepted": is_publish_status_acceptable(recommended_action, publish_gate.get("status")),
         "candidate_version": candidate_registry.get("active_version_id"),
-        "target_existing_skill_path": skill_update_plan.get("target_existing_skill_path"),
+        "target_existing_skill_path": public_target,
+        "target_existing_skill_ref": public_target,
         "install_target": "Codex skills directory selected by the user",
         "run_manifest_path": "run_manifest.yaml",
         "files": files,

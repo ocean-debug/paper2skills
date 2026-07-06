@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from common import now_utc
+from common import now_utc, public_child_skill_path
 from constants import REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -77,7 +77,7 @@ def build_output_boundary_audit(
             "error",
             "child_skill_outside_output_dir",
             "Generated child skill directory must stay inside the build output directory.",
-            str(child_skill_dir),
+            public_child_skill_path(child_skill_dir),
         )
     if not is_relative_to(child_skill_dir, expected_child_root):
         add_finding(
@@ -85,7 +85,7 @@ def build_output_boundary_audit(
             "error",
             "child_skill_outside_child_skill_root",
             "Generated child skill must be under the output child_skill directory.",
-            str(child_skill_dir),
+            public_child_skill_path(child_skill_dir),
         )
     if Path(str(request.get("output_dir") or "")).resolve() != out.resolve():
         add_finding(
@@ -93,7 +93,7 @@ def build_output_boundary_audit(
             "error",
             "request_output_dir_mismatch",
             "Normalized request output_dir must match the active build output directory.",
-            str(request.get("output_dir")),
+            "request.output_dir",
         )
     if output_dir_inside_install_root:
         add_finding(
@@ -101,16 +101,16 @@ def build_output_boundary_audit(
             "error",
             "output_dir_inside_skill_install_root",
             "Build output_dir must be a run workspace, not a Codex skill install directory.",
-            str(out),
+            ".",
         )
 
     spec_path = str((skill_spec.get("child_skill") or {}).get("path") or "")
-    if spec_path and Path(spec_path).resolve() != child_skill_dir.resolve():
+    if spec_path and spec_path != public_child_skill_path(child_skill_dir):
         add_finding(
             findings,
             "error",
             "skill_spec_path_mismatch",
-            "skill_spec child path must match the rendered child skill directory.",
+            "skill_spec child path must match the public run-relative child skill directory.",
             spec_path,
         )
 
@@ -153,9 +153,9 @@ def build_output_boundary_audit(
         "package_name": request.get("package_name"),
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
-        "output_dir": str(out),
-        "child_skill_path": str(child_skill_dir),
-        "expected_child_root": str(expected_child_root),
+        "output_dir": ".",
+        "child_skill_path": public_child_skill_path(child_skill_dir),
+        "expected_child_root": "child_skill",
         "output_dir_inside_install_root": output_dir_inside_install_root,
         "install_root_markers": ["/".join(marker) for marker in INSTALL_ROOT_MARKERS],
         "expected_public_files": expected_files,

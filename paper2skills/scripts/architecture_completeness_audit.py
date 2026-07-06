@@ -42,8 +42,8 @@ ARCHITECTURE_REQUIREMENTS: list[dict[str, Any]] = [
     },
     {
         "requirement_id": "task_type_partitioning",
-        "description": "Package capabilities are partitioned into task_type entries inside one child skill.",
-        "phases": ["task_partition", "task_partition_decision_log", "task_partition_audit", "routing_metadata_audit"],
+        "description": "Package capabilities are partitioned into task_type entries inside one child skill with agent-usable operational recipes.",
+        "phases": ["task_partition", "task_partition_decision_log", "operational_recipes", "task_partition_audit", "routing_metadata_audit"],
         "artifacts": {
             "task_partition_decision_log": {"pass"},
             "task_partition_audit": {"pass"},
@@ -52,7 +52,7 @@ ARCHITECTURE_REQUIREMENTS: list[dict[str, Any]] = [
     },
     {
         "requirement_id": "self_review_loop",
-        "description": "The self-review loop has prompt contracts, prompt materials, prompt duty coverage, remediation accounting, optimizer state, patch safety, patch operation contracts, rubric grounding, iteration log, and trajectory checks.",
+        "description": "The agent-driven paper2skills review loop has prompt contracts, prompt materials, prompt duty coverage, remediation accounting, optimizer state, patch safety, patch operation contracts, rubric grounding, iteration log, and trajectory checks.",
         "phases": ["self_review", "review_iteration_log", "review_prompt_contracts", "review_prompt_materials", "review_remediation_audit", "review_optimizer_state", "review_prompt_suite_audit", "patch_safety_audit", "patch_operation_contracts", "rubric_grounding_audit", "review_trajectory_audit"],
         "artifacts": {
             "review_iteration_log": {"pass"},

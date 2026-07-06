@@ -22,6 +22,21 @@ def add_finding(
     findings.append(item)
 
 
+def status_record(name: str, artifact: dict[str, Any], expected: set[str]) -> dict[str, Any]:
+    status = str(artifact.get("status") or "unknown")
+    return {
+        "artifact": name,
+        "status": status,
+        "expected": sorted(expected),
+        "passed": status in expected,
+        "finding_count": len(artifact.get("findings", [])),
+    }
+
+
+def grouped_status(records: list[dict[str, Any]]) -> str:
+    return "pass" if all(record.get("passed") for record in records) else "fail"
+
+
 def evaluate_publish_gate(
     request: dict[str, Any],
     discovery_report: dict[str, Any],
@@ -190,7 +205,7 @@ def evaluate_publish_gate(
         add_finding(findings, "error", "api_surface_audit_failed", "Rendered API surface audit failed.")
     if key_api_coverage_audit.get("status") != "pass":
         add_finding(findings, "error", "key_api_coverage_audit_failed", "Explicit key APIs from the build request were not fully grounded.")
-    if eval_splits.get("status") == "fail":
+    if eval_splits.get("status") != "pass":
         add_finding(findings, "error", "eval_splits_failed", "Static eval splits are missing required holdout coverage.")
     if eval_result_judge.get("status") == "fail":
         add_finding(findings, "error", "eval_result_judge_failed", "Supplied eval results failed against static expectations.")
@@ -206,70 +221,70 @@ def evaluate_publish_gate(
         add_finding(findings, "error", "smoke_test_plan_failed", "Smoke test plan or supplied results failed audit.")
     if request.get("require_smoke_test") and smoke_test_plan.get("smoke_verdict") != "passed":
         add_finding(findings, "error", "required_smoke_test_not_passed", "require_smoke_test is true but smoke test results have not fully passed.")
-    if review_cursor.get("status") == "fail":
+    if review_cursor.get("status") != "pass":
         add_finding(findings, "error", "review_cursor_failed", "Review cursor state is incomplete.")
-    if review_prompt_contracts.get("status") == "fail":
+    if review_prompt_contracts.get("status") != "pass":
         add_finding(findings, "error", "review_prompt_contracts_failed", "Review prompt/state contracts failed.")
-    if review_prompt_materials.get("status") == "fail":
+    if review_prompt_materials.get("status") != "pass":
         add_finding(findings, "error", "review_prompt_materials_failed", "Review prompt materials failed.")
-    if review_prompt_suite_audit.get("status") == "fail":
+    if review_prompt_suite_audit.get("status") != "pass":
         add_finding(findings, "error", "review_prompt_suite_audit_failed", "Review prompt suite audit failed.")
-    if review_iteration_log.get("status") == "fail":
+    if review_iteration_log.get("status") != "pass":
         add_finding(findings, "error", "review_iteration_log_failed", "Review iteration log failed.")
-    if patch_application.get("status") == "fail":
+    if patch_application.get("status") != "pass":
         add_finding(findings, "error", "patch_application_failed", "Review patch application audit failed.")
-    if review_remediation_audit.get("status") == "fail":
+    if review_remediation_audit.get("status") != "pass":
         add_finding(findings, "error", "review_remediation_audit_failed", "Review finding remediation audit failed.")
-    if review_optimizer_state.get("status") == "fail":
+    if review_optimizer_state.get("status") != "pass":
         add_finding(findings, "error", "review_optimizer_state_failed", "Review optimizer state failed.")
-    if patch_safety_audit.get("status") == "fail":
+    if patch_safety_audit.get("status") != "pass":
         add_finding(findings, "error", "patch_safety_audit_failed", "Review patch safety audit failed.")
-    if patch_operation_contracts.get("status") == "fail":
+    if patch_operation_contracts.get("status") != "pass":
         add_finding(findings, "error", "patch_operation_contracts_failed", "Review patch operation contracts failed.")
-    if review_discipline_audit.get("status") == "fail":
+    if review_discipline_audit.get("status") != "pass":
         add_finding(findings, "error", "review_discipline_audit_failed", "Review-loop discipline audit failed.")
-    if rubric_grounding_audit.get("status") == "fail":
+    if rubric_grounding_audit.get("status") != "pass":
         add_finding(findings, "error", "rubric_grounding_audit_failed", "Rubric grounding audit failed.")
-    if review_trajectory_audit.get("status") == "fail":
+    if review_trajectory_audit.get("status") != "pass":
         add_finding(findings, "error", "review_trajectory_audit_failed", "Review trajectory integrity audit failed.")
-    if task_partition_audit.get("status") == "fail":
+    if task_partition_audit.get("status") != "pass":
         add_finding(findings, "error", "task_partition_audit_failed", "Task partition violates capability/task_type boundaries.")
-    if task_partition_decision_log.get("status") == "fail":
+    if task_partition_decision_log.get("status") != "pass":
         add_finding(findings, "error", "task_partition_decision_log_failed", "Task partition decision log failed.")
-    if source_parsing_coverage.get("status") == "fail":
+    if source_parsing_coverage.get("status") != "pass":
         add_finding(findings, "error", "source_parsing_coverage_failed", "Source parsing coverage failed.")
-    if source_parsing_audit.get("status") == "fail":
+    if source_parsing_audit.get("status") != "pass":
         add_finding(findings, "error", "source_parsing_audit_failed", "Source parsing strategy or provenance audit failed.")
-    if source_ingestion_audit.get("status") == "fail":
+    if source_ingestion_audit.get("status") != "pass":
         add_finding(findings, "error", "source_ingestion_audit_failed", "Source ingestion identity or count audit failed.")
-    if backend_extension_audit.get("status") == "fail":
+    if backend_extension_audit.get("status") != "pass":
         add_finding(findings, "error", "backend_extension_audit_failed", "Backend extension boundary audit failed.")
-    if environment_install_plan.get("status") == "fail":
+    if environment_install_plan.get("status") != "pass":
         add_finding(findings, "error", "environment_install_plan_failed", "Environment install planning failed.")
-    if resource_boundary_audit.get("status") == "fail":
+    if resource_boundary_audit.get("status") != "pass":
         add_finding(findings, "error", "resource_boundary_audit_failed", "Model, checkpoint, or data resource boundary audit failed.")
-    if tutorial_reproduction_plan.get("status") == "fail":
+    if tutorial_reproduction_plan.get("status") != "pass":
         add_finding(findings, "error", "tutorial_reproduction_plan_failed", "Tutorial reproduction planning failed.")
-    if execution_replay_orchestrator.get("status") == "fail":
+    if execution_replay_orchestrator.get("status") != "pass":
         add_finding(findings, "error", "execution_replay_orchestrator_failed", "Execution replay orchestration failed.")
-    if evidence_coverage.get("status") == "fail":
+    if evidence_coverage.get("status") != "pass":
         add_finding(findings, "error", "evidence_coverage_failed", "Task evidence coverage failed.")
-    if evidence_precedence.get("status") == "fail":
+    if evidence_precedence.get("status") != "pass":
         add_finding(findings, "error", "evidence_precedence_failed", "Task evidence precedence failed.")
-    if evidence_claim_taxonomy_audit.get("status") == "fail":
+    if evidence_claim_taxonomy_audit.get("status") != "pass":
         add_finding(findings, "error", "evidence_claim_taxonomy_audit_failed", "Evidence claim taxonomy audit failed.")
     if contract_traceability.get("status") != "pass":
         add_finding(findings, "error", "contract_traceability_failed", "Task input, output, validation, or refusal contracts lack evidence traceability.")
-    if lineage_graph.get("status") == "fail":
+    if lineage_graph.get("status") != "pass":
         add_finding(findings, "error", "lineage_graph_failed", "Source-to-skill lineage graph failed.")
-    if grounding_gate.get("status") == "fail":
+    if grounding_gate.get("status") != "pass":
         add_finding(findings, "error", "grounding_gate_failed", "Task API/interface grounding gate failed.")
-    if discovery_audit.get("status") == "fail":
+    if discovery_audit.get("status") != "pass":
         add_finding(findings, "error", "discovery_audit_failed", "Discovery decision audit failed.")
-    if discovery_match_audit.get("status") == "fail":
+    if discovery_match_audit.get("status") != "pass":
         add_finding(findings, "error", "discovery_match_audit_failed", "Discovery match-quality audit failed.")
     if review_result.get("status") != "passed":
-        add_finding(findings, "error", "review_not_passed", "Self-review loop did not pass the configured gate.")
+        add_finding(findings, "error", "review_not_passed", "paper2skills review loop did not pass the configured gate.")
     action = normalize_action(discovery_report.get("decision"), skill_update_plan.get("recommended_action"))
     if action == REUSE_EXISTING:
         add_finding(findings, "warning", "reuse_existing_skill", "Discovery recommends reusing an existing child skill instead of publishing a duplicate.")
@@ -357,6 +372,34 @@ def evaluate_publish_gate(
             "execution_grounded was requested, but no tutorial/example steps are available for replay planning.",
         )
 
+    child_usability_records = [
+        status_record("lint", lint_report, {"pass"}),
+        status_record("child_metadata_audit", child_metadata_audit, {"pass"}),
+        status_record("child_package_purity_audit", child_package_purity_audit, {"pass"}),
+        status_record("draft_readiness", draft_readiness, {"pass"}),
+        status_record("output_boundary_audit", output_boundary_audit, {"pass"}),
+        status_record("code_fence_audit", code_fence_audit, {"pass"}),
+        status_record("public_safety_audit", public_safety_audit, {"pass"}),
+        status_record("claim_consistency_audit", claim_consistency_audit, {"pass"}),
+        status_record("biological_claim_boundary_audit", biological_claim_boundary_audit, {"pass"}),
+        status_record("child_reference_coverage", child_reference_coverage, {"pass"}),
+        status_record("routing_metadata_audit", routing_metadata_audit, {"pass"}),
+        status_record("workflow_invariant_audit", workflow_invariant_audit, {"pass"}),
+    ]
+    builder_run_records = [
+        status_record("builder_runtime_audit", builder_runtime_audit, {"pass"}),
+        status_record("agent_metadata_audit", agent_metadata_audit, {"pass"}),
+        status_record("public_origin_audit", public_origin_audit, {"pass"}),
+        status_record("module_inventory_audit", module_inventory_audit, {"pass"}),
+        status_record("builder_baseline_audit", builder_baseline_audit, {"pass"}),
+        status_record("skill_package_audit", skill_package_audit, {"pass"}),
+        status_record("request_template_audit", request_template_audit, {"pass"}),
+        status_record("request_audit", request_audit, {"pass"}),
+        status_record("request_fingerprint", request_fingerprint, {"pass"}),
+        status_record("external_result_contracts", external_result_contracts, {"pass"}),
+        status_record("phase_state_audit", phase_state_audit, {"pass"}),
+        status_record("artifact_validation", artifact_validation, {"pass"}),
+    ]
     has_errors = any(finding["severity"] == "error" for finding in findings)
     status = "blocked" if has_errors else ("reuse_ready" if action == REUSE_EXISTING else "publishable")
     return {
@@ -378,6 +421,18 @@ def evaluate_publish_gate(
         "request_fingerprint_status": request_fingerprint.get("status"),
         "external_result_contracts_status": external_result_contracts.get("status"),
         "phase_state_audit_status": phase_state_audit.get("status"),
+        "child_usability": {
+            "status": grouped_status(child_usability_records),
+            "record_count": len(child_usability_records),
+            "blocking_count": sum(1 for record in child_usability_records if not record.get("passed")),
+            "records": child_usability_records,
+        },
+        "builder_run_integrity": {
+            "status": grouped_status(builder_run_records),
+            "record_count": len(builder_run_records),
+            "blocking_count": sum(1 for record in builder_run_records if not record.get("passed")),
+            "records": builder_run_records,
+        },
         "review_status": review_result.get("status"),
         "discovery_decision": discovery_report.get("decision"),
         "discovery_audit_status": discovery_audit.get("status"),

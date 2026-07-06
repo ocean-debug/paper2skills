@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Papert2Skills command-line entrypoint.
+"""paper2skills command-line entrypoint.
 
 The CLI is intentionally thin. Engineering logic lives in stage modules next to
 this file: builder runtime auditing, agent metadata auditing, request auditing, discovery, discovery audit, discovery resolution auditing, source grounding, source indexing, API/interface
 grounding, source fetch boundary auditing, key API coverage auditing, source parsing coverage, source parsing audit, evidence coverage, evidence precedence, evidence claim taxonomy auditing, backend contracts, backend extension auditing, resource inventory, resource boundary auditing, task partitioning, task partition decision logging, task partition auditing, routing, eval planning,
-execution planning, environment install planning, tutorial reproduction planning, contract traceability, lineage graphing, acceptance suite generation, eval splitting, external result contract auditing, result judging, drafting, self-review,
+execution planning, environment install planning, tutorial reproduction planning, contract traceability, lineage graphing, acceptance suite generation, eval splitting, external result contract auditing, result judging, drafting, agent-driven paper2skills review loop,
 execution trace handling, execution trace validation, verification claim auditing, routing fixtures, routing metadata audits, child metadata auditing, linting, draft readiness, skill update planning, agent rollout harness planning, claim consistency audits, source grounding audits, workflow invariant audits, grounding gates,
 review evolution, eval leakage auditing, requirement coverage, artifact contracts, artifact validation,
-completion evidence auditing, acceptance handoff packaging, review prompt contract auditing, review prompt suite auditing, discovery match auditing, review iteration-log rendering, review cursor tracking, patch application auditing, review optimizer-state tracking, patch safety auditing, patch operation contract auditing, forward-test planning, code-fence audits, public safety audits, candidate selection auditing, candidate promotion auditing, candidate evolution auditing, quality reporting, score reporting, candidate registry, publish gating, final completion auditing, run scorecard rendering, run manifest generation,
+completion evidence auditing, acceptance handoff packaging, review prompt contract auditing, review prompt suite auditing, discovery match auditing, review iteration-log rendering, review cursor tracking, patch application auditing, review optimizer-state tracking, patch safety auditing, patch operation contract auditing, forward-test planning, code-fence audits, public safety audits, candidate selection auditing, candidate promotion auditing, candidate evolution auditing, quality reporting, score reporting, candidate registry, publish gating, final completion auditing, run scorecard rendering, run manifest generation, output retention,
 install readiness, publish manifest auditing, builder skill package auditing, module inventory auditing, timeline reporting, and build orchestration.
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 from agent_metadata_audit import build_agent_metadata_audit
 from agent_rollout_result_judge import build_agent_rollout_result_judge
 from acceptance_handoff import build_acceptance_handoff, render_acceptance_handoff_markdown
-from artifact_validator import REQUIRED_TOP_LEVEL_ARTIFACTS, validate_artifact_bundle
+from artifact_validator import POST_CLEANUP_ARTIFACTS, REQUIRED_TOP_LEVEL_ARTIFACTS, validate_artifact_bundle
 from build_pipeline import build
 from build_timeline_audit import build_timeline_audit
 from biological_claim_boundary_audit import build_biological_claim_boundary_audit
@@ -50,8 +50,115 @@ from smoke_test_plan import build_smoke_test_plan
 from source_fetch_boundary_audit import audit_source_fetch_boundaries
 
 
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def retained_artifact_dirs(run_dir: Path) -> tuple[list[Path], list[dict[str, Any]]]:
+    dirs: list[Path] = []
+    findings: list[dict[str, Any]] = []
+    manifest_path = run_dir / "publish_manifest.yaml"
+    if manifest_path.exists():
+        manifest = load_data(manifest_path)
+        retention_path = str(manifest.get("output_retention_path") or "")
+        if not retention_path:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "missing_output_retention_path",
+                    "message": "publish_manifest.output_retention_path is required before retained artifacts can be loaded.",
+                    "artifact": "publish_manifest",
+                }
+            )
+            return [], findings
+        retention_file = (run_dir / retention_path).resolve(strict=False)
+        retention_dir = retention_file.parent if retention_file.suffix else retention_file
+        marker = retention_file if retention_file.suffix else retention_dir / "output_retention.yaml"
+        if not retention_file.suffix:
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "retention_path_not_marker_file",
+                    "message": "publish_manifest.output_retention_path must point directly to a retention directory output_retention.yaml file.",
+                    "artifact": "publish_manifest",
+                }
+            )
+        elif retention_file.suffix and retention_file.name != "output_retention.yaml":
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "retention_marker_not_output_retention",
+                    "message": "publish_manifest.output_retention_path must point to output_retention.yaml inside a retention directory.",
+                    "artifact": "publish_manifest",
+                }
+            )
+        elif retention_file.suffix and retention_file.parent.resolve(strict=False) == run_dir.resolve(strict=False):
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "retention_marker_at_run_root",
+                    "message": "publish_manifest.output_retention_path must not point at a root-level file.",
+                    "artifact": "publish_manifest",
+                }
+            )
+        elif not is_within(marker, run_dir):
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "retention_path_outside_run_dir",
+                    "message": "publish_manifest.output_retention_path must resolve inside the run directory.",
+                    "artifact": "publish_manifest",
+                }
+            )
+        elif not marker.exists() or not marker.is_file():
+            findings.append(
+                {
+                    "severity": "error",
+                    "code": "retention_marker_missing",
+                    "message": "publish_manifest.output_retention_path must point to an existing output_retention.yaml file.",
+                    "artifact": "publish_manifest",
+                }
+            )
+        else:
+            return [retention_dir], findings
+        return [], findings
+    unique: list[Path] = []
+    seen = set()
+    for path in dirs:
+        key = str(path.resolve(strict=False))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique, findings
+
+
+def load_run_artifacts(run_dir: Path, artifact_names: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    artifacts: dict[str, Any] = {}
+    retention_dirs, findings = retained_artifact_dirs(run_dir)
+    for name in artifact_names:
+        retained_candidates = [directory / f"{name}.yaml" for directory in retention_dirs]
+        candidates = retained_candidates if name == "output_retention" else [run_dir / f"{name}.yaml"] + retained_candidates
+        for path in candidates:
+            if path.exists() and is_within(path, run_dir):
+                artifacts[name] = load_data(path)
+                break
+    return artifacts, findings
+
+
+def merge_validation_findings(report: dict[str, Any], extra_findings: list[dict[str, Any]]) -> dict[str, Any]:
+    if extra_findings:
+        report.setdefault("findings", []).extend(extra_findings)
+    has_errors = any(finding.get("severity") == "error" for finding in report.get("findings", []))
+    report["status"] = "fail" if has_errors else "pass"
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build lightweight Papert2Skills child skills with review trajectory auditing.")
+    parser = argparse.ArgumentParser(description="Build lightweight paper2skills child skills with review trajectory auditing.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     build_parser = sub.add_parser("build", help="Build artifacts and a lightweight child skill.")
@@ -221,9 +328,9 @@ def main(argv: list[str] | None = None) -> int:
     baseline_audit_parser.add_argument("--repo-root", default=None, help="Repository root containing README.md.")
     baseline_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
 
-    skillopt_next_parser = sub.add_parser("skillopt-next-step", help="Print the next agent-driven SkillOpt proposal step for a run directory.")
-    skillopt_next_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    skillopt_next_parser.add_argument("--out", default=None, help="Optional next-step report path.")
+    review_next_parser = sub.add_parser("review-next-step", help="Print the next agent-driven review-loop proposal step for a run directory.")
+    review_next_parser.add_argument("--run", required=True, help="Run artifact directory.")
+    review_next_parser.add_argument("--out", default=None, help="Optional next-step report path.")
 
     args = parser.parse_args(argv)
     try:
@@ -239,12 +346,21 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report["status"] == "pass" else 1
         if args.command == "validate-run":
             run_dir = Path(args.run)
-            artifacts = {}
-            for name in REQUIRED_TOP_LEVEL_ARTIFACTS:
-                path = run_dir / f"{name}.yaml"
-                if path.exists():
-                    artifacts[name] = load_data(path)
-            report = validate_artifact_bundle(artifacts)
+            artifacts, retention_findings = load_run_artifacts(run_dir, REQUIRED_TOP_LEVEL_ARTIFACTS + POST_CLEANUP_ARTIFACTS)
+            report = validate_artifact_bundle(artifacts, REQUIRED_TOP_LEVEL_ARTIFACTS + POST_CLEANUP_ARTIFACTS)
+            manifest_verification = verify_run_manifest(run_dir, artifacts.get("run_manifest") or {}, artifacts.get("publish_manifest") or {})
+            report["run_manifest_verification"] = manifest_verification
+            extra_findings = list(retention_findings)
+            if manifest_verification.get("status") != "pass":
+                extra_findings.append(
+                    {
+                        "severity": "error",
+                        "code": "run_manifest_verification_failed",
+                        "message": "run_manifest.yaml hashes, byte sizes, or file coverage do not match the run directory.",
+                        "artifact": "run_manifest",
+                    }
+                )
+            report = merge_validation_findings(report, extra_findings)
             if args.out:
                 write_data(Path(args.out), report)
             print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -286,7 +402,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "verify-run-manifest":
             run_dir = Path(args.run)
             manifest_path = Path(args.manifest) if args.manifest else run_dir / "run_manifest.yaml"
-            report = verify_run_manifest(run_dir, load_data(manifest_path))
+            publish_manifest_path = run_dir / "publish_manifest.yaml"
+            publish_manifest = load_data(publish_manifest_path) if publish_manifest_path.exists() else {}
+            report = verify_run_manifest(run_dir, load_data(manifest_path), publish_manifest)
             if args.out:
                 write_data(Path(args.out), report)
             print(json.dumps(report, indent=2, ensure_ascii=False))
@@ -305,7 +423,7 @@ def main(argv: list[str] | None = None) -> int:
                 write_data(Path(args.out), report)
             print(json.dumps(report, indent=2, ensure_ascii=False))
             return 0 if report["status"] == "pass" else 1
-        if args.command == "skillopt-next-step":
+        if args.command == "review-next-step":
             run_dir = Path(args.run)
             review_summary = load_data(run_dir / "review_summary.yaml")
             report = {

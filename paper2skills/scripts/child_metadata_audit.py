@@ -54,6 +54,16 @@ def audit_optional_openai_yaml(skill_dir: Path, findings: list[dict[str, Any]]) 
             )
 
 
+def has_task_workflow_dag(text: str, task_type: str) -> bool:
+    heading = f"### `{task_type}`"
+    start = text.find(heading)
+    if start < 0:
+        return False
+    next_heading = text.find("\n### `", start + len(heading))
+    section = text[start:] if next_heading < 0 else text[start:next_heading]
+    return "```mermaid" in section and "flowchart TD" in section
+
+
 def build_child_metadata_audit(
     request: dict[str, Any],
     child_skill_dir: Path,
@@ -146,6 +156,15 @@ def build_child_metadata_audit(
             "SKILL.md must mention every generated task_type for Codex routing.",
             "SKILL.md",
         )
+    missing_task_dags = [task for task in task_types if not has_task_workflow_dag(text, task)]
+    if missing_task_dags:
+        add_finding(
+            findings,
+            "error",
+            "skill_md_missing_task_type_dag",
+            "SKILL.md must include one Mermaid workflow DAG for every generated task_type.",
+            "SKILL.md",
+        )
 
     has_errors = any(finding["severity"] == "error" for finding in findings)
     return {
@@ -156,6 +175,7 @@ def build_child_metadata_audit(
         "status": "fail" if has_errors else "pass",
         "frontmatter": fields,
         "task_types": task_types,
+        "task_type_dag_count": len(task_types) - len(missing_task_dags),
         "top_level_dirs": sorted(top_dirs),
         "nested_skill_files": nested_skill_files,
         "findings": findings,

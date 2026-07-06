@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from common import now_utc, slugify
+from common import now_utc, public_child_skill_path, slugify
 from constants import BUILDER_VERSION, REQUIRED_CHILD_REFERENCES, SCHEMA_VERSION
 
 
@@ -40,7 +40,7 @@ def build_candidate_registry(
     version = {
         "version_id": f"candidate:{slugify(method_name)}:v001",
         "candidate_id": candidate.get("candidate_id"),
-        "child_skill_path": str(child_skill_dir),
+        "child_skill_path": public_child_skill_path(child_skill_dir),
         "status": publish_gate.get("status"),
         "lint_status": lint_report.get("status"),
         "review_status": review_result.get("status"),

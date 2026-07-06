@@ -86,6 +86,39 @@ def audit_child_reference_coverage(
                 "task_not_rendered_in_reference",
                 "Task_type is missing from a required child reference.",
             )
+        if task.get("operational_recipe"):
+            require_text(
+                findings,
+                texts,
+                "SKILL.md",
+                "Quick Workflow",
+                "operational_recipe_not_rendered_in_skill",
+                "Operational recipe must be rendered into the child SKILL.md.",
+            )
+            require_text(
+                findings,
+                texts,
+                "references/task-types.md",
+                "Task-Type Operational Recipes",
+                "operational_recipe_not_rendered_in_task_types",
+                "Operational recipe must be rendered into task-types.md.",
+            )
+            require_text(
+                findings,
+                texts,
+                "references/input-output-contracts.md",
+                "Operational API Sequence",
+                "operational_recipe_not_rendered_in_contracts",
+                "Operational recipe API sequence must be rendered into input-output-contracts.md.",
+            )
+            require_text(
+                findings,
+                texts,
+                "references/validation.md",
+                "Operational Validation By Task",
+                "operational_recipe_not_rendered_in_validation",
+                "Operational validation checks must be rendered into validation.md.",
+            )
 
     if source_parsing_coverage:
         require_text(

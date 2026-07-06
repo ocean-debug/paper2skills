@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from common import now_utc, slugify
+from common import now_utc, public_child_skill_path, slugify
 from constants import SCHEMA_VERSION
 
 
@@ -151,7 +151,7 @@ def build_forward_test_plan(
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
         "plan_only": True,
-        "child_skill_path": str(child_skill_dir),
+        "child_skill_path": public_child_skill_path(child_skill_dir),
         "scenario_count": len(scenarios),
         "scenario_kinds": sorted({str(scenario.get("kind")) for scenario in scenarios}),
         "scenarios": scenarios,

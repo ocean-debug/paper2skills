@@ -100,7 +100,10 @@ def build_review_trajectory_audit(
 
     final = final_iteration(review_evolution)
     final_score = review_evolution.get("final_score", {})
-    if final and score_tuple(final_score) != (final.get("score"), final.get("total"), final.get("score_ratio")):
+    final_score_differs = final and score_tuple(final_score) != (final.get("score"), final.get("total"), final.get("score_ratio"))
+    if final_score_differs and review_evolution.get("stop_reason") == "iteration_budget_exhausted" and final.get("patch_changed"):
+        add_finding(findings, "warning", "final_score_after_unconfirmed_patch", "Final score differs because the last iteration applied a patch and stopped before a confirming score iteration.", "review_evolution")
+    elif final_score_differs:
         add_finding(findings, "error", "final_score_mismatch", "review_evolution final_score must match the final iteration score.", "review_evolution")
     optimizer_final = review_optimizer_state.get("final_score", {})
     if final_score and score_tuple(optimizer_final) != score_tuple(final_score):

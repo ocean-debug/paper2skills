@@ -1,6 +1,6 @@
 # Workflow
 
-Papert2Skills compiles official evidence into one lightweight child skill per
+paper2skills compiles official evidence into one lightweight child skill per
 scientific algorithm package.
 
 ## Phases
@@ -36,6 +36,7 @@ Discovery Preflight
   -> Task Partition
   -> Task Partition Decision Log
   -> Parameter Catalog
+  -> Operational Recipes
   -> Final Discovery
   -> Discovery Audit
   -> Discovery Match Audit
@@ -130,7 +131,7 @@ Discovery Preflight
 
 ## Discovery
 
-Builder runtime audit is a static preflight over the Papert2Skills skill
+Builder runtime audit is a static preflight over the paper2skills skill
 package itself. It checks the required skill files, UI metadata, build request
 template fields, execution-environment placeholders, and CLI command surface
 without importing modules or running commands.
@@ -150,7 +151,7 @@ static maintainability gate for the builder itself.
 
 Builder baseline audit groups the builder into expected engineering families:
 request/CLI, Discovery/update, source ingestion, interface/environment,
-task routing, child drafting, self-review/patching, candidate release,
+task routing, child drafting, paper2skills review-loop patching, candidate release,
 execution boundaries, rollout/evaluation, publish/manifest, and
 timeline/protocol. Each family must map to concrete documented modules.
 
@@ -258,7 +259,7 @@ publish.
 
 ## Backend Contract
 
-Papert2Skills is Python-first. The backend contract records which backend was
+paper2skills is Python-first. The backend contract records which backend was
 requested, which backends are implemented, and which backend requests must
 produce structured refusal boundaries. R is reserved as an extension point until
 implemented.
@@ -304,6 +305,13 @@ Parameter catalog mining attaches signature-derived parameter constraints to
 each `task_type` input contract. Biological meaning still has to be confirmed
 from official evidence before execution.
 
+Operational recipe attachment then combines task routing cues, mined tutorial
+steps, inspected interfaces, and parameter constraints into a Quick Workflow,
+API sequence, expected outputs, validation checks, clarification questions, and
+troubleshooting notes for each `task_type`. Recipes are still source-grounded:
+missing primary APIs or missing tutorial steps are rendered as agent-review
+warnings instead of hidden assumptions.
+
 ## Task-Type Routing
 
 The child skill teaches the agent how to choose `task_type` from user intent,
@@ -320,14 +328,25 @@ The routing fixture converts routes, refusal boundaries, unsupported-task
 behavior, and conflict pairs into static cases. It is a pre-publish check surface
 for the child skill's `task_type` router, not a package execution test.
 
-## SkillOpt-Style Iterative Self Review
+## Agent-Driven Review Loop
 
-The self-review loop is agent-driven. Python computes the current rubric,
-findings, cursor, and safe operation contract; Codex or another agent authors
-the bounded edit proposal in `agent_skillopt_proposals`; Python then validates
-and applies only allowed in-memory edits before rescoring. This mirrors the
-init/next-step/proposal/apply/finalize shape of a SkillOpt loop while keeping
-the generated child skill as a Codex skill.
+The review loop is an agent-driven paper2skills review loop. Python computes the
+current selection score, findings, cursor, rollout-plan state, score cache, and
+safe operation contract; Codex or another agent authors the analyst,
+merge, ranking, slow-update, and bounded edit proposal in
+`agent_review_proposals`;
+Python then validates and applies only allowed in-memory edits before
+rescoring. This mirrors the record-score, rollout, analyst, merge, ranking,
+apply, strict-gate, slow-update shape of a full agent-driven paper2skills review loop while
+keeping the generated child skill as a Codex skill.
+
+Every proposal operation must include a stable `operation_id` and cite
+non-empty same-iteration `finding_codes`. Ranking must identify selected
+operations with `operation_ids` or zero-based `operation_indices`; if
+`selected_operations`, `ranked_operations`, or `chosen_operations` are used,
+their entries must still carry `operation_id`.
+Python rejects empty role payloads, missing `slow_update`, unlinked findings,
+and operation/finding-code mismatches before applying edits.
 
 The loop checks and scores draft artifacts for:
 
@@ -342,11 +361,12 @@ The loop checks and scores draft artifacts for:
 - missing validation rules
 - accidental verified claims without execution trace
 
-The loop is bounded by `review_iterations` and stops when the rubric gate
-passes, the iteration budget is exhausted, or the run is awaiting an agent
-proposal. When `review_summary.status` is `needs_agent`, run
-`python scripts/papert2skills.py skillopt-next-step --run <run_dir>`, copy the
-returned proposal template into `agent_skillopt_proposals`, and rerun the build.
+The loop is bounded by `review_iterations` and stops when the selection-score
+gate passes, the iteration budget is exhausted, or the run is awaiting a
+complete agent review-loop proposal. When `review_summary.status` is
+`needs_agent`, run `python scripts/paper2skills.py review-next-step --run
+<run_dir>`, copy the returned proposal template into
+`agent_review_proposals`, and rerun the build.
 
 Review evolution summarizes each iteration's score ratio, blocking status,
 focus areas, patch changes, and gate reason into `review_evolution.yaml`. The
@@ -362,8 +382,9 @@ review artifact. It summarizes each iteration's score, blockers, top findings,
 patch actions, and gate reason without introducing new claims or decisions.
 
 Review prompt contracts record the required fields, allowed actions, and
-forbidden actions for `draft_snapshot`, `critic`, `patch_plan`, `revision`, and
-`gate` states. They prevent the self-review loop from becoming an informal
+forbidden actions for `draft_snapshot`, `record_score`, `rollout_plan`,
+`critic`, analyst, merge, `ranking`, `slow_update`, `patch_plan`, `revision`,
+and `gate` states. They prevent the review loop from becoming an informal
 free-text critique without a stable state contract.
 
 Review prompt materials record the static prompt skeleton for each review role:
@@ -371,14 +392,15 @@ allowed inputs, required outputs, forbidden outputs, and the role purpose. This
 keeps the loop auditable without storing model responses as hidden behavior.
 
 Review prompt suite audit records whether each iteration covers the required
-review duties: grounding, task split and routing, input-output contracts,
-refusals, validation, verification boundaries, patch planning, and gate
-discipline. It prevents a structurally valid review loop from silently skipping
-one of the required scientific-skill checks.
+review duties: grounding, record scoring, rollout planning, task split and
+route selection, input-output contracts, operational recipes, refusals, validation, verification
+boundaries, optimizer reflection, ranking, patch planning, and gate discipline.
+It prevents a structurally valid review loop from silently skipping one of the
+required scientific-skill checks.
 
 Review cursor records the current review phase, stop reason, resumability, and
 required per-iteration states. Patch application records planned and applied
-agent proposal actions. Together they make the self-review loop resumable and
+agent proposal actions. Together they make the paper2skills review loop resumable and
 auditable without executing package code.
 
 Review remediation audit accounts for every non-info review finding as patched,
@@ -386,8 +408,8 @@ cleared, accepted by a passing gate, or still unresolved. It blocks publish
 when final blocking review findings remain or when patch actions lack
 same-iteration finding traceability.
 
-Review optimizer state records stable iteration hashes, a cache key, strict
-improvement policy, and rejected edits. Patch safety audit checks that patch
+Review optimizer state records stable iteration hashes, score cache, a cache
+key, strict improvement policy, and rejected buffer. Patch safety audit checks that patch
 actions stay inside deterministic in-memory artifacts and do not carry
 commands, file paths, installs, network actions, or file mutation instructions.
 Patch operation contracts check that planned and applied patch actions use
@@ -470,6 +492,12 @@ and public child-skill files. It is a compact provenance graph for auditing
 whether generated skill guidance can be traced back to official evidence and
 where that guidance is rendered.
 
+Each rendered child `SKILL.md` includes a task-specific Quick Workflow/API
+sequence and a first-principles workflow DAG for every `task_type`: goal
+selection, input checks, refusal boundaries, environment/resource approval,
+documented workflow execution or planning, output validation, troubleshooting,
+and evidence citation.
+
 The acceptance suite turns routing, contract, traceability, refusal, ambiguity,
 eval, tutorial-replay, and execution-boundary requirements into static cases.
 These cases can be consumed by later validation or forward-testing without
@@ -542,9 +570,9 @@ and evidence support; otherwise the skill must refuse instead of guessing.
 
 Child reference coverage checks that source parsing coverage, environment
 install boundaries, tutorial replay plans, evidence precedence, task conflicts,
-and task_type entries are rendered into the public child references. It catches
-the failure mode where an internal artifact exists but the generated skill
-never exposes the operational boundary to the agent.
+operational recipes, and task_type entries are rendered into the public child
+references. It catches the failure mode where an internal artifact exists but
+the generated skill never exposes the operational boundary to the agent.
 
 Source grounding audit then verifies that rendered references preserve evidence
 priority and task-level traceability.
@@ -712,5 +740,14 @@ selected create/update/reuse action before the run is considered complete.
 The run manifest records the generated root artifacts and public child-skill
 files with size and SHA-256 hashes. It supports remote validation and release
 review without embedding downloaded sources, copied local evidence, or long
-execution traces. Use `papert2skills.py verify-run-manifest --run <run-dir>`
+execution traces. Use `paper2skills.py verify-run-manifest --run <run-dir>`
 to re-check recorded file sizes and hashes after transfer or remote validation.
+
+Output retention runs after the run manifest. It copies selected review,
+candidate, release, scorecard, and manifest artifacts into
+`iteration_versions/`, writes `generation_process.md`, keeps the final
+`child_skill/`, keeps root publish and run manifest entry files, and removes
+builder-generated process artifacts when `cleanup_process_files` is true. It
+deletes only unprotected files recorded as run artifacts plus builder-owned
+source/cache directories, so unknown user files in the output directory are not
+treated as cleanup targets.

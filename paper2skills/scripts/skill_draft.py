@@ -2,10 +2,156 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from common import md_table, slugify, write_text
+
+
+PATH_SEPARATOR_RE = r"(?:/|" + re.escape(chr(92)) + ")"
+LOCAL_PATH_PATTERN = re.compile(
+    r"(^file:|^[A-Za-z]:" + PATH_SEPARATOR_RE
+    + r"|^~" + PATH_SEPARATOR_RE
+    + r"|^/|" + re.escape(chr(92) * 2)
+    + r"|/home/|" + re.escape(chr(92)) + "Users" + re.escape(chr(92))
+    + r"|/Users/)"
+)
+
+
+def public_source_uri(source: dict[str, Any]) -> str:
+    uri = str(source.get("uri") or "")
+    if uri.startswith(("http://", "https://", "doi:", "arxiv:")):
+        return uri
+    if not uri:
+        return str(source.get("evidence_id") or "source")
+    if LOCAL_PATH_PATTERN.search(uri):
+        normalized = uri.replace("\\", "/").rstrip("/")
+        name = normalized.rsplit("/", 1)[-1] or str(source.get("evidence_id") or "source")
+        return f"local_source_material:{name}"
+    return uri
+
+
+def short_join(items: list[Any], fallback: str, limit: int = 2) -> str:
+    values = [str(item) for item in items if item]
+    return "; ".join(values[:limit]) or fallback
+
+
+def mermaid_label(value: str, limit: int = 96) -> str:
+    text = " ".join(str(value).replace('"', "'").split())
+    text = text.replace("[", "(").replace("]", ")").replace("{", "(").replace("}", ")")
+    if len(text) > limit:
+        return text[: limit - 3].rstrip() + "..."
+    return text
+
+
+def render_task_workflow_dag(task: dict[str, Any]) -> str:
+    task_type = str(task.get("task_type") or "task")
+    input_contract = task.get("input_contract") or {}
+    output_contract = task.get("output_contract") or {}
+    required = mermaid_label(short_join(input_contract.get("required_from_user", []), "goal, data, metadata"))
+    confirms = mermaid_label(short_join(input_contract.get("must_confirm", []), "modality, metadata meaning, backend"))
+    validation = mermaid_label(short_join(output_contract.get("minimum_validation", []), "outputs exist and open"))
+    evidence = mermaid_label(", ".join(str(ref) for ref in task.get("evidence_refs", [])[:3]) or "task evidence refs")
+    status = str(task.get("verification_status") or "source_grounded")
+    task_label = mermaid_label(task_type)
+    return f"""### `{task_type}`
+
+```mermaid
+flowchart TD
+  goal["User goal maps to task_type: {task_label}"]
+  inputs["Collect required inputs: {required}"]
+  missing{{"Any required input missing?"}}
+  ask["Ask for missing fields or refuse with missing_required_input"]
+  scope["Confirm evidence scope: {confirms}"]
+  outside{{"Outside evidence-backed scope?"}}
+  refuse["Refuse unsupported task, modality, format, or backend"]
+  env["Check environment, approvals, and resources"]
+  run["Plan or execute documented workflow; status: {status}"]
+  validate["Validate outputs: {validation}"]
+  passed{{"Validation passed?"}}
+  troubleshoot["Use troubleshooting; report failure without overclaiming"]
+  cite["Return result with evidence refs: {evidence}"]
+  goal --> inputs --> missing
+  missing -- yes --> ask
+  missing -- no --> scope
+  scope --> outside
+  outside -- yes --> refuse
+  outside -- no --> env
+  env --> run --> validate --> passed
+  passed -- no --> troubleshoot
+  passed -- yes --> cite
+```
+"""
+
+
+def render_task_workflow_dags(task_catalog: dict[str, Any]) -> str:
+    diagrams = [render_task_workflow_dag(task) for task in task_catalog.get("tasks", [])]
+    if not diagrams:
+        return ""
+    return "\n## First-Principles Workflow DAGs\n\nEach `task_type` follows a bounded decision DAG: select the task, check inputs, refuse unsupported requests, confirm environment permissions, run only inside evidence-backed scope, validate outputs, then cite evidence.\n\n" + "\n".join(diagrams)
+
+
+def bullet_list(items: list[Any], limit: int | None = None) -> str:
+    values = [str(item).strip() for item in items if str(item).strip()]
+    if limit is not None:
+        values = values[:limit]
+    return "\n".join(f"- {item}" for item in values) or "- none recorded"
+
+
+def inline_list(items: list[Any], fallback: str = "none", limit: int | None = None) -> str:
+    values = [str(item).strip() for item in items if str(item).strip()]
+    if limit is not None:
+        values = values[:limit]
+    return "; ".join(values) or fallback
+
+
+def recipe_for(task: dict[str, Any]) -> dict[str, Any]:
+    return task.get("operational_recipe") or {}
+
+
+def render_recipe_summary(task: dict[str, Any]) -> str:
+    recipe = recipe_for(task)
+    if not recipe:
+        return ""
+    task_type = str(task.get("task_type") or "task")
+    status = str(recipe.get("status") or "unknown")
+    confidence = str(recipe.get("confidence") or "unknown")
+    steps = bullet_list(recipe.get("workflow_steps", []), limit=8)
+    api_sequence = bullet_list(recipe.get("api_sequence", []), limit=10)
+    outputs = bullet_list(recipe.get("expected_outputs", []), limit=6)
+    validation = bullet_list(recipe.get("validation_checks", []), limit=6)
+    warnings = recipe.get("abstraction_warnings", [])
+    warning_text = ""
+    if warnings:
+        warning_text = "\n### Agent Review Warnings\n\n" + bullet_list(warnings, limit=4) + "\n"
+    return f"""### `{task_type}` Quick Workflow
+
+Status: `{task.get("verification_status")}`. Recipe: `{status}` / `{confidence}`.
+
+{steps}
+
+#### Source-Grounded API Sequence
+
+{api_sequence}
+
+#### Expected Outputs
+
+{outputs}
+
+#### Validate Before Reporting Success
+
+{validation}
+{warning_text}
+"""
+
+
+def render_quick_workflows(task_catalog: dict[str, Any]) -> str:
+    sections = [render_recipe_summary(task) for task in task_catalog.get("tasks", [])]
+    sections = [section for section in sections if section]
+    if not sections:
+        return ""
+    return "\n## Quick Workflows\n\nFollow the selected task recipe directly. Use references to resolve contracts, refusals, validation, evidence, and environment boundaries.\n\n" + "\n".join(sections)
 
 
 def render_child_skill(skill_dir: Path, request: dict[str, Any], artifacts: dict[str, Any]) -> None:
@@ -26,11 +172,11 @@ def render_child_skill(skill_dir: Path, request: dict[str, Any], artifacts: dict
     task_conflict_matrix = artifacts.get("task_conflict_matrix", {})
     write_text(skill_dir / "SKILL.md", render_skill_md(method_name, slug, task_catalog))
     refs = skill_dir / "references"
-    write_text(refs / "task-types.md", render_task_types_md(router, task_conflict_matrix))
+    write_text(refs / "task-types.md", render_task_types_md(router, task_catalog, task_conflict_matrix))
     write_text(refs / "input-output-contracts.md", render_io_contracts_md(task_catalog))
     write_text(refs / "limitations-and-refusal.md", render_limitations_md(task_catalog, request, resource_inventory))
     write_text(refs / "validation.md", render_validation_md(task_catalog, environment_install_plan, tutorial_reproduction_plan, execution_replay_orchestrator))
-    write_text(refs / "troubleshooting.md", render_troubleshooting_md(request, tutorial_catalog, tutorial_reproduction_plan, resource_inventory, execution_replay_orchestrator))
+    write_text(refs / "troubleshooting.md", render_troubleshooting_md(request, task_catalog, tutorial_catalog, tutorial_reproduction_plan, resource_inventory, execution_replay_orchestrator))
     write_text(refs / "evidence.md", render_evidence_md(source_grounding, task_catalog, source_parse_report, source_parsing_coverage, evidence_precedence))
     write_text(refs / "environment.md", render_environment_md(request, environment_spec, environment_install_plan, resource_inventory))
 
@@ -64,31 +210,40 @@ Choose a `task_type` before planning execution.
 
 {md_table(["task_type", "status", "routing cues"], task_rows)}
 
+{render_quick_workflows(task_catalog)}
+
+{render_task_workflow_dags(task_catalog)}
+
 If more than one `task_type` matches, ask for the missing goal, modality, or
 metadata distinction. If none match, refuse with the structured template in
 `references/limitations-and-refusal.md`.
 
-## Workflow
+## Reference Workflow
 
-1. Read `references/task-types.md` to select `task_type`.
-2. Read `references/input-output-contracts.md` and confirm required inputs.
-3. Read `references/limitations-and-refusal.md` before running or recommending
+1. Select `task_type` from the routing table and run its Quick Workflow above.
+2. Read `references/task-types.md` if routing is ambiguous.
+3. Read `references/input-output-contracts.md` and confirm required inputs.
+4. Read `references/limitations-and-refusal.md` before running or recommending
    the method.
-4. Read `references/environment.md` before any installation or execution.
-5. Use `references/validation.md` to check expected outputs.
-6. Cite `references/evidence.md` when explaining supported boundaries.
-7. Read `references/troubleshooting.md` when installation, API drift, data,
+5. Read `references/environment.md` before any installation or execution.
+6. Use `references/validation.md` to check expected outputs.
+7. Cite `references/evidence.md` when explaining supported boundaries.
+8. Read `references/troubleshooting.md` when installation, API drift, data,
    memory, GPU, or tutorial reproduction issues appear.
 
 ## Verification Rule
 
 `source_grounded` means the task is supported by official sources but has not
-been execution-verified by Papert2Skills. Only `execution_verified` task types
+been execution-verified by paper2skills. Only `execution_verified` task types
 have supplied execution evidence.
 """
 
 
-def render_task_types_md(router: dict[str, Any], task_conflict_matrix: dict[str, Any] | None = None) -> str:
+def render_task_types_md(
+    router: dict[str, Any],
+    task_catalog: dict[str, Any] | None = None,
+    task_conflict_matrix: dict[str, Any] | None = None,
+) -> str:
     rows = []
     for route in router["routes"]:
         rows.append(
@@ -113,6 +268,42 @@ def render_task_types_md(router: dict[str, Any], task_conflict_matrix: dict[str,
     conflict_text = ""
     if conflict_rows:
         conflict_text = "\n## Conflict Matrix\n\n" + md_table(["pair", "level", "selection rule"], conflict_rows) + "\n"
+    recipe_sections = []
+    if task_catalog:
+        for task in task_catalog.get("tasks", []):
+            recipe = recipe_for(task)
+            if not recipe:
+                continue
+            tutorial_rows = []
+            for hint in recipe.get("tutorial_step_hints", [])[:6]:
+                tutorial_rows.append(
+                    [
+                        str(hint.get("source_path") or "source"),
+                        str(hint.get("step_index") or ""),
+                        hint.get("summary") or "code step",
+                        ", ".join(hint.get("api_calls", [])[:5]) or "none",
+                    ]
+                )
+            tutorial_text = ""
+            if tutorial_rows:
+                tutorial_text = "\nTutorial/API step hints:\n\n" + md_table(
+                    ["source", "step", "summary", "api calls"],
+                    tutorial_rows,
+                )
+            recipe_sections.append(
+                f"""### `{task.get("task_type")}`
+
+- Recipe status: `{recipe.get("status")}`
+- Choose when: {inline_list(task.get("routing_cues", []), limit=3)}
+- Ask first: {inline_list(recipe.get("clarifying_questions", []), limit=4)}
+- Required inputs: {inline_list(recipe.get("required_inputs", []), limit=6)}
+- Primary/API sequence: {inline_list(recipe.get("api_sequence", []), fallback="no source-grounded primary API selected", limit=8)}
+{tutorial_text}
+"""
+            )
+    recipe_text = ""
+    if recipe_sections:
+        recipe_text = "\n## Task-Type Operational Recipes\n\n" + "\n".join(recipe_sections)
     return f"""# Task Types
 
 This package is represented as one child skill. Capabilities are selected by
@@ -120,6 +311,7 @@ This package is represented as one child skill. Capabilities are selected by
 
 {md_table(["task_type", "status", "choose when", "ask when", "evidence"], rows)}
 {conflict_text}
+{recipe_text}
 
 ## Routing Order
 
@@ -138,7 +330,19 @@ def render_io_contracts_md(task_catalog: dict[str, Any]) -> str:
     for task in task_catalog["tasks"]:
         input_contract = task["input_contract"]
         output_contract = task["output_contract"]
+        recipe = recipe_for(task)
         parts.append(f"## `{task['task_type']}`\n")
+        if recipe:
+            parts.append("### Operational Recipe Inputs\n")
+            for item in recipe.get("required_inputs", []):
+                parts.append(f"- {item}")
+            parts.append("\n### Operational API Sequence\n")
+            for item in recipe.get("api_sequence", []):
+                parts.append(f"- {item}")
+            if recipe.get("abstraction_warnings"):
+                parts.append("\n### Recipe Review Warnings\n")
+                for item in recipe.get("abstraction_warnings", []):
+                    parts.append(f"- {item}")
         parts.append("### Required From User\n")
         for item in input_contract["required_from_user"]:
             parts.append(f"- {item}")
@@ -243,7 +447,9 @@ def render_validation_md(
     execution_replay_orchestrator: dict[str, Any] | None = None,
 ) -> str:
     rows = []
+    operational_sections = []
     for task in task_catalog["tasks"]:
+        recipe = recipe_for(task)
         rows.append(
             [
                 f"`{task['task_type']}`",
@@ -252,6 +458,13 @@ def render_validation_md(
                 task.get("trace_ref") or "none",
             ]
         )
+        if recipe:
+            operational_sections.append(
+                f"""### `{task.get("task_type")}`
+
+{bullet_list(recipe.get("validation_checks", []), limit=12)}
+"""
+            )
     environment_install_plan = environment_install_plan or {}
     tutorial_reproduction_plan = tutorial_reproduction_plan or {}
     execution_replay_orchestrator = execution_replay_orchestrator or {}
@@ -303,6 +516,9 @@ execution trace is still required before changing any task to execution_verified
             ["task_type", "job status", "blocked reasons", "success criteria"],
             job_rows,
         ) + "\n"
+    operational_text = ""
+    if operational_sections:
+        operational_text = "\n## Operational Validation By Task\n\n" + "\n".join(operational_sections)
     return f"""# Validation
 
 Technical validation should be strict about file existence and format. Biological
@@ -325,6 +541,7 @@ requirements.
 - Required result fields are present when evidence specifies them.
 - Warnings are reported for biological surprises that are not hard evidence
   violations.
+{operational_text}
 {install_text}
 {replay_text}
 {job_text}
@@ -333,6 +550,7 @@ requirements.
 
 def render_troubleshooting_md(
     request: dict[str, Any],
+    task_catalog: dict[str, Any],
     tutorial_catalog: dict[str, Any],
     tutorial_reproduction_plan: dict[str, Any] | None = None,
     resource_inventory: dict[str, Any] | None = None,
@@ -386,6 +604,21 @@ def render_troubleshooting_md(
 - Refuse or ask for confirmation when permission, license, login, token, or
   large-download requirements are unresolved.
 """
+    task_tip_sections = []
+    for task in task_catalog.get("tasks", []):
+        recipe = recipe_for(task)
+        tips = recipe.get("troubleshooting", []) if recipe else []
+        warnings = recipe.get("abstraction_warnings", []) if recipe else []
+        if tips or warnings:
+            task_tip_sections.append(
+                f"""### `{task.get("task_type")}`
+
+{bullet_list(tips + warnings, limit=10)}
+"""
+            )
+    task_tip_text = ""
+    if task_tip_sections:
+        task_tip_text = "\n## Task-Specific Troubleshooting\n\n" + "\n".join(task_tip_sections)
     return f"""# Troubleshooting
 
 ## Environment
@@ -407,6 +640,7 @@ def render_troubleshooting_md(
 - If source APIs have changed, record the mismatch and use adapter-level
   guidance only after review.
 - Do not patch upstream source or site-packages silently.
+{task_tip_text}
 
 ## Tutorial Reproduction
 
@@ -437,7 +671,7 @@ def render_evidence_md(
                 source["evidence_id"],
                 source["type"],
                 source["priority"],
-                source["uri"],
+                public_source_uri(source),
             ]
         )
     task_rows = []

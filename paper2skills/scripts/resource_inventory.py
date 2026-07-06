@@ -26,6 +26,14 @@ HF_MODEL_RE = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(
 URL_RE = re.compile(r"https?://[^\s)>\]\"']+", re.IGNORECASE)
 CHECKPOINT_RE = re.compile(r"\b([A-Za-z0-9_.-]+\.(?:pt|pth|ckpt|safetensors|h5|hdf5|onnx|pkl|joblib|npz))\b", re.IGNORECASE)
 DATA_RE = re.compile(r"\b([A-Za-z0-9_.-]+\.(?:h5ad|loom|mtx|csv|tsv|parquet|rds|rda|zip|tar|gz))\b", re.IGNORECASE)
+MODEL_ID_CONTEXT_TOKENS = {
+    "huggingface.co",
+    "from_pretrained",
+    "hf_hub_download",
+    "snapshot_download",
+    "model_id",
+    "repo_id",
+}
 
 
 def read_small_text(path: Path) -> str:
@@ -49,6 +57,22 @@ def classify_url(url: str) -> str:
     if any(lowered.endswith(suffix) for suffix in [".pt", ".pth", ".ckpt", ".safetensors", ".onnx", ".h5", ".h5ad", ".zip"]):
         return "external_artifact_url"
     return "external_url"
+
+
+def has_model_id_context(identifier: str, text: str) -> bool:
+    lowered = text.lower()
+    if not any(token in lowered for token in MODEL_ID_CONTEXT_TOKENS):
+        return False
+    if f"huggingface.co/{identifier.lower()}" in lowered:
+        return True
+    for token in ["from_pretrained", "hf_hub_download", "snapshot_download", "model_id", "repo_id"]:
+        index = lowered.find(token)
+        if index < 0:
+            continue
+        window = lowered[index : index + 500]
+        if identifier.lower() in window:
+            return True
+    return False
 
 
 def resource_record(
@@ -96,9 +120,13 @@ def scan_record(record: dict[str, Any]) -> list[dict[str, Any]]:
     resources = []
     for match in URL_RE.findall(text):
         resource_type = classify_url(match)
+        if resource_type == "external_url":
+            continue
         resources.append(resource_record(resource_type, match, record, "url_pattern", risk_flags(match, text, resource_type)))
     for match in HF_MODEL_RE.findall(text):
         if "." in match.split("/", 1)[0]:
+            continue
+        if not has_model_id_context(match, text):
             continue
         resources.append(resource_record("model_registry_id", match, record, "registry_id_pattern", risk_flags(match, text, "model_registry_id")))
     for match in CHECKPOINT_RE.findall(text):

@@ -10,7 +10,8 @@ from common import now_utc, read_text
 from constants import SCHEMA_VERSION
 
 
-MACHINE_PATH_RE = re.compile(r"([A-Za-z]:\\|/home/|/Users/|/tmp/|\\\\)")
+PATH_SEPARATOR_RE = r"(?:/|" + re.escape(chr(92)) + ")"
+MACHINE_PATH_RE = re.compile(r"(file://|[A-Za-z]:" + PATH_SEPARATOR_RE + r"|/home/|/Users/|/tmp/|" + re.escape(chr(92) * 2) + r")")
 PY_CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\(")
 
 

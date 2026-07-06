@@ -85,8 +85,8 @@ def build_codex_publish_adapter(
         add_finding(findings, "error", "release_package_not_ready", "Release package must be ready before publish adapter planning.")
     if candidate_promotion_audit.get("status") != "pass":
         add_finding(findings, "error", "candidate_promotion_not_passed", "Candidate promotion audit must pass before publish adapter planning.")
-    if final_candidate_audit.get("status") == "fail":
-        add_finding(findings, "error", "final_candidate_audit_failed", "Final candidate audit must pass before publish adapter planning.")
+    if final_candidate_audit.get("status") != "pass":
+        add_finding(findings, "error", "final_candidate_audit_not_passed", "Final candidate audit must pass before publish adapter planning.")
     if skill_update_plan.get("recommended_action") != action:
         add_finding(findings, "error", "publish_action_mismatch", "Publish adapter action must match skill_update_plan recommended_action.")
 

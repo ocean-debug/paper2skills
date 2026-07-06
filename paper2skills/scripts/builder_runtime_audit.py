@@ -1,4 +1,4 @@
-"""Static audit for the Papert2Skills builder runtime surface."""
+"""Static audit for the paper2skills builder runtime surface."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ REQUIRED_SKILL_FILES = [
     "SKILL.md",
     "agents/openai.yaml",
     "templates/build_request.yaml",
-    "scripts/papert2skills.py",
+    "scripts/paper2skills.py",
 ]
 
 REQUIRED_TEMPLATE_FIELDS = [
@@ -34,7 +34,7 @@ REQUIRED_TEMPLATE_FIELDS = [
     "execution_replay_results",
     "eval_results",
     "agent_rollout_results",
-    "agent_skillopt_proposals",
+    "agent_review_proposals",
     "smoke_test_results",
     "require_smoke_test",
     "e2e_acceptance_results",
@@ -44,6 +44,11 @@ REQUIRED_TEMPLATE_FIELDS = [
     "output_dir",
     "requested_task_types",
     "fetch_sources",
+    "reuse_fetched_sources",
+    "source_cache_dir",
+    "cleanup_process_files",
+    "retained_process_artifacts_dir",
+    "generation_process_doc",
     "max_fetch_bytes",
     "max_index_files",
     "max_index_bytes",
@@ -92,7 +97,7 @@ REQUIRED_CLI_COMMANDS = [
     "audit-skill-package",
     "audit-module-inventory",
     "audit-builder-baseline",
-    "skillopt-next-step",
+    "review-next-step",
 ]
 
 REQUIRED_OPENAI_INTERFACE_FIELDS = [
@@ -139,7 +144,7 @@ def build_builder_runtime_audit(request: dict[str, Any], skill_dir: Path) -> dic
     findings: list[dict[str, Any]] = []
 
     if not skill_dir.exists():
-        add_finding(findings, "error", "missing_skill_dir", "Builder skill directory does not exist.", str(skill_dir))
+        add_finding(findings, "error", "missing_skill_dir", "Builder skill directory does not exist.", "<skill_dir>")
 
     file_records: list[dict[str, Any]] = []
     for relative in REQUIRED_SKILL_FILES:
@@ -189,8 +194,10 @@ def build_builder_runtime_audit(request: dict[str, Any], skill_dir: Path) -> dic
             add_finding(findings, "error", "template_target_agent_not_codex", "Build request template must target Codex.", "templates/build_request.yaml")
         if template_data.get("language_backend") != "python":
             add_finding(findings, "error", "template_backend_not_python", "Build request template must default to the Python backend.", "templates/build_request.yaml")
+        if template_data.get("schema_version") != SCHEMA_VERSION:
+            add_finding(findings, "error", "template_schema_version_mismatch", "Build request template schema_version must match the builder schema.", "templates/build_request.yaml")
 
-    cli_path = skill_dir / "scripts" / "papert2skills.py"
+    cli_path = skill_dir / "scripts" / "paper2skills.py"
     cli_commands: list[str] = []
     if cli_path.exists():
         cli_text = read_text(cli_path)
@@ -198,9 +205,9 @@ def build_builder_runtime_audit(request: dict[str, Any], skill_dir: Path) -> dic
             if f'"{command}"' in cli_text or f"'{command}'" in cli_text:
                 cli_commands.append(command)
             else:
-                add_finding(findings, "error", "missing_cli_command", "Builder CLI is missing a required command.", "scripts/papert2skills.py")
+                add_finding(findings, "error", "missing_cli_command", "Builder CLI is missing a required command.", "scripts/paper2skills.py")
         if "from build_pipeline import build" not in cli_text:
-            add_finding(findings, "error", "cli_not_wired_to_pipeline", "Builder CLI must delegate build to build_pipeline.", "scripts/papert2skills.py")
+            add_finding(findings, "error", "cli_not_wired_to_pipeline", "Builder CLI must delegate build to build_pipeline.", "scripts/paper2skills.py")
 
     has_errors = any(finding["severity"] == "error" for finding in findings)
     return {
@@ -210,7 +217,7 @@ def build_builder_runtime_audit(request: dict[str, Any], skill_dir: Path) -> dic
         "package_name": request.get("package_name"),
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
-        "skill_dir": str(skill_dir),
+        "skill_dir": ".",
         "required_files": REQUIRED_SKILL_FILES,
         "file_records": file_records,
         "required_template_fields": REQUIRED_TEMPLATE_FIELDS,

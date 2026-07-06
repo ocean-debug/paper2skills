@@ -16,6 +16,18 @@ REVIEW_DUTIES: list[dict[str, Any]] = [
         "purpose": "Check source, evidence, API, and interface grounding before claims are accepted.",
     },
     {
+        "duty": "record_score",
+        "required_signals": ["record_score"],
+        "required_roles": ["record_score"],
+        "purpose": "Record candidate scoring before any optimizer decision.",
+    },
+    {
+        "duty": "rollout_plan",
+        "required_signals": ["rollout_plan"],
+        "required_roles": ["rollout_plan"],
+        "purpose": "Expose plan-only rollout/eval inputs for agent-driven optimization.",
+    },
+    {
         "duty": "task_partition_and_routing",
         "required_signals": ["task_partition", "task_routing", "task_split", "routing"],
         "required_roles": ["draft_snapshot", "critic"],
@@ -23,9 +35,9 @@ REVIEW_DUTIES: list[dict[str, Any]] = [
     },
     {
         "duty": "input_output_contracts",
-        "required_signals": ["input_contracts", "output_contracts", "input_contract", "output_contract", "parameter_constraints"],
+        "required_signals": ["input_contracts", "output_contracts", "input_contract", "output_contract", "parameter_constraints", "operational_recipe", "operational_recipes"],
         "required_roles": ["critic"],
-        "purpose": "Check task input requirements, output expectations, and parameter constraints.",
+        "purpose": "Check task input requirements, output expectations, parameter constraints, and agent-usable operational recipes.",
     },
     {
         "duty": "refusal_boundaries",
@@ -50,6 +62,20 @@ REVIEW_DUTIES: list[dict[str, Any]] = [
         "required_signals": ["patch_plan"],
         "required_roles": ["patch_plan"],
         "purpose": "Check agent-driven patch planning is represented as a bounded state.",
+    },
+    {
+        "duty": "optimizer_reflection",
+        "required_signals": ["analyst_error", "analyst_success", "merge_failure", "merge_success"],
+        "required_roles": ["analyst_error", "analyst_success", "merge_failure", "merge_success"],
+        "purpose": "Check non-passing iterations expose failure and success reflection phases.",
+        "when": "not_passed",
+    },
+    {
+        "duty": "ranking_and_slow_update",
+        "required_signals": ["merge_final", "ranking", "slow_update"],
+        "required_roles": ["merge_final", "ranking", "slow_update"],
+        "purpose": "Check non-passing iterations expose final merge, ranking, and slow-update phases.",
+        "when": "not_passed",
     },
     {
         "duty": "gate_discipline",
@@ -149,6 +175,8 @@ def build_review_prompt_suite_audit(
     for iteration in iterations:
         iteration_index = int(iteration.get("iteration") or 0)
         for duty in REVIEW_DUTIES:
+            if duty.get("when") == "not_passed" and iteration.get("passed"):
+                continue
             record = duty_record(iteration, duty)
             records.append(record)
             if not record["observed_signals"]:

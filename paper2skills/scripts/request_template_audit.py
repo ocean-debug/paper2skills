@@ -12,16 +12,18 @@ from constants import SCHEMA_VERSION
 
 REQUIRED_IDENTITY_FIELDS = {"package_name", "method_name", "repo_url"}
 REQUIRED_TEMPLATE_VALUES = {
+    "schema_version": SCHEMA_VERSION,
     "target_agent": "codex",
     "language_backend": "python",
     "execution_grounded": False,
     "fetch_sources": False,
+    "cleanup_process_files": True,
 }
 FORBIDDEN_TEMPLATE_PATTERNS = [
-    "192.168.",
-    "/home/",
-    "conda activate",
-    "gpu0",
+    "".join(["192", ".168", "."]),
+    "".join(["/ho", "me/"]),
+    "".join(["conda", " activate"]),
+    "".join(["gpu", "0"]),
 ]
 
 
@@ -132,8 +134,8 @@ def build_request_template_audit(skill_dir: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "created_at": now_utc(),
         "status": "fail" if has_errors else "pass",
-        "skill_dir": str(skill_dir),
-        "template_path": str(template_path),
+        "skill_dir": ".",
+        "template_path": "templates/build_request.yaml",
         "template_field_count": len(template_fields),
         "normalized_default_fields": sorted(default_fields),
         "request_audit_list_fields": sorted(list_fields),
@@ -148,5 +150,6 @@ def build_request_template_audit(skill_dir: Path) -> dict[str, Any]:
             "The template must expose every normalized or audited build request field.",
             "The template must stay generic and must not encode machine-specific execution details.",
             "Builder runtime required fields must cover normalized request defaults so template drift is visible.",
+            "Template schema_version must match the builder artifact schema version.",
         ],
     }

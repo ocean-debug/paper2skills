@@ -89,12 +89,12 @@ def build_publish_manifest_audit(
             "Publish manifest must record the install_readiness status.",
         )
     final_candidate_audit = final_candidate_audit or {}
-    if final_candidate_audit.get("status") == "fail":
+    if final_candidate_audit.get("status") != "pass":
         add_finding(
             findings,
             "error",
-            "final_candidate_audit_failed",
-            "Final candidate audit failed.",
+            "final_candidate_audit_not_passed",
+            "Final candidate audit must pass.",
         )
     codex_publish_adapter = codex_publish_adapter or {}
     if codex_publish_adapter.get("status") == "fail":
@@ -126,6 +126,27 @@ def build_publish_manifest_audit(
             "missing_run_manifest_path",
             "Publish manifest must point to run_manifest.yaml.",
         )
+    if not publish_manifest.get("output_retention_path"):
+        add_finding(
+            findings,
+            "error",
+            "missing_output_retention_path",
+            "Publish manifest must point to the retained output_retention.yaml lifecycle artifact.",
+        )
+    if not publish_manifest.get("generation_process_doc"):
+        add_finding(
+            findings,
+            "error",
+            "missing_generation_process_doc",
+            "Publish manifest must point to the human-readable generation process document.",
+        )
+    if publish_manifest.get("output_retention_status") not in {None, "pass"}:
+        add_finding(
+            findings,
+            "error",
+            "output_retention_failed",
+            "Publish manifest records a non-passing output retention status.",
+        )
 
     has_errors = any(finding["severity"] == "error" for finding in findings)
     return {
@@ -146,6 +167,10 @@ def build_publish_manifest_audit(
         "manifest_skill_update_recommended_action": publish_manifest.get("skill_update_recommended_action"),
         "target_existing_skill_path": release_package.get("target_existing_skill_path"),
         "manifest_target_existing_skill_path": publish_manifest.get("target_existing_skill_path"),
+        "run_manifest_path": publish_manifest.get("run_manifest_path"),
+        "output_retention_path": publish_manifest.get("output_retention_path"),
+        "output_retention_status": publish_manifest.get("output_retention_status"),
+        "generation_process_doc": publish_manifest.get("generation_process_doc"),
         "findings": findings,
         "policy": [
             "Publish manifest is an audit record, not an installer.",

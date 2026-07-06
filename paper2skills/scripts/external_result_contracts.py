@@ -166,7 +166,21 @@ def audit_rollout_result(findings: list[dict[str, Any]], result: dict[str, Any],
             )
 
 
-def audit_replay_result(findings: list[dict[str, Any]], result: dict[str, Any], index: int) -> None:
+def remote_environment_requested(request: dict[str, Any]) -> bool:
+    environment = request.get("execution_environment") if isinstance(request.get("execution_environment"), dict) else {}
+    return environment.get("mode") == "remote" or bool(environment.get("remote_only"))
+
+
+def replay_has_script_carrier(result: dict[str, Any]) -> bool:
+    return has_any(result, ("script", "script_path", "notebook"))
+
+
+def replay_command_looks_inline_multiline(result: dict[str, Any]) -> bool:
+    command = str(result.get("command") or "")
+    return "\n" in command or "python -" in command or "bash -" in command or "cat <<" in command
+
+
+def audit_replay_result(findings: list[dict[str, Any]], result: dict[str, Any], index: int, remote_execution: bool) -> None:
     field = "execution_replay_results"
     audit_common_result(findings, result, field, index)
     if not has_any(result, ("replay_id", "job_id")):
@@ -193,6 +207,24 @@ def audit_replay_result(findings: list[dict[str, Any]], result: dict[str, Any], 
             "error",
             "successful_replay_result_missing_trace_ref",
             "Successful execution replay result must include trace_ref or evidence_ref.",
+            field,
+            index,
+        )
+    if raw_status(result) in PASS_STATUSES and remote_execution and not replay_has_script_carrier(result):
+        add_finding(
+            findings,
+            "error",
+            "remote_replay_result_missing_script_carrier",
+            "Successful remote replay result must include script, script_path, or notebook.",
+            field,
+            index,
+        )
+    if remote_execution and replay_command_looks_inline_multiline(result):
+        add_finding(
+            findings,
+            "warning",
+            "remote_replay_result_inline_multiline_command",
+            "Remote replay command looks like an inline multi-line payload; record a standalone script or notebook instead.",
             field,
             index,
         )
@@ -272,6 +304,7 @@ def build_external_result_contracts(request: dict[str, Any]) -> dict[str, Any]:
     smoke_results = as_result_list(request, "smoke_test_results", findings)
     replay_results = as_result_list(request, "execution_replay_results", findings)
     e2e_results = as_result_list(request, "e2e_acceptance_results", findings)
+    remote_execution = remote_environment_requested(request)
 
     for index, result in enumerate(eval_results):
         audit_eval_result(findings, result, index)
@@ -280,7 +313,7 @@ def build_external_result_contracts(request: dict[str, Any]) -> dict[str, Any]:
     for index, result in enumerate(smoke_results):
         audit_smoke_result(findings, result, index)
     for index, result in enumerate(replay_results):
-        audit_replay_result(findings, result, index)
+        audit_replay_result(findings, result, index, remote_execution)
     for index, result in enumerate(e2e_results):
         audit_e2e_result(findings, result, index)
 
@@ -297,6 +330,7 @@ def build_external_result_contracts(request: dict[str, Any]) -> dict[str, Any]:
         "execution_replay_result_count": len(replay_results),
         "e2e_acceptance_result_count": len(e2e_results),
         "supplied_result_count": len(eval_results) + len(rollout_results) + len(smoke_results) + len(replay_results) + len(e2e_results),
+        "remote_execution": remote_execution,
         "forbidden_result_fields": sorted(FORBIDDEN_RESULT_FIELDS),
         "findings": findings,
         "policy": [

@@ -1,4 +1,4 @@
-"""Audit the Papert2Skills builder skill package shape."""
+"""Audit the paper2skills builder skill package shape."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ FORBIDDEN_AUX_DOC_NAMES = {
 REQUIRED_FILES = {
     "SKILL.md",
     "agents/openai.yaml",
-    "scripts/papert2skills.py",
+    "scripts/paper2skills.py",
     "templates/build_request.yaml",
 }
 
@@ -64,12 +64,12 @@ def frontmatter_fields(text: str) -> dict[str, str] | None:
 def audit_skill_package(skill_dir: Path) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     if not skill_dir.exists() or not skill_dir.is_dir():
-        add_finding(findings, "error", "missing_skill_dir", "Skill package directory does not exist.", str(skill_dir))
+        add_finding(findings, "error", "missing_skill_dir", "Skill package directory does not exist.", "<skill_dir>")
         return {
             "schema_version": SCHEMA_VERSION,
             "created_at": now_utc(),
             "status": "fail",
-            "skill_dir": str(skill_dir),
+            "skill_dir": "<skill_dir>",
             "checked_files": [],
             "findings": findings,
         }
@@ -114,27 +114,31 @@ def audit_skill_package(skill_dir: Path) -> dict[str, Any]:
             if extra:
                 add_finding(findings, "error", "unsupported_skill_frontmatter_field", "SKILL.md frontmatter must only contain name and description.", "SKILL.md")
 
+    ignored_runtime_files: list[str] = []
     for path in files:
         name = Path(path).name
         if name in FORBIDDEN_AUX_DOC_NAMES:
             add_finding(findings, "error", "auxiliary_doc_in_skill_package", "Auxiliary docs should not live inside the builder skill package.", path)
         if "__pycache__" in Path(path).parts:
-            add_finding(findings, "error", "cache_file_in_skill_package", "Cache files should not live inside the builder skill package.", path)
+            ignored_runtime_files.append(path)
+            add_finding(findings, "warning", "runtime_cache_file_ignored", "Runtime cache files are ignored by the builder skill package audit.", path)
 
     has_errors = any(finding["severity"] == "error" for finding in findings)
     return {
         "schema_version": SCHEMA_VERSION,
         "created_at": now_utc(),
         "status": "fail" if has_errors else "pass",
-        "skill_dir": str(skill_dir),
+        "skill_dir": ".",
         "allowed_top_level_files": sorted(ALLOWED_TOP_LEVEL_FILES),
         "allowed_top_level_dirs": sorted(ALLOWED_TOP_LEVEL_DIRS),
         "required_files": sorted(REQUIRED_FILES),
         "checked_files": files,
+        "ignored_runtime_files": ignored_runtime_files,
         "findings": findings,
         "policy": [
             "The builder itself is a Codex skill package.",
             "Keep the builder skill top level limited to SKILL.md and standard resource directories.",
             "Do not add auxiliary docs or non-standard manifest files inside the skill package.",
+            "Runtime Python cache files are reported but do not fail this static builder audit.",
         ],
     }

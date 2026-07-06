@@ -1,6 +1,6 @@
 # Safety
 
-Papert2Skills creates operational agent skills, so unsupported claims can lead
+paper2skills creates operational agent skills, so unsupported claims can lead
 to wrong scientific analysis. Prefer explicit uncertainty over implied support.
 
 ## Must Not

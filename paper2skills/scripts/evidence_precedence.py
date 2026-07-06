@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from common import now_utc
+from common import canonical_task_type, now_utc
 from constants import EVIDENCE_PRIORITY, SCHEMA_VERSION
 
 
@@ -81,8 +81,9 @@ def evidence_item(
 
 def trace_items_for_task(execution_trace_validation: dict[str, Any], task_type: str) -> list[dict[str, Any]]:
     items = []
+    canonical_task = canonical_task_type(task_type, "task")
     for record in execution_trace_validation.get("records", []):
-        if record.get("task_type") != task_type:
+        if canonical_task_type(str(record.get("task_type") or ""), "task") != canonical_task:
             continue
         if not record.get("success") or record.get("missing_fields") or not record.get("known_task_type"):
             continue
@@ -119,7 +120,7 @@ def task_precedence_record(
     sources: dict[str, dict[str, Any]],
     execution_trace_validation: dict[str, Any],
 ) -> dict[str, Any]:
-    task_type = str(task.get("task_type"))
+    task_type = canonical_task_type(str(task.get("task_type") or ""), "task")
     refs = [str(ref) for ref in task.get("evidence_refs", [])]
     items = [evidence_item(ref, cards, sources) for ref in refs]
     items.extend(trace_items_for_task(execution_trace_validation, task_type))

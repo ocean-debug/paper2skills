@@ -1,4 +1,4 @@
-"""Review-loop cursor state for resumable SkillOpt-style iteration."""
+"""Review-loop cursor state for resumable paper2skills review loop iteration."""
 
 from __future__ import annotations
 
@@ -50,10 +50,13 @@ def current_cursor(review_result: dict[str, Any]) -> dict[str, Any]:
         phase = "complete"
         resumable = False
     elif stop_reason == "awaiting_agent_proposal":
-        phase = "awaiting_agent_skillopt_proposal"
+        phase = "awaiting_agent_review_loop"
         resumable = True
     elif stop_reason == "agent_proposal_rejected":
-        phase = "agent_skillopt_proposal_rejected"
+        phase = "agent_review_loop_rejected"
+        resumable = True
+    elif stop_reason == "awaiting_confirming_iteration":
+        phase = "awaiting_confirming_iteration"
         resumable = True
     elif stop_reason == "iteration_budget_exhausted":
         phase = "iteration_budget_exhausted"
@@ -66,6 +69,7 @@ def current_cursor(review_result: dict[str, Any]) -> dict[str, Any]:
         "iteration": last.get("iteration"),
         "resumable": resumable,
         "reason": stop_reason,
+        "resume_action": "rerun_with_one_more_review_iteration_to_confirm_last_patch" if stop_reason == "awaiting_confirming_iteration" else None,
     }
 
 
@@ -75,13 +79,11 @@ def build_review_cursor(
 ) -> dict[str, Any]:
     iterations = [iteration_cursor(item) for item in review_result.get("iterations", [])]
     cursor = current_cursor(review_result)
+    required_roles = {"draft_snapshot", "record_score", "rollout_plan", "critic", "patch_plan", "gate"}
     incomplete_iterations = [
         item
         for item in iterations
-        if "draft_snapshot" not in item.get("state_roles", [])
-        or "critic" not in item.get("state_roles", [])
-        or "patch_plan" not in item.get("state_roles", [])
-        or "gate" not in item.get("state_roles", [])
+        if not required_roles.issubset(set(item.get("state_roles", [])))
     ]
     status = "fail" if incomplete_iterations else "pass"
     return {
@@ -95,6 +97,7 @@ def build_review_cursor(
         "current": cursor,
         "iteration_count": len(iterations),
         "iterations": iterations,
+        "required_state_roles": sorted(required_roles),
         "findings": [
             {
                 "severity": "error",
@@ -105,8 +108,8 @@ def build_review_cursor(
             for item in incomplete_iterations
         ],
         "policy": [
-            "Every review iteration must expose draft_snapshot, critic, patch_plan, and gate states.",
+            "Every review iteration must expose draft_snapshot, record_score, rollout_plan, critic, patch_plan, and gate states.",
             "The cursor records resumability and stop reason; it does not execute review or apply patches.",
-            "awaiting_agent_skillopt_proposal means Codex must author a bounded proposal and rerun the build.",
+            "awaiting_agent_review_loop means Codex must author a bounded proposal and rerun the build.",
         ],
     }

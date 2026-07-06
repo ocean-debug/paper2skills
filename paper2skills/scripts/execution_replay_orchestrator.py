@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from common import as_list, now_utc, slugify
+from common import as_list, canonical_task_type, now_utc, slugify
 from constants import EXECUTION_SUCCESS_STATUSES, SCHEMA_VERSION
 
 
@@ -91,8 +91,14 @@ def replay_job(
             "required_failure_fields": REQUIRED_FAILURE_RESULT_FIELDS,
             "accepted_success_statuses": sorted(EXECUTION_SUCCESS_STATUSES),
             "must_record_command_or_notebook": True,
+            "must_use_script_or_notebook_for_remote_multiline": True,
             "must_record_stdout_or_log_summary": True,
             "must_record_failure_reason_for_failed_replay": True,
+            "remote_command_transport": {
+                "preferred": "upload a standalone script or notebook and record its path/hash",
+                "avoid": "inline multi-line shell or Python payloads in the command field",
+                "result_fields": ["script", "script_path", "script_sha256", "notebook", "command"],
+            },
         },
     }
 
@@ -106,18 +112,29 @@ def result_is_success(result: dict[str, Any]) -> bool:
 
 
 def command_or_notebook_present(result: dict[str, Any]) -> bool:
-    return bool(result.get("command") or result.get("notebook") or result.get("script"))
+    return bool(result.get("command") or result.get("notebook") or result.get("script") or result.get("script_path"))
 
 
-def missing_result_fields(result: dict[str, Any]) -> list[str]:
+def has_remote_script_carrier(result: dict[str, Any]) -> bool:
+    return bool(result.get("script") or result.get("script_path") or result.get("notebook"))
+
+
+def command_looks_inline_multiline(result: dict[str, Any]) -> bool:
+    command = str(result.get("command") or "")
+    return "\n" in command or "python -" in command or "bash -" in command or "cat <<" in command
+
+
+def missing_result_fields(result: dict[str, Any], remote_execution: bool = False) -> list[str]:
     fields = REQUIRED_SUCCESS_RESULT_FIELDS if result_is_success(result) else REQUIRED_FAILURE_RESULT_FIELDS
     missing = [field for field in fields if not result.get(field)]
     if result_is_success(result) and not command_or_notebook_present(result):
         missing.append("command_or_notebook")
+    if result_is_success(result) and remote_execution and not has_remote_script_carrier(result):
+        missing.append("script_or_notebook_for_remote_execution")
     return missing
 
 
-def result_record(index: int, result: Any, jobs_by_replay: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def result_record(index: int, result: Any, jobs_by_replay: dict[str, dict[str, Any]], remote_execution: bool) -> dict[str, Any]:
     if not isinstance(result, dict):
         return {
             "result_index": index,
@@ -131,7 +148,7 @@ def result_record(index: int, result: Any, jobs_by_replay: dict[str, dict[str, A
             "trace_ref": None,
         }
     replay_id = str(result.get("replay_id") or "")
-    task_type = slugify(str(result.get("task_type") or ""), "task")
+    task_type = canonical_task_type(str(result.get("task_type") or ""), "task")
     job = jobs_by_replay.get(replay_id, {})
     return {
         "result_index": index,
@@ -139,10 +156,13 @@ def result_record(index: int, result: Any, jobs_by_replay: dict[str, dict[str, A
         "replay_id": replay_id,
         "task_type": task_type,
         "success": result_is_success(result),
-        "missing_fields": missing_result_fields(result),
+        "missing_fields": missing_result_fields(result, remote_execution),
         "known_replay": bool(job),
-        "known_task_type": task_type == slugify(str(job.get("task_type") or ""), "task") if job else False,
+        "known_task_type": task_type == canonical_task_type(str(job.get("task_type") or ""), "task") if job else False,
         "trace_ref": result.get("trace_ref"),
+        "remote_execution": remote_execution,
+        "has_script_carrier": has_remote_script_carrier(result),
+        "command_looks_inline_multiline": command_looks_inline_multiline(result),
         "has_failure_reason": bool(result.get("failure_reason") or result.get("stderr") or result.get("error")),
         "has_troubleshooting_notes": bool(result.get("troubleshooting_notes") or result.get("remediation_suggestions")),
     }
@@ -181,6 +201,8 @@ def build_execution_replay_orchestrator(
     environment_install_plan: dict[str, Any],
 ) -> dict[str, Any]:
     """Return replay jobs and result-audit records without executing code."""
+    environment = request.get("execution_environment") if isinstance(request.get("execution_environment"), dict) else {}
+    remote_execution = environment.get("mode") == "remote" or bool(environment.get("remote_only"))
     jobs = [
         replay_job(replay, execution_plan, environment_install_plan)
         for replay in tutorial_reproduction_plan.get("replays", [])
@@ -191,7 +213,7 @@ def build_execution_replay_orchestrator(
         if job.get("replay_id")
     }
     results = as_list(request.get("execution_replay_results"))
-    records = [result_record(index, result, jobs_by_replay) for index, result in enumerate(results, start=1)]
+    records = [result_record(index, result, jobs_by_replay, remote_execution) for index, result in enumerate(results, start=1)]
     findings: list[dict[str, Any]] = []
 
     if tutorial_reproduction_plan.get("status") == "fail":
@@ -231,6 +253,10 @@ def build_execution_replay_orchestrator(
             add_finding(findings, severity, "replay_result_missing_fields", "Execution replay result is missing required fields.", task_type, ", ".join(record.get("missing_fields", [])))
         if record.get("success") and not record.get("trace_ref"):
             add_finding(findings, "error", "successful_replay_without_trace_ref", "Successful replay result requires trace_ref.", task_type)
+        if record.get("success") and remote_execution and not record.get("has_script_carrier"):
+            add_finding(findings, "error", "remote_replay_without_script_carrier", "Remote replay results must record a script_path, script, or notebook carrier.", task_type)
+        if remote_execution and record.get("command_looks_inline_multiline"):
+            add_finding(findings, "warning", "remote_replay_inline_multiline_command", "Remote replay command looks like an inline multi-line payload; prefer a standalone script or notebook.", task_type)
         if not record.get("success") and not record.get("has_failure_reason"):
             add_finding(findings, "warning", "failed_replay_without_failure_reason", "Failed replay result should include failure_reason, stderr, or error.", task_type)
 
@@ -245,6 +271,7 @@ def build_execution_replay_orchestrator(
         "method_name": request.get("method_name") or request.get("package_name"),
         "status": "fail" if has_errors else "pass",
         "execution_grounded_requested": bool(request.get("execution_grounded")),
+        "remote_execution": remote_execution,
         "plan_only": True,
         "job_count": len(jobs),
         "ready_job_count": len(ready_jobs),
@@ -258,6 +285,7 @@ def build_execution_replay_orchestrator(
         "findings": findings,
         "policy": [
             "Replay orchestration is plan-only; it never installs packages or runs tutorials.",
+            "Remote replay evidence should use uploaded scripts or notebooks rather than inline multi-line command payloads.",
             "Successful replay results can support execution_verified only after execution_trace_validation also passes.",
             "Failed replay results update troubleshooting and refusal guidance but must not be marked verified.",
         ],

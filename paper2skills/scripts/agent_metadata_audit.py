@@ -10,7 +10,7 @@ from constants import SCHEMA_VERSION
 
 
 EXPECTED_SKILL_NAME = "paper2skills"
-EXPECTED_DISPLAY_NAME = "Papert2Skills"
+EXPECTED_DISPLAY_NAME = "paper2skills"
 ALLOWED_FRONTMATTER_FIELDS = {"name", "description"}
 REQUIRED_INTERFACE_FIELDS = ["display_name", "short_description", "default_prompt"]
 REQUIRED_METADATA_CONCEPTS = {
@@ -126,9 +126,9 @@ def build_agent_metadata_audit(skill_dir: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "created_at": now_utc(),
         "status": "fail" if has_errors else "pass",
-        "skill_dir": str(skill_dir),
-        "skill_path": str(skill_path),
-        "openai_path": str(openai_path),
+        "skill_dir": ".",
+        "skill_path": "SKILL.md",
+        "openai_path": "agents/openai.yaml",
         "allowed_frontmatter_fields": sorted(ALLOWED_FRONTMATTER_FIELDS),
         "frontmatter_fields": sorted(frontmatter),
         "required_interface_fields": REQUIRED_INTERFACE_FIELDS,

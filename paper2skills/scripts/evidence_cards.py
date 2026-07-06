@@ -17,13 +17,13 @@ def candidate_task_types(text: str) -> list[str]:
     return tasks or ["general_algorithm_use"]
 
 
-def candidate_claim_types(text: str, kind: str) -> list[str]:
+def candidate_claim_types(text: str, kind: str, has_api_surface: bool) -> list[str]:
     lowered = text.lower()
     claims = []
     for claim_type, needles in CLAIM_KEYWORDS.items():
         if any(needle.lower() in lowered for needle in needles):
             claims.append(claim_type)
-    if kind in {"python", "notebook"} and "api_entrypoint" not in claims:
+    if kind in {"python", "notebook"} and has_api_surface and "api_entrypoint" not in claims:
         claims.append("api_entrypoint")
     return claims or ["task_support"]
 
@@ -69,7 +69,8 @@ def build_evidence_cards(
             ]
         )
         task_types = candidate_task_types(text)
-        claim_types = candidate_claim_types(text, str(record.get("kind")))
+        has_api_surface = bool(record.get("functions") or record.get("classes") or record.get("api_calls"))
+        claim_types = candidate_claim_types(text, str(record.get("kind")), has_api_surface)
         source = source_lookup.get(record.get("evidence_id"), {})
         for claim_type in claim_types:
             cards.append(
@@ -82,6 +83,13 @@ def build_evidence_cards(
                     "task_type_candidates": task_types,
                     "summary": summarize_file_record(record),
                     "confidence": "documented" if source.get("type") in {"official_tutorial", "official_docs"} else "source_observed",
+                    "claim_support": {
+                        "has_api_surface": has_api_surface,
+                        "function_count": len(record.get("functions", [])),
+                        "class_count": len(record.get("classes", [])),
+                        "api_call_count": len(record.get("api_calls", [])),
+                        "heading_count": len(record.get("headings", [])),
+                    },
                     "provenance": {
                         "path": record.get("path"),
                         "sha256": record.get("sha256"),

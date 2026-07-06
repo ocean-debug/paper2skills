@@ -1,9 +1,9 @@
-"""Shared constants for the Papert2Skills builder."""
+"""Shared constants for the paper2skills builder."""
 
 from __future__ import annotations
 
-SCHEMA_VERSION = "papert2skills.v0.1"
-BUILDER_VERSION = "papert2skills-builder.v0.1"
+SCHEMA_VERSION = "paper2skills.v0.1"
+BUILDER_VERSION = "paper2skills-builder.v0.1"
 
 EVIDENCE_PRIORITY = [
     "execution_trace",

@@ -111,7 +111,7 @@ def build_review_iteration_log(
 
 def render_review_iteration_log_markdown(log: dict[str, Any]) -> str:
     """Render a compact Markdown review iteration log."""
-    title = log.get("method_name") or log.get("package_name") or "Papert2Skills"
+    title = log.get("method_name") or log.get("package_name") or "paper2skills"
     summary_rows = [
         ["Review status", _text(log.get("review_status"))],
         ["Stop reason", _text(log.get("stop_reason"))],
@@ -121,7 +121,7 @@ def render_review_iteration_log_markdown(log: dict[str, Any]) -> str:
     ]
     lines = [
         f"# {title} Review Iteration Log",
-        "This run artifact summarizes the agent-driven self-review loop for human audit.",
+        "This run artifact summarizes the agent-driven paper2skills review loop for human audit.",
         "## Summary",
         md_table(["Field", "Value"], summary_rows),
     ]

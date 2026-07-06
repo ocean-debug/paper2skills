@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from common import as_list, now_utc, slugify
+from common import as_list, canonical_task_type, now_utc
 from constants import EXECUTION_SUCCESS_STATUSES, SCHEMA_VERSION
 from execution_grounding import execution_evidence_records
 
@@ -63,7 +63,7 @@ def trace_record(index: int, trace: Any, known_task_types: set[str]) -> dict[str
             "missing_fields": ["trace_object"],
             "known_task_type": False,
         }
-    task_type = slugify(str(trace.get("task_type") or ""), "task")
+    task_type = canonical_task_type(str(trace.get("task_type") or ""), "task")
     success = is_success(trace)
     missing = missing_success_fields(trace) if success else []
     return {
@@ -106,7 +106,7 @@ def successful_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def build_execution_trace_validation(request: dict[str, Any], task_catalog: dict[str, Any]) -> dict[str, Any]:
     traces = execution_evidence_records(request)
-    known_task_types = {slugify(str(task.get("task_type")), "task") for task in task_catalog.get("tasks", [])}
+    known_task_types = {canonical_task_type(str(task.get("task_type")), "task") for task in task_catalog.get("tasks", [])}
     records = [trace_record(index, trace, known_task_types) for index, trace in enumerate(traces, start=1)]
     valid_successes = successful_records(records)
     findings: list[dict[str, Any]] = []

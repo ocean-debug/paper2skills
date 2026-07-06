@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from common import now_utc, read_text, slugify
+from common import canonical_task_type, now_utc, read_text
 from constants import SCHEMA_VERSION
 
 
@@ -34,7 +34,7 @@ def valid_success_records(execution_trace_validation: dict[str, Any]) -> dict[st
             continue
         if not record.get("known_task_type"):
             continue
-        task_type = slugify(str(record.get("task_type") or ""), "task")
+        task_type = canonical_task_type(str(record.get("task_type") or ""), "task")
         records.setdefault(task_type, []).append(record)
     return records
 
@@ -44,7 +44,7 @@ def failed_records(execution_trace_validation: dict[str, Any]) -> dict[str, list
     for record in execution_trace_validation.get("records", []):
         if record.get("success"):
             continue
-        task_type = slugify(str(record.get("task_type") or ""), "task")
+        task_type = canonical_task_type(str(record.get("task_type") or ""), "task")
         records.setdefault(task_type, []).append(record)
     return records
 
@@ -73,7 +73,7 @@ def build_verification_claim_audit(
     task_rows: list[dict[str, Any]] = []
 
     for task in task_catalog.get("tasks", []):
-        task_type = slugify(str(task.get("task_type") or ""), "task")
+        task_type = canonical_task_type(str(task.get("task_type") or ""), "task")
         status = str(task.get("verification_status") or "")
         trace_ref = task.get("trace_ref")
         valid_records = valid_success_by_task.get(task_type, [])
@@ -110,7 +110,7 @@ def build_verification_claim_audit(
         if not status or status not in text:
             add_finding(findings, "error", "verification_status_not_rendered", "Task verification status is not rendered in the child skill.", task_type)
 
-    task_types = {slugify(str(task.get("task_type") or ""), "task") for task in task_catalog.get("tasks", [])}
+    task_types = {canonical_task_type(str(task.get("task_type") or ""), "task") for task in task_catalog.get("tasks", [])}
     for task_type in sorted(set(valid_success_by_task) - task_types):
         add_finding(findings, "error", "valid_trace_without_task", "Validated trace task_type is missing from task_catalog.", task_type)
 

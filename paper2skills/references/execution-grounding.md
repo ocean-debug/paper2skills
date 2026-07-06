@@ -2,7 +2,7 @@
 
 Execution grounding is optional and explicit.
 
-By default, Papert2Skills creates a `source_grounded` child skill. That means
+By default, paper2skills creates a `source_grounded` child skill. That means
 claims are based on official sources, tutorials, documentation, source code, or
 papers, but no tutorial execution has been verified.
 

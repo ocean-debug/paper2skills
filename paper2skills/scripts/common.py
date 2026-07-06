@@ -23,9 +23,30 @@ def slugify(value: str | None, default: str = "method") -> str:
     return text or default
 
 
+def canonical_task_type(value: str | None, default: str = "general_algorithm_use") -> str:
+    """Return the stable snake_case key used for task_type records."""
+    return slugify(value, default).replace("-", "_")
+
+
 def ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def public_child_skill_path(child_skill_dir: Path) -> str:
+    """Return a run-relative child-skill path for public run artifacts."""
+    if child_skill_dir.parent.name == "child_skill":
+        return f"child_skill/{child_skill_dir.name}"
+    return child_skill_dir.name
+
+
+def public_existing_skill_path(path_value: Any) -> str | None:
+    """Return a non-local existing-skill reference for public run artifacts."""
+    text = str(path_value or "").strip()
+    if not text:
+        return None
+    name = text.replace("\\", "/").rstrip("/").split("/")[-1]
+    return f"existing_skill/{slugify(name, 'existing-skill')}"
 
 
 def read_text(path: Path) -> str:

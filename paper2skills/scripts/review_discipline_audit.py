@@ -8,7 +8,7 @@ from common import now_utc
 from constants import SCHEMA_VERSION
 
 
-REQUIRED_STATE_ROLES = {"draft_snapshot", "critic", "patch_plan", "gate"}
+REQUIRED_STATE_ROLES = {"draft_snapshot", "record_score", "rollout_plan", "critic", "patch_plan", "gate"}
 
 
 def add_finding(
@@ -76,7 +76,7 @@ def build_review_discipline_audit(
                 findings,
                 "error",
                 "review_iteration_missing_state",
-                "Review iteration is missing required draft, critic, patch-plan, or gate state.",
+                "Review iteration is missing required draft, record-score, rollout-plan, critic, patch-plan, or gate state.",
                 iteration_index,
             )
 
@@ -155,7 +155,15 @@ def build_review_discipline_audit(
                 "A changed review patch must close the iteration with a patch-for-next-iteration gate reason.",
                 iteration_index,
             )
-        if not changed and not passed and gate_reason not in {"awaiting_agent_proposal", "agent_proposal_rejected"}:
+        if not changed and not passed and gate_reason not in {
+            "awaiting_agent_proposal",
+            "awaiting_agent_review_loop",
+            "agent_proposal_rejected",
+            "agent_review_loop_incomplete",
+            "agent_proposal_non_improving",
+            "agent_review_loop_invalid",
+            "agent_selected_operation_rejected",
+        }:
             add_finding(
                 findings,
                 "error",
@@ -222,9 +230,16 @@ def build_review_discipline_audit(
     if review_result.get("status") == "passed" and stop_reason == "iteration_budget_exhausted":
         add_finding(
             findings,
-            "warning",
+            "error",
             "passed_after_final_patch_without_confirming_iteration",
             "Final artifacts pass, but the loop stopped by budget before recording a confirming pass iteration.",
+        )
+    if review_result.get("status") == "passed" and stop_reason == "awaiting_confirming_iteration":
+        add_finding(
+            findings,
+            "error",
+            "passed_while_awaiting_confirming_iteration",
+            "Review result cannot pass while the last accepted patch is still awaiting a confirming scored iteration.",
         )
 
     has_errors = any(finding["severity"] == "error" for finding in findings)
@@ -240,8 +255,9 @@ def build_review_discipline_audit(
         "iteration_count": iteration_count,
         "findings": findings,
         "policy": [
-            "Review discipline audits the self-review state machine; it does not execute package code.",
-            "Each iteration must expose draft, critic, patch-plan, revision/gate semantics and consistent stop reasons.",
-            "Agent-driven SkillOpt iterations may stop at awaiting_agent_proposal until Codex supplies an edit proposal.",
+            "Review discipline audits the agent-driven paper2skills review loop state machine; it does not execute package code.",
+            "Each iteration must expose draft, record-score, rollout-plan, critic, patch-plan, revision/gate semantics and consistent stop reasons.",
+            "Agent-driven review-loop iterations may stop at awaiting_agent_review_loop until Codex supplies a complete review-loop proposal.",
+            "Applied candidates must pass a strict score-improvement gate before becoming the next accepted version.",
         ],
     }

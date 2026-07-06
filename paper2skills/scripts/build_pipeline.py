@@ -1,4 +1,4 @@
-"""End-to-end orchestration for the Papert2Skills builder."""
+"""End-to-end orchestration for the paper2skills builder."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from api_surface_audit import audit_api_surface
 from architecture_completeness_audit import build_architecture_completeness_audit
 from artifact_closure_audit import build_artifact_closure_audit
 from artifact_contracts import build_artifact_contracts_report
-from artifact_validator import PRE_PUBLISH_ARTIFACTS, REQUIRED_TOP_LEVEL_ARTIFACTS, validate_artifact_bundle
+from artifact_validator import POST_CLEANUP_ARTIFACTS, PRE_PUBLISH_ARTIFACTS, REQUIRED_TOP_LEVEL_ARTIFACTS, validate_artifact_bundle
 from backend_contracts import build_backend_contract
 from backend_extension_audit import build_backend_extension_audit
 from biological_claim_boundary_audit import build_biological_claim_boundary_audit
@@ -34,7 +34,7 @@ from child_package_purity_audit import build_child_package_purity_audit
 from claim_consistency_audit import audit_claim_consistency
 from code_fence_audit import audit_child_skill_code_fences
 from codex_publish_adapter import build_codex_publish_adapter
-from common import append_jsonl, ensure_dir, load_data, slugify, write_data, write_text
+from common import append_jsonl, canonical_task_type, ensure_dir, load_data, public_child_skill_path, slugify, write_data, write_text
 from completion_audit import build_completion_audit
 from completion_evidence_audit import build_completion_evidence_audit
 from contract_traceability import build_contract_traceability
@@ -55,7 +55,7 @@ from execution_replay_orchestrator import build_execution_replay_orchestrator
 from evidence_cards import build_evidence_cards
 from environment_install_plan import build_environment_install_plan
 from environment_miner import build_environment_spec
-from execution_grounding import write_execution_trace_if_requested
+from execution_grounding import apply_validated_execution_status, write_execution_trace_if_requested
 from execution_trace_validation import build_execution_trace_validation
 from evidence_claim_taxonomy_audit import build_evidence_claim_taxonomy_audit
 from evidence_coverage import build_evidence_coverage
@@ -70,6 +70,7 @@ from lineage_graph import build_lineage_graph
 from lint_skill import build_skill_spec, lint_child_skill, publish_manifest
 from module_inventory_audit import audit_module_inventory
 from output_boundary_audit import build_output_boundary_audit
+from output_retention import build_output_retention, is_within, planned_output_retention, refresh_generation_process_doc, refresh_retained_artifacts
 from parameter_miner import attach_parameter_constraints, build_parameter_catalog
 from patch_application import build_patch_application
 from patch_operation_contracts import build_patch_operation_contracts
@@ -125,7 +126,7 @@ from source_parser import build_source_parse_report
 from source_parsing_audit import build_source_parsing_audit
 from source_parsing_coverage import build_source_parsing_coverage
 from task_conflict import build_task_conflict_matrix
-from task_partition import build_task_catalog
+from task_partition import attach_operational_recipes, build_task_catalog
 from task_partition_audit import build_task_partition_audit
 from task_partition_decision_log import build_task_partition_decision_log
 from task_router import build_router
@@ -133,6 +134,57 @@ from tutorial_miner import build_tutorial_catalog
 from tutorial_reproduction_plan import build_tutorial_reproduction_plan
 from verification_claim_audit import build_verification_claim_audit
 from workflow_invariant_audit import audit_workflow_invariants
+
+
+FINAL_VALIDATION_ARTIFACTS = [
+    name for name in REQUIRED_TOP_LEVEL_ARTIFACTS if name != "artifact_validation"
+] + POST_CLEANUP_ARTIFACTS
+
+
+def final_artifact_dirs(out: Path, publish_manifest_data: dict[str, object] | None) -> list[Path]:
+    dirs = []
+    retention_path = str((publish_manifest_data or {}).get("output_retention_path") or "")
+    if retention_path:
+        marker = out / retention_path
+        path = marker.parent
+        if (
+            marker.suffix
+            and marker.name == "output_retention.yaml"
+            and is_within(marker, out)
+            and is_within(path, out)
+            and path.resolve(strict=False) != out.resolve(strict=False)
+            and path.exists()
+            and path.is_dir()
+            and marker.exists()
+            and marker.is_file()
+        ):
+            return [path]
+        return []
+    unique: list[Path] = []
+    seen = set()
+    for path in dirs:
+        key = str(path.resolve(strict=False))
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def load_artifacts_for_final_validation(
+    out: Path,
+    publish_manifest_data: dict[str, object] | None,
+    artifact_names: list[str],
+) -> dict[str, object]:
+    artifacts: dict[str, object] = {}
+    retention_dirs = final_artifact_dirs(out, publish_manifest_data)
+    for name in artifact_names:
+        retained_candidates = [directory / f"{name}.yaml" for directory in retention_dirs]
+        candidates = retained_candidates if name == "output_retention" else [out / f"{name}.yaml"] + retained_candidates
+        for path in candidates:
+            if path.exists() and path.is_file():
+                artifacts[name] = load_data(path)
+                break
+    return artifacts
 
 
 def build(request_path: Path, out: Path) -> dict:
@@ -172,7 +224,7 @@ def build(request_path: Path, out: Path) -> dict:
         phase_state,
         "builder_runtime_audit",
         "completed",
-        inputs=["builder skill package files", "templates/build_request.yaml", "scripts/papert2skills.py"],
+        inputs=["builder skill package files", "templates/build_request.yaml", "scripts/paper2skills.py"],
         outputs=["builder_runtime_audit.yaml"],
         gates=["builder skill metadata present", "build request template complete", "CLI commands exposed"],
     )
@@ -231,7 +283,7 @@ def build(request_path: Path, out: Path) -> dict:
         outputs=["request_template_audit.yaml"],
         gates=["template covers normalized request fields", "template stays generic", "runtime required template fields cover request defaults"],
     )
-    requested_task_types = [slugify(str(item), "task") for item in request.get("requested_task_types", [])]
+    requested_task_types = [canonical_task_type(str(item), "task") for item in request.get("requested_task_types", [])]
     discovery_preflight = discovery(request, requested_task_types or ["general_algorithm_use"])
     record_phase(
         phase_state,
@@ -460,6 +512,14 @@ def build(request_path: Path, out: Path) -> dict:
     )
     parameter_catalog = build_parameter_catalog(request, interface_grounding)
     task_catalog = attach_parameter_constraints(task_catalog, parameter_catalog)
+    task_catalog = attach_operational_recipes(
+        task_catalog,
+        request,
+        tutorial_catalog,
+        api_grounding,
+        interface_grounding,
+        parameter_catalog,
+    )
     record_phase(
         phase_state,
         "parameter_catalog",
@@ -467,6 +527,33 @@ def build(request_path: Path, out: Path) -> dict:
         inputs=["interface_grounding.yaml", "task_catalog.yaml"],
         outputs=["parameter_catalog.yaml"],
         gates=["static signature parameters only", "biological semantics remain evidence-bounded"],
+    )
+    record_phase(
+        phase_state,
+        "operational_recipes",
+        "completed",
+        inputs=["task_catalog.yaml", "tutorial_catalog.yaml", "api_grounding.yaml", "interface_grounding.yaml", "parameter_catalog.yaml"],
+        outputs=["task_catalog.operational_recipe"],
+        gates=["task_type recipes include workflow steps", "source-grounded API sequence recorded when available", "abstract recipes are flagged for agent review"],
+    )
+    write_execution_trace_if_requested(request, out)
+    record_phase(
+        phase_state,
+        "optional_execution_grounding",
+        "completed" if request.get("execution_grounded") else "skipped",
+        inputs=["execution_traces from build request", "execution_replay_results from build request"],
+        outputs=["execution_trace.jsonl"] if request.get("execution_grounded") else [],
+        gates=["trace capture is explicit", "no package code is executed by this phase"],
+    )
+    execution_trace_validation = build_execution_trace_validation(request, task_catalog)
+    task_catalog = apply_validated_execution_status(task_catalog, execution_trace_validation, request)
+    record_phase(
+        phase_state,
+        "execution_trace_validation",
+        "completed",
+        inputs=["execution_traces from build request", "execution_replay_results from build request", "task_catalog.yaml"],
+        outputs=["execution_trace_validation.yaml"],
+        gates=["only successful supplied traces or replay results can mark execution_verified", "trace provenance fields validated"],
     )
     parsed_api_names = [
         str(candidate.get("symbol"))
@@ -528,12 +615,15 @@ def build(request_path: Path, out: Path) -> dict:
         "schema_version": source_grounding["schema_version"],
         "status": review_result["status"],
         "mode": review_result.get("mode"),
+        "review_loop_version": review_result.get("review_loop_version"),
         "agent_driven": review_result.get("agent_driven"),
         "final_score": review_result["final_score"],
         "final_findings": review_result["final_findings"],
         "iteration_count": len(review_result["iterations"]),
         "stop_reason": review_result.get("stop_reason"),
         "candidate_versions": review_result.get("candidate_versions", []),
+        "score_cache_count": len(review_result.get("score_cache") or {}),
+        "rejected_buffer_count": len(review_result.get("rejected_buffer") or []),
         "next_step": review_result.get("next_step"),
     }
     review_evolution = build_review_evolution(request, review_result)
@@ -631,7 +721,10 @@ def build(request_path: Path, out: Path) -> dict:
         "completed",
         inputs=["review_iterations.jsonl", "review_summary.yaml"],
         outputs=["review_cursor.yaml"],
-        gates=["review cursor is resumable or terminal", "iteration states include draft, critic, patch_plan, and gate"],
+        gates=[
+            "review cursor is resumable or terminal",
+            "iteration states include draft, record_score, rollout_plan, critic, patch_plan, and gate",
+        ],
     )
     record_phase(
         phase_state,
@@ -655,7 +748,7 @@ def build(request_path: Path, out: Path) -> dict:
         "completed",
         inputs=["review_iterations.jsonl", "review_summary.yaml"],
         outputs=["review_optimizer_state.yaml"],
-        gates=["iteration states are hashable", "strict improvement policy recorded", "rejected edit buffer recorded"],
+        gates=["iteration states are hashable", "strict improvement policy enforced and recorded", "rejected edit buffer recorded"],
     )
     record_phase(
         phase_state,
@@ -736,24 +829,6 @@ def build(request_path: Path, out: Path) -> dict:
         inputs=["reviewed task_catalog.yaml", "reviewed task_type_router.yaml", "task_conflict_matrix.yaml", "tutorial_catalog.yaml"],
         outputs=["task_partition_audit.yaml"],
         gates=["task_type entries are capabilities, not tutorial artifacts", "task contracts and routing cues are present", "ambiguous splits are surfaced"],
-    )
-    write_execution_trace_if_requested(request, out)
-    record_phase(
-        phase_state,
-        "optional_execution_grounding",
-        "completed" if request.get("execution_grounded") else "skipped",
-        inputs=["execution_traces from build request", "execution_replay_results from build request"],
-        outputs=["execution_trace.jsonl"] if request.get("execution_grounded") else [],
-        gates=["trace capture is explicit", "no package code is executed by this phase"],
-    )
-    execution_trace_validation = build_execution_trace_validation(request, task_catalog)
-    record_phase(
-        phase_state,
-        "execution_trace_validation",
-        "completed",
-        inputs=["execution_traces from build request", "execution_replay_results from build request", "task_catalog.yaml"],
-        outputs=["execution_trace_validation.yaml"],
-        gates=["only successful supplied traces or replay results can mark execution_verified", "trace provenance fields validated"],
     )
     evidence_precedence = build_evidence_precedence(
         request,
@@ -951,7 +1026,7 @@ def build(request_path: Path, out: Path) -> dict:
         "skill_draft",
         "completed",
         inputs=["task_catalog.yaml", "task_type_router.yaml", "source_grounding.yaml", "source_parse_report.yaml"],
-        outputs=[str(child_skill_dir)],
+        outputs=[public_child_skill_path(child_skill_dir)],
         gates=["scientific-agent-skills lightweight layout", "required references rendered"],
     )
     verification_claim_audit = build_verification_claim_audit(
@@ -1077,7 +1152,7 @@ def build(request_path: Path, out: Path) -> dict:
         phase_state,
         "lint",
         "completed",
-        inputs=[str(child_skill_dir)],
+        inputs=[public_child_skill_path(child_skill_dir)],
         outputs=["skill_lint_report.yaml"],
         gates=["required child-skill files present", "SKILL.md contains task_type guidance"],
     )
@@ -1085,7 +1160,7 @@ def build(request_path: Path, out: Path) -> dict:
         phase_state,
         "draft_readiness",
         "completed",
-        inputs=[str(child_skill_dir), "normalized build request"],
+        inputs=[public_child_skill_path(child_skill_dir), "normalized build request"],
         outputs=["draft_readiness.yaml"],
         gates=["no unresolved draft markers", "no default build-request URLs", "public child-skill markdown checked"],
     )
@@ -1443,7 +1518,7 @@ def build(request_path: Path, out: Path) -> dict:
         phase_state,
         "code_fence_audit",
         "completed",
-        inputs=[str(child_skill_dir), "api_grounding.yaml", "interface_grounding.yaml"],
+        inputs=[public_child_skill_path(child_skill_dir), "api_grounding.yaml", "interface_grounding.yaml"],
         outputs=["code_fence_audit.yaml"],
         gates=["no machine-local paths", "code fence API calls are grounded or warned"],
     )
@@ -1452,7 +1527,7 @@ def build(request_path: Path, out: Path) -> dict:
         phase_state,
         "public_safety_audit",
         "completed",
-        inputs=[str(child_skill_dir)],
+        inputs=[public_child_skill_path(child_skill_dir)],
         outputs=["public_safety_audit.yaml"],
         gates=["no credentials or private keys", "long excerpts flagged before release"],
     )
@@ -1936,7 +2011,10 @@ def build(request_path: Path, out: Path) -> dict:
         gates=["required install files exist", "no build artifacts inside public child skill", "release manifest covers required files"],
     )
     manifest = publish_manifest(request, child_skill_dir, lint_report, publish_gate, release_package, skill_update_plan)
+    retention_plan = planned_output_retention(request)
     manifest["run_manifest_path"] = "run_manifest.yaml"
+    manifest["output_retention_path"] = retention_plan["output_retention_path"]
+    manifest["generation_process_doc"] = retention_plan["generation_process_doc"]
     manifest["install_readiness_status"] = install_readiness.get("status")
     manifest["codex_publish_adapter_status"] = codex_publish_adapter.get("status")
     publish_manifest_audit = build_publish_manifest_audit(
@@ -2465,4 +2543,289 @@ def build(request_path: Path, out: Path) -> dict:
     write_text(out / "run_scorecard.md", run_scorecard_markdown)
     run_manifest = build_run_manifest(request, out, manifest)
     write_data(out / "run_manifest.yaml", run_manifest)
-    return manifest
+    output_retention = build_output_retention(
+        request,
+        out,
+        run_manifest,
+        task_catalog,
+        review_result,
+        publish_gate,
+    )
+    manifest["output_retention_status"] = output_retention.get("status")
+    record_phase(
+        phase_state,
+        "output_retention",
+        "completed",
+        inputs=["run_manifest.yaml", "publish_manifest.yaml", "root build artifacts"],
+        outputs=["output_retention.yaml"],
+        gates=["final child skill retained", "process artifacts retained or cleaned", "cleanup failures block publish"],
+    )
+    if output_retention.get("status") != "pass":
+        manifest["status"] = "blocked"
+        manifest.setdefault("blocking_findings", []).append(
+            {
+                "severity": "error",
+                "code": "output_retention_failed",
+                "message": "Output retention or cleanup failed; publish is blocked until retained artifact integrity is fixed.",
+            }
+        )
+    phase_state["phases"] = [phase for phase in phase_state.get("phases", []) if phase.get("name") != "artifact_validation"]
+    record_phase(
+        phase_state,
+        "artifact_validation",
+        "completed",
+        inputs=["required top-level artifacts", "post-cleanup retained artifacts", "run_manifest.yaml"],
+        outputs=["artifact_validation.yaml"],
+        gates=["schema versions match", "required final artifacts exist", "post-cleanup lifecycle artifact validates"],
+    )
+    phase_state_audit = build_phase_state_audit(request, phase_state, artifact_contracts)
+    publish_manifest_audit = build_publish_manifest_audit(
+        request,
+        manifest,
+        publish_gate,
+        release_package,
+        skill_update_plan,
+        install_readiness,
+        codex_publish_adapter,
+        final_candidate_audit,
+    )
+    write_data(out / "publish_manifest.yaml", manifest)
+    write_data(out / "publish_manifest_audit.yaml", publish_manifest_audit)
+    write_data(out / "phase_state.yaml", phase_state)
+    write_data(out / "phase_state_audit.yaml", phase_state_audit)
+    output_retention = refresh_retained_artifacts(
+        out,
+        output_retention,
+        ["publish_manifest.yaml", "publish_manifest_audit.yaml", "phase_state.yaml", "phase_state_audit.yaml"],
+    )
+    run_manifest = build_run_manifest(request, out, manifest)
+    write_data(out / "run_manifest.yaml", run_manifest)
+    final_artifacts = load_artifacts_for_final_validation(
+        out,
+        manifest,
+        FINAL_VALIDATION_ARTIFACTS,
+    )
+    artifact_validation = validate_artifact_bundle(final_artifacts, FINAL_VALIDATION_ARTIFACTS)
+    if artifact_validation.get("status") != "pass":
+        manifest["status"] = "blocked"
+        manifest.setdefault("blocking_findings", []).append(
+            {
+                "severity": "error",
+                "code": "final_artifact_validation_failed",
+                "message": "Final retained/root artifact validation failed; publish is blocked until required artifacts are consistent.",
+            }
+        )
+    publish_manifest_audit = build_publish_manifest_audit(
+        request,
+        manifest,
+        publish_gate,
+        release_package,
+        skill_update_plan,
+        install_readiness,
+        codex_publish_adapter,
+        final_candidate_audit,
+    )
+    release_action_audit = build_release_action_audit(
+        request,
+        skill_update_plan,
+        skill_update_audit,
+        publish_gate,
+        release_package,
+        candidate_promotion_audit,
+        final_candidate_audit,
+        install_readiness,
+        codex_publish_adapter,
+        manifest,
+        publish_manifest_audit,
+    )
+    score_report = build_score_report(
+        request,
+        review_evolution,
+        rubric_grounding_audit,
+        quality_report,
+        publish_gate,
+        candidate_selection_audit,
+        candidate_promotion_audit,
+        final_candidate_audit,
+        candidate_evolution_audit,
+        codex_publish_adapter,
+        install_readiness,
+        publish_manifest_audit,
+    )
+    completion_audit = build_completion_audit(
+        request,
+        phase_state,
+        builder_runtime_audit,
+        agent_metadata_audit,
+        public_origin_audit,
+        module_inventory_audit,
+        builder_baseline_audit,
+        skill_package_audit,
+        request_template_audit,
+        builder_version_audit,
+        request_audit,
+        request_fingerprint,
+        external_result_contracts,
+        phase_state_audit,
+        protocol_compliance_audit,
+        requirement_coverage,
+        completion_evidence_audit,
+        acceptance_handoff,
+        architecture_completeness_audit,
+        artifact_validation,
+        publish_gate,
+        quality_report,
+        score_report,
+        release_package,
+        install_readiness,
+        manifest,
+        publish_manifest_audit,
+        skill_update_plan,
+        skill_update_audit,
+        discovery_match_audit,
+        discovery_resolution_audit,
+        review_optimizer_state,
+        patch_safety_audit,
+        patch_operation_contracts,
+        candidate_selection_audit,
+        candidate_promotion_audit,
+        final_candidate_audit,
+        candidate_evolution_audit,
+        artifact_closure_audit,
+        source_fetch_boundary_audit,
+        source_ingestion_audit,
+        source_grounding_audit,
+        key_api_coverage_audit,
+        verification_claim_audit,
+        execution_replay_orchestrator,
+        backend_extension_audit,
+        resource_boundary_audit,
+        evidence_claim_taxonomy_audit,
+        child_metadata_audit,
+        child_package_purity_audit,
+        biological_claim_boundary_audit,
+        review_prompt_contracts,
+        review_prompt_materials,
+        review_prompt_suite_audit,
+        review_iteration_log,
+        review_remediation_audit,
+        review_trajectory_audit,
+        agent_rollout_harness,
+        agent_rollout_audit,
+        eval_leakage_audit,
+        agent_rollout_result_judge,
+        e2e_acceptance,
+        smoke_test_plan,
+        routing_metadata_audit,
+        codex_publish_adapter,
+        release_action_audit,
+    )
+    build_timeline_report = build_timeline(request, phase_state, review_result, publish_gate, quality_report)
+    build_timeline_audit_report = build_timeline_audit(
+        request,
+        build_timeline_report,
+        phase_state,
+        review_result,
+        publish_gate,
+        quality_report,
+    )
+    run_scorecard = build_run_scorecard(
+        request,
+        score_report,
+        quality_report,
+        completion_audit,
+        release_action_audit,
+        manifest,
+        build_timeline_report,
+        build_timeline_audit_report,
+    )
+    run_scorecard_markdown = render_run_scorecard_markdown(
+        run_scorecard,
+        score_report,
+        quality_report,
+        completion_audit,
+        release_action_audit,
+        build_timeline_report,
+        build_timeline_audit_report,
+    )
+    write_data(out / "artifact_validation.yaml", artifact_validation)
+    write_data(out / "publish_manifest.yaml", manifest)
+    write_data(out / "publish_manifest_audit.yaml", publish_manifest_audit)
+    write_data(out / "release_action_audit.yaml", release_action_audit)
+    write_data(out / "score_report.yaml", score_report)
+    write_data(out / "completion_audit.yaml", completion_audit)
+    write_data(out / "build_timeline.yaml", build_timeline_report)
+    write_data(out / "build_timeline_audit.yaml", build_timeline_audit_report)
+    write_data(out / "run_scorecard.yaml", run_scorecard)
+    write_text(out / "run_scorecard.md", run_scorecard_markdown)
+    output_retention = refresh_retained_artifacts(
+        out,
+        output_retention,
+        [
+            "publish_manifest.yaml",
+            "publish_manifest_audit.yaml",
+            "release_action_audit.yaml",
+            "score_report.yaml",
+            "completion_audit.yaml",
+            "build_timeline.yaml",
+            "build_timeline_audit.yaml",
+            "run_scorecard.yaml",
+            "run_scorecard.md",
+            "phase_state.yaml",
+            "phase_state_audit.yaml",
+        ],
+    )
+    output_retention = refresh_generation_process_doc(
+        request,
+        out,
+        task_catalog,
+        review_result,
+        publish_gate,
+        output_retention,
+    )
+    run_manifest = build_run_manifest(request, out, manifest)
+    write_data(out / "run_manifest.yaml", run_manifest)
+    final_artifacts = load_artifacts_for_final_validation(
+        out,
+        manifest,
+        FINAL_VALIDATION_ARTIFACTS,
+    )
+    artifact_validation = validate_artifact_bundle(final_artifacts, FINAL_VALIDATION_ARTIFACTS)
+    if artifact_validation.get("status") != "pass":
+        manifest["status"] = "blocked"
+        manifest.setdefault("blocking_findings", []).append(
+            {
+                "severity": "error",
+                "code": "final_artifact_validation_failed",
+                "message": "Final retained/root artifact validation failed; publish is blocked until required artifacts are consistent.",
+            }
+        )
+        write_data(out / "publish_manifest.yaml", manifest)
+        publish_manifest_audit = build_publish_manifest_audit(
+            request,
+            manifest,
+            publish_gate,
+            release_package,
+            skill_update_plan,
+            install_readiness,
+            codex_publish_adapter,
+            final_candidate_audit,
+        )
+        write_data(out / "publish_manifest_audit.yaml", publish_manifest_audit)
+        output_retention = refresh_retained_artifacts(
+            out,
+            output_retention,
+            ["publish_manifest.yaml", "publish_manifest_audit.yaml"],
+        )
+        run_manifest = build_run_manifest(request, out, manifest)
+        write_data(out / "run_manifest.yaml", run_manifest)
+        final_artifacts = load_artifacts_for_final_validation(
+            out,
+            manifest,
+            FINAL_VALIDATION_ARTIFACTS,
+        )
+        artifact_validation = validate_artifact_bundle(final_artifacts, FINAL_VALIDATION_ARTIFACTS)
+    write_data(out / "artifact_validation.yaml", artifact_validation)
+    result_manifest = dict(manifest)
+    result_manifest["output_retention"] = output_retention
+    return result_manifest

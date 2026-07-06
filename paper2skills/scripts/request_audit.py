@@ -21,7 +21,7 @@ LIST_FIELDS = {
     "execution_replay_results",
     "eval_results",
     "agent_rollout_results",
-    "agent_skillopt_proposals",
+    "agent_review_proposals",
     "smoke_test_results",
     "e2e_acceptance_results",
 }
@@ -58,7 +58,7 @@ def build_request_audit(request: dict[str, Any]) -> dict[str, Any]:
     if not request.get("repo_url"):
         add_finding(findings, "error", "missing_repo_url", "Build request needs repo_url for source/API grounding.", "repo_url")
     if request.get("target_agent") != "codex":
-        add_finding(findings, "error", "target_agent_not_codex", "Papert2Skills currently targets Codex child skills.", "target_agent")
+        add_finding(findings, "error", "target_agent_not_codex", "paper2skills currently targets Codex child skills.", "target_agent")
 
     source_support_fields = ["tutorial_links", "doc_links", "paper_links", "source_material_paths"]
     has_supporting_sources = any(is_non_empty_list(request.get(field)) for field in source_support_fields)

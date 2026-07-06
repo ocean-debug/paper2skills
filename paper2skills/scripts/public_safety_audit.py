@@ -8,6 +8,7 @@ from typing import Any
 
 from common import now_utc, read_text
 from constants import SCHEMA_VERSION
+from public_origin_audit import ALWAYS_FORBIDDEN_PATTERNS, GENERIC_FORBIDDEN_REGEXES, is_safe_placeholder
 
 
 SECRET_PATTERNS = [
@@ -41,6 +42,35 @@ def add_finding(
     findings.append(item)
 
 
+def private_marker_findings(text: str, rel: str, findings: list[dict[str, Any]]) -> None:
+    forbidden_patterns = [
+        (code, "".join(parts).lower())
+        for code, parts in ALWAYS_FORBIDDEN_PATTERNS
+    ]
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        lowered = line.lower()
+        for code, pattern in forbidden_patterns:
+            if pattern in lowered:
+                add_finding(
+                    findings,
+                    "error",
+                    code,
+                    rel,
+                    "Generated child skill contains a private origin marker, legacy label, or machine-specific execution detail.",
+                    line=line_number,
+                )
+        for code, regex in GENERIC_FORBIDDEN_REGEXES:
+            if regex.search(line) and not is_safe_placeholder(code, line):
+                add_finding(
+                    findings,
+                    "error",
+                    code,
+                    rel,
+                    "Generated child skill contains a local path, host, runtime environment, node label, or private network detail.",
+                    line=line_number,
+                )
+
+
 def audit_public_child_skill(skill_dir: Path) -> dict[str, Any]:
     """Return a conservative public-release safety audit for child-skill markdown."""
     findings: list[dict[str, Any]] = []
@@ -58,10 +88,11 @@ def audit_public_child_skill(skill_dir: Path) -> dict[str, Any]:
     for path in files:
         text = read_text(path)
         rel = str(path.relative_to(skill_dir))
+        private_marker_findings(text, rel, findings)
         if len(text) > MAX_MARKDOWN_CHARS:
             add_finding(
                 findings,
-                "warning",
+                "error",
                 "large_markdown_file",
                 rel,
                 "Markdown file is large enough to risk bundling excessive source excerpts.",
@@ -80,10 +111,10 @@ def audit_public_child_skill(skill_dir: Path) -> dict[str, Any]:
         if EMAIL_RE.search(text):
             add_finding(
                 findings,
-                "warning",
+                "error",
                 "email_address_present",
                 rel,
-                "Generated child skill contains an email address; confirm it is a public project contact and not personal data.",
+                "Generated child skill contains an email address; remove it or replace it with a public project URL before publish.",
             )
         for index, match in enumerate(CODE_FENCE_RE.finditer(text), start=1):
             fence = match.group(2)
@@ -91,7 +122,7 @@ def audit_public_child_skill(skill_dir: Path) -> dict[str, Any]:
             if line_count > MAX_CODE_FENCE_LINES or len(fence) > MAX_CODE_FENCE_CHARS:
                 add_finding(
                     findings,
-                    "warning",
+                    "error",
                     "long_code_fence",
                     rel,
                     "Code fence is long enough to risk copying excessive source or tutorial content into the public skill.",
@@ -109,5 +140,5 @@ def audit_public_child_skill(skill_dir: Path) -> dict[str, Any]:
         "status": "fail" if has_errors else "pass",
         "checked_file_count": len(files),
         "findings": findings,
-        "policy": "Public child skills must not contain credentials, private keys, long copied excerpts, or personal contact data without review.",
+        "policy": "Public child skills must not contain credentials, private keys, long copied excerpts, personal contact data, private paths, private hosts, runtime environment labels, or legacy/reference-source markers.",
     }

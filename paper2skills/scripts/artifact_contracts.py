@@ -12,9 +12,9 @@ from constants import SCHEMA_VERSION
 ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
     "request": {
         "description": "Normalized build request reused by follow-up audits and handoff commands.",
-        "required_fields": ["schema_version", "repo_url", "target_agent", "language_backend", "output_dir", "execution_grounded", "execution_environment", "fetch_sources", "max_fetch_bytes", "max_index_files", "max_index_bytes", "review_iterations", "review_min_score_ratio", "require_smoke_test"],
+        "required_fields": ["schema_version", "repo_url", "target_agent", "language_backend", "output_dir", "execution_grounded", "execution_environment", "fetch_sources", "reuse_fetched_sources", "source_cache_dir", "cleanup_process_files", "retained_process_artifacts_dir", "generation_process_doc", "max_fetch_bytes", "max_index_files", "max_index_bytes", "review_iterations", "review_min_score_ratio", "require_smoke_test"],
         "dict_fields": ["execution_environment"],
-        "list_fields": ["tutorial_links", "doc_links", "paper_links", "paper_dois", "api_names", "source_material_paths", "existing_skills_dirs", "requested_task_types", "execution_traces", "execution_replay_results", "eval_results", "agent_rollout_results", "agent_skillopt_proposals", "smoke_test_results", "e2e_acceptance_results"],
+        "list_fields": ["tutorial_links", "doc_links", "paper_links", "paper_dois", "api_names", "source_material_paths", "existing_skills_dirs", "requested_task_types", "execution_traces", "execution_replay_results", "eval_results", "agent_rollout_results", "agent_review_proposals", "smoke_test_results", "e2e_acceptance_results"],
     },
     "request_audit": {
         "description": "Normalized build request contract, source-support, and execution-boundary audit.",
@@ -124,8 +124,8 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "source_fetch_boundary_audit": {
         "description": "Audit of source fetch opt-in, run-directory, and archive extraction boundaries.",
-        "required_fields": ["schema_version", "status", "fetch_enabled", "max_fetch_bytes", "output_dir", "allowed_sources_root", "source_count", "path_record_count", "path_records", "findings", "policy"],
-        "list_fields": ["path_records", "findings", "policy"],
+        "required_fields": ["schema_version", "status", "fetch_enabled", "max_fetch_bytes", "output_dir", "allowed_sources_root", "allowed_cache_root", "source_count", "path_record_count", "cache_path_record_count", "path_records", "cache_path_records", "findings", "policy"],
+        "list_fields": ["path_records", "cache_path_records", "findings", "policy"],
     },
     "source_index": {
         "description": "Compact static source-file index.",
@@ -383,12 +383,12 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "required_fields": ["schema_version", "builder_version", "child_skill", "backend"],
     },
     "review_summary": {
-        "description": "Agent-driven self-review loop final status, findings, cursor, and candidate versions.",
+        "description": "Agent-driven paper2skills review loop final status, findings, cursor, and candidate versions.",
         "required_fields": ["schema_version", "status", "mode", "agent_driven", "final_score", "final_findings", "iteration_count", "stop_reason", "candidate_versions"],
         "list_fields": ["final_findings", "candidate_versions"],
     },
     "review_evolution": {
-        "description": "Self-review score, patch, and gate trajectory summary.",
+        "description": "paper2skills review loop score, patch, and gate trajectory summary.",
         "required_fields": ["schema_version", "status", "iteration_count", "iterations", "final_score"],
         "dict_fields": ["final_score"],
         "list_fields": ["iterations"],
@@ -406,7 +406,7 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "list_fields": ["iterations", "findings", "policy"],
     },
     "review_prompt_contracts": {
-        "description": "Static prompt/state contracts for the SkillOpt-style review loop.",
+        "description": "Static prompt/state contracts for the paper2skills review loop.",
         "required_fields": ["schema_version", "status", "review_status", "contract_count", "required_every_iteration", "contracts", "iteration_count", "findings", "policy"],
         "list_fields": ["required_every_iteration", "contracts", "findings", "policy"],
     },
@@ -476,8 +476,8 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "list_fields": ["findings"],
     },
     "child_metadata_audit": {
-        "description": "Audit of generated child-skill frontmatter, Codex trigger description, and one-skill metadata shape.",
-        "required_fields": ["schema_version", "status", "frontmatter", "task_types", "top_level_dirs", "nested_skill_files", "findings", "policy"],
+        "description": "Audit of generated child-skill frontmatter, task DAGs, Codex trigger description, and one-skill metadata shape.",
+        "required_fields": ["schema_version", "status", "frontmatter", "task_types", "task_type_dag_count", "top_level_dirs", "nested_skill_files", "findings", "policy"],
         "dict_fields": ["frontmatter"],
         "list_fields": ["task_types", "top_level_dirs", "nested_skill_files", "findings", "policy"],
     },
@@ -548,7 +548,7 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
         "list_fields": ["checked_invariants", "findings"],
     },
     "requirement_coverage": {
-        "description": "Requirement-to-artifact coverage matrix for core Papert2Skills requirements.",
+        "description": "Requirement-to-artifact coverage matrix for core paper2skills requirements.",
         "required_fields": ["schema_version", "status", "requirement_count", "covered_count", "requirements", "findings", "policy"],
         "list_fields": ["requirements", "findings"],
     },
@@ -646,12 +646,17 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "publish_manifest": {
         "description": "Top-level publish manifest.",
-        "required_fields": ["schema_version", "builder_version", "status", "child_skill_path", "publish_gate_status", "recommended_action", "discovery_decision", "release_recommended_action", "skill_update_recommended_action", "install_readiness_status", "codex_publish_adapter_status"],
+        "required_fields": ["schema_version", "builder_version", "status", "child_skill_path", "publish_gate_status", "recommended_action", "discovery_decision", "release_recommended_action", "skill_update_recommended_action", "install_readiness_status", "codex_publish_adapter_status", "run_manifest_path", "output_retention_path", "generation_process_doc"],
     },
     "publish_manifest_audit": {
         "description": "Final consistency audit for publish manifest, release action, and install readiness status.",
-        "required_fields": ["schema_version", "status", "publish_status", "publish_gate_status", "install_readiness_status", "codex_publish_adapter_status", "final_candidate_audit_status", "skill_update_recommended_action", "release_recommended_action", "manifest_recommended_action", "manifest_release_recommended_action", "manifest_skill_update_recommended_action", "findings", "policy"],
+        "required_fields": ["schema_version", "status", "publish_status", "publish_gate_status", "install_readiness_status", "codex_publish_adapter_status", "final_candidate_audit_status", "skill_update_recommended_action", "release_recommended_action", "manifest_recommended_action", "manifest_release_recommended_action", "manifest_skill_update_recommended_action", "run_manifest_path", "output_retention_path", "output_retention_status", "generation_process_doc", "findings", "policy"],
         "list_fields": ["findings", "policy"],
+    },
+    "output_retention": {
+        "description": "Post-build retention and cleanup lifecycle artifact stored under the retained process artifacts directory.",
+        "required_fields": ["schema_version", "created_at", "status", "cleanup_enabled", "output_dir", "final_child_skill_path", "retention_dir", "generation_process_doc", "retained_iteration_artifact_count", "deleted_process_artifact_count", "cleanup_failure_count", "retained_iteration_artifacts", "deleted_process_artifacts", "cleanup_failures", "policy"],
+        "list_fields": ["retained_iteration_artifacts", "deleted_process_artifacts", "cleanup_failures", "policy"],
     },
     "completion_audit": {
         "description": "Final run-level semantic completion verdict.",
@@ -676,7 +681,7 @@ ARTIFACT_CONTRACTS: dict[str, dict[str, Any]] = {
     },
     "run_manifest": {
         "description": "Generated-file manifest with hashes.",
-        "required_fields": ["schema_version", "builder_version", "created_at", "package_name", "method_name", "output_dir", "publish_status", "publish_manifest_path", "artifact_count", "child_skill_file_count", "file_count", "files", "policy"],
+        "required_fields": ["schema_version", "builder_version", "created_at", "package_name", "method_name", "output_dir", "publish_status", "publish_manifest_path", "artifact_count", "child_skill_file_count", "retained_process_artifact_count", "file_count", "files", "policy"],
         "list_fields": ["files", "policy"],
     },
 }
