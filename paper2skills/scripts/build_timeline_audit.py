@@ -28,16 +28,6 @@ def event_ids(events: list[dict[str, Any]]) -> list[str]:
     return [str(event.get("event_id") or "") for event in events]
 
 
-def timeline_phase_scope(phase_state: dict[str, Any]) -> list[dict[str, Any]]:
-    phases = list(phase_state.get("phases", []))
-    scoped: list[dict[str, Any]] = []
-    for phase in phases:
-        scoped.append(phase)
-        if phase.get("name") == "build_timeline":
-            return scoped
-    return phases
-
-
 def build_timeline_audit(
     request: dict[str, Any],
     build_timeline: dict[str, Any],
@@ -71,8 +61,7 @@ def build_timeline_audit(
     for event_id in duplicate_ids:
         add_finding(findings, "error", "timeline_duplicate_event_id", "Timeline event_id must be unique.", event_id)
 
-    phase_scope = timeline_phase_scope(phase_state)
-    expected_phase_count = len(phase_scope)
+    expected_phase_count = len(phase_state.get("phases", []))
     if len(phase_events) != expected_phase_count:
         add_finding(findings, "error", "timeline_phase_count_mismatch", "Timeline phase event count must match phase_state phase count.")
     expected_review_count = len(review_result.get("iterations", []))
@@ -101,7 +90,7 @@ def build_timeline_audit(
         "declared_event_count": build_timeline.get("event_count"),
         "phase_event_count": len(phase_events),
         "expected_phase_event_count": expected_phase_count,
-        "phase_scope": "through_build_timeline_phase",
+        "phase_scope": "full_phase_state",
         "review_event_count": len(review_events),
         "expected_review_event_count": expected_review_count,
         "gate_event_ids": sorted(gate_ids),
