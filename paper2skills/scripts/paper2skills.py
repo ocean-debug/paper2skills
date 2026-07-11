@@ -1,734 +1,346 @@
 #!/usr/bin/env python3
-"""paper2skills command-line entrypoint.
-
-The CLI is intentionally thin. Engineering logic lives in stage modules next to
-this file: builder runtime auditing, agent metadata auditing, request auditing, discovery, discovery audit, discovery resolution auditing, source grounding, source indexing, API/interface
-grounding, source fetch boundary auditing, key API coverage auditing, source parsing coverage, source parsing audit, evidence coverage, evidence precedence, evidence claim taxonomy auditing, backend contracts, backend extension auditing, resource inventory, resource boundary auditing, task partitioning, task partition decision logging, task partition auditing, routing, eval planning,
-execution planning, environment install planning, tutorial reproduction planning, contract traceability, lineage graphing, acceptance suite generation, eval splitting, external result contract auditing, result judging, drafting, agent-driven paper2skills review loop,
-execution trace handling, execution trace validation, verification claim auditing, routing fixtures, routing metadata audits, child metadata auditing, linting, draft readiness, skill update planning, agent rollout harness planning, claim consistency audits, source grounding audits, workflow invariant audits, grounding gates,
-review evolution, eval leakage auditing, requirement coverage, artifact contracts, artifact validation,
-completion evidence auditing, acceptance handoff packaging, review prompt contract auditing, review prompt suite auditing, discovery match auditing, review iteration-log rendering, review cursor tracking, patch application auditing, review optimizer-state tracking, patch safety auditing, patch operation contract auditing, forward-test planning, code-fence audits, public safety audits, candidate selection auditing, candidate promotion auditing, candidate evolution auditing, quality reporting, score reporting, candidate registry, publish gating, final completion auditing, run scorecard rendering, run manifest generation, output retention,
-install readiness, publish manifest auditing, builder skill package auditing, module inventory auditing, timeline reporting, and build orchestration.
-"""
+"""Paper2Skills MVP command-line entrypoint."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
-from agent_metadata_audit import build_agent_metadata_audit
-from agent_rollout_result_judge import build_agent_rollout_result_judge
-from acceptance_handoff import build_acceptance_handoff, render_acceptance_handoff_markdown
-from artifact_validator import POST_CLEANUP_ARTIFACTS, REQUIRED_TOP_LEVEL_ARTIFACTS, validate_artifact_bundle
-from build_pipeline import build
-from build_timeline_audit import build_timeline_audit
-from biological_claim_boundary_audit import build_biological_claim_boundary_audit
-from builder_baseline_audit import build_builder_baseline_audit
-from child_package_purity_audit import build_child_package_purity_audit
-from code_fence_audit import audit_child_skill_code_fences
-from common import BuildError, load_data, write_data, write_text
-from completion_audit import build_completion_audit
-from completion_evidence_audit import build_completion_evidence_audit
-from discovery_resolution_audit import build_discovery_resolution_audit
-from e2e_acceptance import build_e2e_acceptance
-from evidence_claim_taxonomy_audit import build_evidence_claim_taxonomy_audit
-from eval_leakage_audit import build_eval_leakage_audit
-from external_result_contracts import build_external_result_contracts
-from execution_replay_orchestrator import build_execution_replay_orchestrator
-from forward_test_plan import validate_forward_test_plan
-from key_api_coverage_audit import build_key_api_coverage_audit
-from lint_skill import lint_child_skill
-from module_inventory_audit import audit_module_inventory
-from public_origin_audit import build_public_origin_audit
-from public_safety_audit import audit_public_child_skill
-from protocol_compliance_audit import build_protocol_compliance_audit
-from run_manifest import verify_run_manifest
-from skill_package_audit import audit_skill_package
-from smoke_test_plan import build_smoke_test_plan
-from source_fetch_boundary_audit import audit_source_fetch_boundaries
+from common import (
+    REQUEST_SCHEMA,
+    SKILLIR_SCHEMA,
+    STATE_SCHEMA,
+    Paper2SkillsError,
+    append_event,
+    as_list,
+    dump_yaml,
+    ensure_within,
+    load_yaml,
+    require_schema,
+    resolve_run_dir,
+    slugify,
+    timestamp,
+)
+from patching import apply_proposal
+from rendering import render_child
+from source_grounding import collect_grounding
+from validation import validate_run
 
 
-def is_within(path: Path, root: Path) -> bool:
+VERSION = "1.0.0"
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _request_errors(request: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if request.get("schema_version") != REQUEST_SCHEMA:
+        errors.append(f"schema_version must be {REQUEST_SCHEMA}")
+    for field in ("package_name", "display_name", "output_dir"):
+        if not str(request.get(field) or "").strip():
+            errors.append(f"missing {field}")
+    if not str(request.get("repo_url") or "").strip() and not as_list(
+        request.get("source_paths")
+    ):
+        errors.append("provide repo_url or source_paths")
+    if str(request.get("language_backend") or "python") != "python":
+        errors.append("MVP supports language_backend: python only")
+    if str(request.get("target_agent") or "codex") != "codex":
+        errors.append("MVP supports target_agent: codex only")
+    return errors
+
+
+def _initial_spec(request: dict[str, Any]) -> dict[str, Any]:
+    package_name = slugify(str(request["package_name"]))
+    display_name = str(request.get("display_name") or package_name)
+    return {
+        "schema_version": SKILLIR_SCHEMA,
+        "package": {
+            "name": package_name,
+            "display_name": display_name,
+            "description": (
+                f"Use {display_name} for its evidence-grounded bioinformatics "
+                "analysis tasks, including task selection, input refusal, "
+                "execution guidance, output validation, and reuse."
+            ),
+            "source_revision": str(
+                request.get("source_revision") or "unresolved"
+            ),
+        },
+        "shared_environment": [
+            "Python environment requirements are not yet confirmed in official evidence."
+        ],
+        "package_boundaries": [
+            "Refuse tasks outside capabilities confirmed by official package evidence."
+        ],
+        "shared_troubleshooting": [
+            "No shared runtime issue has been confirmed by execution evidence."
+        ],
+        "task_types": {},
+        "routing": {
+            "aliases": {},
+            "ambiguity_rules": [],
+            "disjoint_task_reason": None,
+            "unsupported_cases": [
+                "Refuse requests outside grounded package capabilities."
+            ],
+        },
+    }
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    request_path = Path(args.request).expanduser().resolve()
+    request = load_yaml(request_path)
+    errors = _request_errors(request)
+    if errors:
+        raise Paper2SkillsError("Invalid build request: " + "; ".join(errors))
+
+    if args.out:
+        run_dir = resolve_run_dir(args.out)
+    else:
+        requested_output = Path(str(request.get("output_dir"))).expanduser()
+        run_dir = (
+            requested_output.resolve()
+            if requested_output.is_absolute()
+            else (request_path.parent / requested_output).resolve()
+        )
+    if run_dir.exists() and any(run_dir.iterdir()):
+        raise Paper2SkillsError(
+            f"Run directory is not empty: {run_dir}. Choose a new run directory."
+        )
     try:
-        path.resolve(strict=False).relative_to(root.resolve(strict=False))
-        return True
+        run_dir.relative_to(SKILL_ROOT)
     except ValueError:
-        return False
+        pass
+    else:
+        raise Paper2SkillsError(
+            f"Run output must stay outside the installed skill directory: {SKILL_ROOT}"
+        )
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    normalized = dict(request)
+    normalized["package_name"] = slugify(str(request["package_name"]))
+    normalized["output_dir"] = str(run_dir)
+    normalized.setdefault("source_revision", "unresolved")
+    normalized.setdefault("source_paths", [])
+    normalized.setdefault("tutorial_paths", [])
+    normalized.setdefault("tutorial_urls", [])
+    normalized.setdefault("documentation_urls", [])
+    normalized.setdefault("paper_urls", [])
+    normalized.setdefault("key_apis", [])
+    normalized.setdefault("target_agent", "codex")
+    normalized.setdefault("language_backend", "python")
+    normalized.setdefault("max_files", 500)
+    normalized.setdefault("max_file_bytes", 250_000)
+    for path_field in ("source_paths", "tutorial_paths"):
+        normalized[path_field] = [
+            str(
+                candidate.resolve()
+                if candidate.is_absolute()
+                else (request_path.parent / candidate).resolve()
+            )
+            for item in as_list(normalized.get(path_field))
+            for candidate in [Path(str(item)).expanduser()]
+        ]
+
+    dump_yaml(run_dir / "request.yaml", normalized)
+    dump_yaml(run_dir / "skill_spec.yaml", _initial_spec(normalized))
+    dump_yaml(
+        run_dir / "evidence.yaml",
+        {"schema_version": "paper2skills.evidence.v1", "evidence": []},
+    )
+    dump_yaml(
+        run_dir / "state.yaml",
+        {
+            "schema_version": STATE_SCHEMA,
+            "builder_version": VERSION,
+            "status": "initialized",
+            "next_action": "ground",
+            "created_at": timestamp(),
+            "package_name": normalized["package_name"],
+        },
+    )
+    append_event(run_dir, "initialized", request=str(request_path))
+    print(run_dir)
+    return 0
 
 
-def retained_artifact_dirs(run_dir: Path) -> tuple[list[Path], list[dict[str, Any]]]:
-    dirs: list[Path] = []
-    findings: list[dict[str, Any]] = []
-    manifest_path = run_dir / "publish_manifest.yaml"
-    if manifest_path.exists():
-        manifest = load_data(manifest_path)
-        retention_path = str(manifest.get("output_retention_path") or "")
-        if not retention_path:
-            findings.append(
-                {
-                    "severity": "error",
-                    "code": "missing_output_retention_path",
-                    "message": "publish_manifest.output_retention_path is required before retained artifacts can be loaded.",
-                    "artifact": "publish_manifest",
-                }
-            )
-            return [], findings
-        retention_file = (run_dir / retention_path).resolve(strict=False)
-        retention_dir = retention_file.parent if retention_file.suffix else retention_file
-        marker = retention_file if retention_file.suffix else retention_dir / "output_retention.yaml"
-        if not retention_file.suffix:
-            findings.append(
-                {
-                    "severity": "error",
-                    "code": "retention_path_not_marker_file",
-                    "message": "publish_manifest.output_retention_path must point directly to a retention directory output_retention.yaml file.",
-                    "artifact": "publish_manifest",
-                }
-            )
-        elif retention_file.suffix and retention_file.name != "output_retention.yaml":
-            findings.append(
-                {
-                    "severity": "error",
-                    "code": "retention_marker_not_output_retention",
-                    "message": "publish_manifest.output_retention_path must point to output_retention.yaml inside a retention directory.",
-                    "artifact": "publish_manifest",
-                }
-            )
-        elif retention_file.suffix and retention_file.parent.resolve(strict=False) == run_dir.resolve(strict=False):
-            findings.append(
-                {
-                    "severity": "error",
-                    "code": "retention_marker_at_run_root",
-                    "message": "publish_manifest.output_retention_path must not point at a root-level file.",
-                    "artifact": "publish_manifest",
-                }
-            )
-        elif not is_within(marker, run_dir):
-            findings.append(
-                {
-                    "severity": "error",
-                    "code": "retention_path_outside_run_dir",
-                    "message": "publish_manifest.output_retention_path must resolve inside the run directory.",
-                    "artifact": "publish_manifest",
-                }
-            )
-        elif not marker.exists() or not marker.is_file():
-            findings.append(
-                {
-                    "severity": "error",
-                    "code": "retention_marker_missing",
-                    "message": "publish_manifest.output_retention_path must point to an existing output_retention.yaml file.",
-                    "artifact": "publish_manifest",
-                }
-            )
-        else:
-            return [retention_dir], findings
-        return [], findings
-    unique: list[Path] = []
-    seen = set()
-    for path in dirs:
-        key = str(path.resolve(strict=False))
-        if key not in seen:
-            seen.add(key)
-            unique.append(path)
-    return unique, findings
+def cmd_ground(args: argparse.Namespace) -> int:
+    run_dir = _existing_run(args.run)
+    report = collect_grounding(run_dir)
+    state = load_yaml(run_dir / "state.yaml")
+    state.update(
+        {
+            "status": "grounded",
+            "next_action": "agent_contract_synthesis",
+            "grounded_at": timestamp(),
+            "evidence_count": len(report.get("evidence", [])),
+        }
+    )
+    dump_yaml(run_dir / "state.yaml", state)
+    append_event(
+        run_dir,
+        "grounded",
+        evidence_count=len(report.get("evidence", [])),
+        indexed_file_count=len(report.get("indexed_files", [])),
+    )
+    print(run_dir / "agent_packet.md")
+    return 0
 
 
-def load_run_artifacts(run_dir: Path, artifact_names: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    artifacts: dict[str, Any] = {}
-    retention_dirs, findings = retained_artifact_dirs(run_dir)
-    for name in artifact_names:
-        retained_candidates = [directory / f"{name}.yaml" for directory in retention_dirs]
-        candidates = retained_candidates if name == "output_retention" else [run_dir / f"{name}.yaml"] + retained_candidates
-        for path in candidates:
-            if path.exists() and is_within(path, run_dir):
-                artifacts[name] = load_data(path)
-                break
-    return artifacts, findings
+def cmd_render(args: argparse.Namespace) -> int:
+    run_dir = _existing_run(args.run)
+    child = render_child(run_dir)
+    state = load_yaml(run_dir / "state.yaml")
+    state.update(
+        {
+            "status": "rendered",
+            "next_action": "validate",
+            "rendered_at": timestamp(),
+            "child_skill": str(child),
+        }
+    )
+    dump_yaml(run_dir / "state.yaml", state)
+    append_event(run_dir, "rendered", child_skill=str(child))
+    print(child)
+    return 0
 
 
-def merge_validation_findings(report: dict[str, Any], extra_findings: list[dict[str, Any]]) -> dict[str, Any]:
-    if extra_findings:
-        report.setdefault("findings", []).extend(extra_findings)
-    has_errors = any(finding.get("severity") == "error" for finding in report.get("findings", []))
-    report["status"] = "fail" if has_errors else "pass"
-    return report
+def cmd_validate(args: argparse.Namespace) -> int:
+    run_dir = _existing_run(args.run)
+    report = validate_run(run_dir)
+    state = load_yaml(run_dir / "state.yaml")
+    state.update(
+        {
+            "status": "validated" if report["status"] == "pass" else "blocked",
+            "next_action": "publish" if report["status"] == "pass" else "revise",
+            "validated_at": timestamp(),
+            "validation_status": report["status"],
+        }
+    )
+    dump_yaml(run_dir / "state.yaml", state)
+    append_event(run_dir, "validated", status=report["status"], blockers=report["blockers"])
+    print(json.dumps(report, indent=2, ensure_ascii=False))
+    return 0 if report["status"] == "pass" else 2
+
+
+def cmd_apply_patch(args: argparse.Namespace) -> int:
+    run_dir = _existing_run(args.run)
+    result = apply_proposal(run_dir, Path(args.proposal).expanduser().resolve())
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["status"] == "applied" else 2
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    run_dir = _existing_run(args.run)
+    report = validate_run(run_dir)
+    if report["status"] != "pass":
+        raise Paper2SkillsError(
+            "Publish blocked: " + "; ".join(report.get("blockers", []))
+        )
+    spec = load_yaml(run_dir / "skill_spec.yaml")
+    package_name = slugify(str(spec["package"]["name"]))
+    child = ensure_within(
+        run_dir, run_dir / "child_skill" / package_name, "child skill"
+    )
+    published_root = ensure_within(run_dir, run_dir / "published", "published root")
+    target = ensure_within(
+        published_root, published_root / package_name, "published skill"
+    )
+    if target.exists():
+        shutil.rmtree(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(child, target)
+    manifest = {
+        "schema_version": "paper2skills.publish.v1",
+        "builder_version": VERSION,
+        "package_name": package_name,
+        "source_revision": spec["package"].get("source_revision"),
+        "task_types": sorted((spec.get("task_types") or {}).keys()),
+        "published_skill": str(target),
+        "published_at": timestamp(),
+        "validation_status": report["status"],
+        "installation_performed": False,
+    }
+    dump_yaml(run_dir / "publish_manifest.yaml", manifest)
+    state = load_yaml(run_dir / "state.yaml")
+    state.update(
+        {
+            "status": "published",
+            "next_action": "optional_execution_or_user_install",
+            "published_at": manifest["published_at"],
+            "published_skill": str(target),
+        }
+    )
+    dump_yaml(run_dir / "state.yaml", state)
+    append_event(run_dir, "published", published_skill=str(target))
+    print(target)
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    run_dir = _existing_run(args.run)
+    state = load_yaml(run_dir / "state.yaml")
+    print(json.dumps(state, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _existing_run(path: str) -> Path:
+    run_dir = resolve_run_dir(path)
+    if not run_dir.is_dir():
+        raise Paper2SkillsError(f"Run directory does not exist: {run_dir}")
+    for required in ("request.yaml", "skill_spec.yaml", "state.yaml"):
+        if not (run_dir / required).is_file():
+            raise Paper2SkillsError(f"Run is missing {required}: {run_dir}")
+    state = load_yaml(run_dir / "state.yaml")
+    require_schema(state, STATE_SCHEMA, "run state")
+    return run_dir
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="paper2skills",
+        description="Build one evidence-grounded Codex skill per bioinformatics package.",
+    )
+    parser.add_argument("--version", action="version", version=VERSION)
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    init = commands.add_parser("init", help="Initialize a run from a build request")
+    init.add_argument("--request", required=True)
+    init.add_argument("--out")
+    init.set_defaults(handler=cmd_init)
+
+    for name, help_text, handler in (
+        ("ground", "Statically ground local sources and register official URLs", cmd_ground),
+        ("render", "Render one child skill from skill_spec.yaml", cmd_render),
+        ("validate", "Validate SkillIR and rendered child behavior", cmd_validate),
+        ("publish", "Publish a passing child skill inside the run directory", cmd_publish),
+        ("status", "Show compact run state", cmd_status),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("--run", required=True)
+        command.set_defaults(handler=handler)
+
+    patch = commands.add_parser(
+        "apply-patch", help="Apply a bounded evidence-backed SkillIR patch"
+    )
+    patch.add_argument("--run", required=True)
+    patch.add_argument("--proposal", required=True)
+    patch.set_defaults(handler=cmd_apply_patch)
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build lightweight paper2skills child skills with review trajectory auditing.")
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    build_parser = sub.add_parser("build", help="Build artifacts and a lightweight child skill.")
-    build_parser.add_argument("--request", required=True, help="Path to build_request.yaml or JSON.")
-    build_parser.add_argument("--out", required=True, help="Run artifact directory.")
-
-    lint_parser = sub.add_parser("lint-child", help="Lint a generated child skill structure.")
-    lint_parser.add_argument("--skill", required=True, help="Child skill directory.")
-    lint_parser.add_argument("--out", default=None, help="Optional lint report path.")
-
-    validate_parser = sub.add_parser("validate-run", help="Validate a generated run artifact directory.")
-    validate_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    validate_parser.add_argument("--out", default=None, help="Optional validation report path.")
-
-    audit_parser = sub.add_parser("audit-child", help="Audit generated child skill markdown.")
-    audit_parser.add_argument("--skill", required=True, help="Child skill directory.")
-    audit_parser.add_argument("--api-grounding", required=True, help="api_grounding.yaml path.")
-    audit_parser.add_argument("--interface-grounding", required=True, help="interface_grounding.yaml path.")
-    audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    public_audit_parser = sub.add_parser("audit-public-child", help="Audit generated public child skill markdown for release safety.")
-    public_audit_parser.add_argument("--skill", required=True, help="Child skill directory.")
-    public_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    purity_audit_parser = sub.add_parser("audit-child-package-purity", help="Audit generated child skill file-set purity.")
-    purity_audit_parser.add_argument("--skill", required=True, help="Child skill directory.")
-    purity_audit_parser.add_argument("--skill-spec", required=True, help="skill_spec.yaml path.")
-    purity_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    biological_audit_parser = sub.add_parser("audit-biological-claims", help="Audit rendered child skill biological claim boundaries.")
-    biological_audit_parser.add_argument("--skill", required=True, help="Child skill directory.")
-    biological_audit_parser.add_argument("--task-catalog", required=True, help="task_catalog.yaml path.")
-    biological_audit_parser.add_argument("--source-grounding", required=True, help="source_grounding.yaml path.")
-    biological_audit_parser.add_argument("--evidence-cards", required=True, help="evidence_cards.yaml path.")
-    biological_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    verify_manifest_parser = sub.add_parser("verify-run-manifest", help="Verify files recorded in run_manifest.yaml.")
-    verify_manifest_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    verify_manifest_parser.add_argument("--manifest", default=None, help="Optional run_manifest.yaml path.")
-    verify_manifest_parser.add_argument("--out", default=None, help="Optional verification report path.")
-
-    timeline_audit_parser = sub.add_parser("audit-build-timeline", help="Audit build_timeline.yaml integrity for a run directory.")
-    timeline_audit_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    timeline_audit_parser.add_argument("--out", default=None, help="Optional build timeline audit report path.")
-
-    completion_parser = sub.add_parser("audit-completion", help="Recompute the final completion audit for a run directory.")
-    completion_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    completion_parser.add_argument("--out", default=None, help="Optional completion audit report path.")
-
-    protocol_parser = sub.add_parser("audit-protocol-compliance", help="Recompute cross-stage protocol compliance for a run directory.")
-    protocol_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    protocol_parser.add_argument("--out", default=None, help="Optional protocol compliance audit report path.")
-
-    agent_metadata_parser = sub.add_parser("audit-agent-metadata", help="Audit SKILL.md and agents/openai.yaml metadata alignment.")
-    agent_metadata_parser.add_argument("--skill", required=True, help="Skill package directory.")
-    agent_metadata_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    public_origin_parser = sub.add_parser("audit-public-origin", help="Audit README and skill package text for private origin markers.")
-    public_origin_parser.add_argument("--repo-root", required=True, help="Repository root containing README.md.")
-    public_origin_parser.add_argument("--skill", required=True, help="Skill package directory.")
-    public_origin_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    fetch_boundary_parser = sub.add_parser("audit-source-fetch-boundaries", help="Audit source fetch opt-in and run-directory boundaries.")
-    fetch_boundary_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    fetch_boundary_parser.add_argument("--source-fetch-report", required=True, help="source_fetch_report.yaml path.")
-    fetch_boundary_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    key_api_parser = sub.add_parser("audit-key-api-coverage", help="Audit explicit key API coverage against parsed grounding.")
-    key_api_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    key_api_parser.add_argument("--api-grounding", required=True, help="api_grounding.yaml path.")
-    key_api_parser.add_argument("--interface-grounding", required=True, help="interface_grounding.yaml path.")
-    key_api_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    discovery_resolution_parser = sub.add_parser("audit-discovery-resolution", help="Audit final Discovery resolution against preflight and update planning.")
-    discovery_resolution_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    discovery_resolution_parser.add_argument("--discovery-preflight", required=True, help="discovery_preflight.yaml path.")
-    discovery_resolution_parser.add_argument("--discovery-report", required=True, help="discovery_report.yaml path.")
-    discovery_resolution_parser.add_argument("--discovery-match-audit", required=True, help="discovery_match_audit.yaml path.")
-    discovery_resolution_parser.add_argument("--skill-update-plan", required=True, help="skill_update_plan.yaml path.")
-    discovery_resolution_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    eval_leakage_parser = sub.add_parser("audit-eval-leakage", help="Audit eval split isolation and rollout prompt leakage.")
-    eval_leakage_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    eval_leakage_parser.add_argument("--eval-splits", required=True, help="eval_splits.yaml path.")
-    eval_leakage_parser.add_argument("--forward-test-plan", required=True, help="forward_test_plan.yaml path.")
-    eval_leakage_parser.add_argument("--agent-rollout-harness", required=True, help="agent_rollout_harness.yaml path.")
-    eval_leakage_parser.add_argument("--eval-result-judge", required=True, help="eval_result_judge.yaml path.")
-    eval_leakage_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    external_result_parser = sub.add_parser("audit-external-results", help="Audit supplied external eval and rollout result contracts.")
-    external_result_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    external_result_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    evidence_taxonomy_parser = sub.add_parser("audit-evidence-claim-taxonomy", help="Audit evidence claim taxonomy and source priority by task_type.")
-    evidence_taxonomy_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    evidence_taxonomy_parser.add_argument("--task-catalog", required=True, help="task_catalog.yaml path.")
-    evidence_taxonomy_parser.add_argument("--evidence-cards", required=True, help="evidence_cards.yaml path.")
-    evidence_taxonomy_parser.add_argument("--source-grounding", required=True, help="source_grounding.yaml path.")
-    evidence_taxonomy_parser.add_argument("--evidence-precedence", required=True, help="evidence_precedence.yaml path.")
-    evidence_taxonomy_parser.add_argument("--execution-trace-validation", required=True, help="execution_trace_validation.yaml path.")
-    evidence_taxonomy_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    replay_orchestrator_parser = sub.add_parser("audit-execution-replay", help="Build and audit plan-only execution replay orchestration.")
-    replay_orchestrator_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    replay_orchestrator_parser.add_argument("--tutorial-reproduction-plan", required=True, help="tutorial_reproduction_plan.yaml path.")
-    replay_orchestrator_parser.add_argument("--execution-plan", required=True, help="execution_plan.yaml path.")
-    replay_orchestrator_parser.add_argument("--environment-install-plan", required=True, help="environment_install_plan.yaml path.")
-    replay_orchestrator_parser.add_argument("--out", default=None, help="Optional orchestration report path.")
-
-    e2e_parser = sub.add_parser("audit-e2e-acceptance", help="Build and audit plan-only E2E acceptance scenarios.")
-    e2e_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    e2e_parser.add_argument("--task-catalog", required=True, help="task_catalog.yaml path.")
-    e2e_parser.add_argument("--acceptance-suite", required=True, help="acceptance_suite.yaml path.")
-    e2e_parser.add_argument("--eval-splits", required=True, help="eval_splits.yaml path.")
-    e2e_parser.add_argument("--forward-test-plan", required=True, help="forward_test_plan.yaml path.")
-    e2e_parser.add_argument("--agent-rollout-harness", required=True, help="agent_rollout_harness.yaml path.")
-    e2e_parser.add_argument("--agent-rollout-result-judge", required=True, help="agent_rollout_result_judge.yaml path.")
-    e2e_parser.add_argument("--execution-replay-orchestrator", required=True, help="execution_replay_orchestrator.yaml path.")
-    e2e_parser.add_argument("--verification-claim-audit", required=True, help="verification_claim_audit.yaml path.")
-    e2e_parser.add_argument("--out", default=None, help="Optional E2E acceptance report path.")
-
-    smoke_parser = sub.add_parser("audit-smoke-test-plan", help="Build and audit plan-only smoke test scenarios.")
-    smoke_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    smoke_parser.add_argument("--task-catalog", required=True, help="task_catalog.yaml path.")
-    smoke_parser.add_argument("--out", default=None, help="Optional smoke test plan report path.")
-
-    completion_evidence_parser = sub.add_parser("audit-completion-evidence", help="Audit whether completion claims are supported by supplied evidence.")
-    completion_evidence_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    completion_evidence_parser.add_argument("--requirement-coverage", required=True, help="requirement_coverage.yaml path.")
-    completion_evidence_parser.add_argument("--agent-rollout-result-judge", required=True, help="agent_rollout_result_judge.yaml path.")
-    completion_evidence_parser.add_argument("--e2e-acceptance", required=True, help="e2e_acceptance.yaml path.")
-    completion_evidence_parser.add_argument("--execution-trace-validation", required=True, help="execution_trace_validation.yaml path.")
-    completion_evidence_parser.add_argument("--execution-replay-orchestrator", required=True, help="execution_replay_orchestrator.yaml path.")
-    completion_evidence_parser.add_argument("--out", default=None, help="Optional completion evidence audit report path.")
-
-    acceptance_handoff_parser = sub.add_parser("build-acceptance-handoff", help="Build a plan-only external acceptance handoff package.")
-    acceptance_handoff_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    acceptance_handoff_parser.add_argument("--e2e-acceptance", required=True, help="e2e_acceptance.yaml path.")
-    acceptance_handoff_parser.add_argument("--agent-rollout-harness", required=True, help="agent_rollout_harness.yaml path.")
-    acceptance_handoff_parser.add_argument("--execution-replay-orchestrator", required=True, help="execution_replay_orchestrator.yaml path.")
-    acceptance_handoff_parser.add_argument("--completion-evidence-audit", required=True, help="completion_evidence_audit.yaml path.")
-    acceptance_handoff_parser.add_argument("--publish-manifest", default=None, help="Optional publish_manifest.yaml path.")
-    acceptance_handoff_parser.add_argument("--out", default=None, help="Optional handoff YAML path.")
-    acceptance_handoff_parser.add_argument("--markdown-out", default=None, help="Optional handoff Markdown path.")
-
-    rollout_result_parser = sub.add_parser("judge-agent-rollout-results", help="Judge explicitly supplied agent rollout results.")
-    rollout_result_parser.add_argument("--request", required=True, help="Normalized request or build request path.")
-    rollout_result_parser.add_argument("--agent-rollout-harness", required=True, help="agent_rollout_harness.yaml path.")
-    rollout_result_parser.add_argument("--eval-leakage-audit", required=True, help="eval_leakage_audit.yaml path.")
-    rollout_result_parser.add_argument("--out", default=None, help="Optional judge report path.")
-
-    forward_test_parser = sub.add_parser("validate-forward-test-plan", help="Validate a saved plan-only forward-test artifact.")
-    forward_test_parser.add_argument("--plan", required=True, help="forward_test_plan.yaml path.")
-    forward_test_parser.add_argument("--out", default=None, help="Optional validation report path.")
-
-    package_audit_parser = sub.add_parser("audit-skill-package", help="Audit a Codex skill package structure.")
-    package_audit_parser.add_argument("--skill", required=True, help="Skill package directory.")
-    package_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    inventory_audit_parser = sub.add_parser("audit-module-inventory", help="Audit builder script module inventory docs.")
-    inventory_audit_parser.add_argument("--skill", required=True, help="Skill package directory.")
-    inventory_audit_parser.add_argument("--repo-root", default=None, help="Repository root containing README.md.")
-    inventory_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    baseline_audit_parser = sub.add_parser("audit-builder-baseline", help="Audit builder engineering baseline family coverage.")
-    baseline_audit_parser.add_argument("--skill", required=True, help="Skill package directory.")
-    baseline_audit_parser.add_argument("--repo-root", default=None, help="Repository root containing README.md.")
-    baseline_audit_parser.add_argument("--out", default=None, help="Optional audit report path.")
-
-    review_next_parser = sub.add_parser("review-next-step", help="Print the next agent-driven review-loop proposal step for a run directory.")
-    review_next_parser.add_argument("--run", required=True, help="Run artifact directory.")
-    review_next_parser.add_argument("--out", default=None, help="Optional next-step report path.")
-
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "build":
-            manifest = build(Path(args.request), Path(args.out))
-            print(json.dumps(manifest, indent=2, ensure_ascii=False))
-            return 0
-        if args.command == "lint-child":
-            report = lint_child_skill(Path(args.skill))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "validate-run":
-            run_dir = Path(args.run)
-            artifacts, retention_findings = load_run_artifacts(run_dir, REQUIRED_TOP_LEVEL_ARTIFACTS + POST_CLEANUP_ARTIFACTS)
-            report = validate_artifact_bundle(artifacts, REQUIRED_TOP_LEVEL_ARTIFACTS + POST_CLEANUP_ARTIFACTS)
-            manifest_verification = verify_run_manifest(run_dir, artifacts.get("run_manifest") or {}, artifacts.get("publish_manifest") or {})
-            report["run_manifest_verification"] = manifest_verification
-            extra_findings = list(retention_findings)
-            if manifest_verification.get("status") != "pass":
-                extra_findings.append(
-                    {
-                        "severity": "error",
-                        "code": "run_manifest_verification_failed",
-                        "message": "run_manifest.yaml hashes, byte sizes, or file coverage do not match the run directory.",
-                        "artifact": "run_manifest",
-                    }
-                )
-            report = merge_validation_findings(report, extra_findings)
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-child":
-            report = audit_child_skill_code_fences(
-                Path(args.skill),
-                load_data(Path(args.api_grounding)),
-                load_data(Path(args.interface_grounding)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-public-child":
-            report = audit_public_child_skill(Path(args.skill))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-child-package-purity":
-            skill_spec = load_data(Path(args.skill_spec))
-            report = build_child_package_purity_audit(skill_spec.get("request", {}), Path(args.skill), skill_spec)
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-biological-claims":
-            report = build_biological_claim_boundary_audit(
-                Path(args.skill),
-                load_data(Path(args.task_catalog)),
-                load_data(Path(args.source_grounding)),
-                load_data(Path(args.evidence_cards)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "verify-run-manifest":
-            run_dir = Path(args.run)
-            manifest_path = Path(args.manifest) if args.manifest else run_dir / "run_manifest.yaml"
-            publish_manifest_path = run_dir / "publish_manifest.yaml"
-            publish_manifest = load_data(publish_manifest_path) if publish_manifest_path.exists() else {}
-            report = verify_run_manifest(run_dir, load_data(manifest_path), publish_manifest)
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-build-timeline":
-            run_dir = Path(args.run)
-            report = build_timeline_audit(
-                load_data(run_dir / "request.yaml"),
-                load_data(run_dir / "build_timeline.yaml"),
-                load_data(run_dir / "phase_state.yaml"),
-                load_data(run_dir / "review_summary.yaml"),
-                load_data(run_dir / "publish_gate.yaml"),
-                load_data(run_dir / "quality_report.yaml"),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "review-next-step":
-            run_dir = Path(args.run)
-            review_summary = load_data(run_dir / "review_summary.yaml")
-            report = {
-                "schema_version": review_summary.get("schema_version"),
-                "status": "pass" if review_summary.get("next_step") else "complete",
-                "review_status": review_summary.get("status"),
-                "mode": review_summary.get("mode"),
-                "agent_driven": review_summary.get("agent_driven"),
-                "stop_reason": review_summary.get("stop_reason"),
-                "next_step": review_summary.get("next_step"),
-            }
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0
-        if args.command == "audit-completion":
-            run_dir = Path(args.run)
-            request = load_data(run_dir / "request.yaml")
-            publish_manifest = load_data(run_dir / "publish_manifest.yaml")
-            report = build_completion_audit(
-                request,
-                load_data(run_dir / "phase_state.yaml"),
-                load_data(run_dir / "builder_runtime_audit.yaml"),
-                load_data(run_dir / "agent_metadata_audit.yaml"),
-                load_data(run_dir / "public_origin_audit.yaml"),
-                load_data(run_dir / "module_inventory_audit.yaml"),
-                load_data(run_dir / "builder_baseline_audit.yaml"),
-                load_data(run_dir / "skill_package_audit.yaml"),
-                load_data(run_dir / "request_template_audit.yaml"),
-                load_data(run_dir / "builder_version_audit.yaml"),
-                load_data(run_dir / "request_audit.yaml"),
-                load_data(run_dir / "request_fingerprint.yaml"),
-                load_data(run_dir / "external_result_contracts.yaml"),
-                load_data(run_dir / "phase_state_audit.yaml"),
-                load_data(run_dir / "protocol_compliance_audit.yaml"),
-                load_data(run_dir / "requirement_coverage.yaml"),
-                load_data(run_dir / "completion_evidence_audit.yaml"),
-                load_data(run_dir / "acceptance_handoff.yaml"),
-                load_data(run_dir / "architecture_completeness_audit.yaml"),
-                load_data(run_dir / "artifact_validation.yaml"),
-                load_data(run_dir / "publish_gate.yaml"),
-                load_data(run_dir / "quality_report.yaml"),
-                load_data(run_dir / "score_report.yaml"),
-                load_data(run_dir / "release_package.yaml"),
-                load_data(run_dir / "install_readiness.yaml"),
-                publish_manifest,
-                load_data(run_dir / "publish_manifest_audit.yaml"),
-                load_data(run_dir / "skill_update_plan.yaml"),
-                load_data(run_dir / "skill_update_audit.yaml"),
-                load_data(run_dir / "discovery_match_audit.yaml"),
-                load_data(run_dir / "discovery_resolution_audit.yaml"),
-                load_data(run_dir / "review_optimizer_state.yaml"),
-                load_data(run_dir / "patch_safety_audit.yaml"),
-                load_data(run_dir / "patch_operation_contracts.yaml"),
-                load_data(run_dir / "candidate_selection_audit.yaml"),
-                load_data(run_dir / "candidate_promotion_audit.yaml"),
-                load_data(run_dir / "final_candidate_audit.yaml"),
-                load_data(run_dir / "candidate_evolution_audit.yaml"),
-                load_data(run_dir / "artifact_closure_audit.yaml"),
-                load_data(run_dir / "source_fetch_boundary_audit.yaml"),
-                load_data(run_dir / "source_ingestion_audit.yaml"),
-                load_data(run_dir / "source_grounding_audit.yaml"),
-                load_data(run_dir / "key_api_coverage_audit.yaml"),
-                load_data(run_dir / "verification_claim_audit.yaml"),
-                load_data(run_dir / "execution_replay_orchestrator.yaml"),
-                load_data(run_dir / "backend_extension_audit.yaml"),
-                load_data(run_dir / "resource_boundary_audit.yaml"),
-                load_data(run_dir / "evidence_claim_taxonomy_audit.yaml"),
-                load_data(run_dir / "child_metadata_audit.yaml"),
-                load_data(run_dir / "child_package_purity_audit.yaml"),
-                load_data(run_dir / "biological_claim_boundary_audit.yaml"),
-                load_data(run_dir / "review_prompt_contracts.yaml"),
-                load_data(run_dir / "review_prompt_materials.yaml"),
-                load_data(run_dir / "review_prompt_suite_audit.yaml"),
-                load_data(run_dir / "review_iteration_log.yaml"),
-                load_data(run_dir / "review_remediation_audit.yaml"),
-                load_data(run_dir / "review_trajectory_audit.yaml"),
-                load_data(run_dir / "agent_rollout_harness.yaml"),
-                load_data(run_dir / "agent_rollout_audit.yaml"),
-                load_data(run_dir / "eval_leakage_audit.yaml"),
-                load_data(run_dir / "agent_rollout_result_judge.yaml"),
-                load_data(run_dir / "e2e_acceptance.yaml"),
-                load_data(run_dir / "smoke_test_plan.yaml"),
-                load_data(run_dir / "routing_metadata_audit.yaml"),
-                load_data(run_dir / "codex_publish_adapter.yaml"),
-                load_data(run_dir / "release_action_audit.yaml"),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-protocol-compliance":
-            run_dir = Path(args.run)
-            artifacts = {
-                "phase_state_audit": load_data(run_dir / "phase_state_audit.yaml"),
-                "request_fingerprint": load_data(run_dir / "request_fingerprint.yaml"),
-                "external_result_contracts": load_data(run_dir / "external_result_contracts.yaml"),
-                "output_boundary_audit": load_data(run_dir / "output_boundary_audit.yaml"),
-                "discovery_resolution_audit": load_data(run_dir / "discovery_resolution_audit.yaml"),
-                "environment_install_plan": load_data(run_dir / "environment_install_plan.yaml"),
-                "execution_plan": load_data(run_dir / "execution_plan.yaml"),
-                "tutorial_reproduction_plan": load_data(run_dir / "tutorial_reproduction_plan.yaml"),
-                "execution_replay_orchestrator": load_data(run_dir / "execution_replay_orchestrator.yaml"),
-                "skill_update_plan": load_data(run_dir / "skill_update_plan.yaml"),
-                "skill_update_audit": load_data(run_dir / "skill_update_audit.yaml"),
-                "forward_test_plan": load_data(run_dir / "forward_test_plan.yaml"),
-                "agent_rollout_harness": load_data(run_dir / "agent_rollout_harness.yaml"),
-                "agent_rollout_audit": load_data(run_dir / "agent_rollout_audit.yaml"),
-                "e2e_acceptance": load_data(run_dir / "e2e_acceptance.yaml"),
-                "smoke_test_plan": load_data(run_dir / "smoke_test_plan.yaml"),
-                "acceptance_handoff": load_data(run_dir / "acceptance_handoff.yaml"),
-                "verification_claim_audit": load_data(run_dir / "verification_claim_audit.yaml"),
-                "completion_evidence_audit": load_data(run_dir / "completion_evidence_audit.yaml"),
-            }
-            report = build_protocol_compliance_audit(
-                load_data(run_dir / "request.yaml"),
-                load_data(run_dir / "phase_state.yaml"),
-                artifacts,
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-agent-metadata":
-            report = build_agent_metadata_audit(Path(args.skill))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-public-origin":
-            report = build_public_origin_audit(Path(args.repo_root), Path(args.skill))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-source-fetch-boundaries":
-            report = audit_source_fetch_boundaries(
-                load_data(Path(args.request)),
-                load_data(Path(args.source_fetch_report)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-key-api-coverage":
-            report = build_key_api_coverage_audit(
-                load_data(Path(args.request)),
-                load_data(Path(args.api_grounding)),
-                load_data(Path(args.interface_grounding)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-discovery-resolution":
-            report = build_discovery_resolution_audit(
-                load_data(Path(args.request)),
-                load_data(Path(args.discovery_preflight)),
-                load_data(Path(args.discovery_report)),
-                load_data(Path(args.discovery_match_audit)),
-                load_data(Path(args.skill_update_plan)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-eval-leakage":
-            report = build_eval_leakage_audit(
-                load_data(Path(args.request)),
-                load_data(Path(args.eval_splits)),
-                load_data(Path(args.forward_test_plan)),
-                load_data(Path(args.agent_rollout_harness)),
-                load_data(Path(args.eval_result_judge)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-external-results":
-            report = build_external_result_contracts(load_data(Path(args.request)))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-evidence-claim-taxonomy":
-            report = build_evidence_claim_taxonomy_audit(
-                load_data(Path(args.request)),
-                load_data(Path(args.task_catalog)),
-                load_data(Path(args.evidence_cards)),
-                load_data(Path(args.source_grounding)),
-                load_data(Path(args.evidence_precedence)),
-                load_data(Path(args.execution_trace_validation)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-execution-replay":
-            report = build_execution_replay_orchestrator(
-                load_data(Path(args.request)),
-                load_data(Path(args.tutorial_reproduction_plan)),
-                load_data(Path(args.execution_plan)),
-                load_data(Path(args.environment_install_plan)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-e2e-acceptance":
-            report = build_e2e_acceptance(
-                load_data(Path(args.request)),
-                load_data(Path(args.task_catalog)),
-                load_data(Path(args.acceptance_suite)),
-                load_data(Path(args.eval_splits)),
-                load_data(Path(args.forward_test_plan)),
-                load_data(Path(args.agent_rollout_harness)),
-                load_data(Path(args.agent_rollout_result_judge)),
-                load_data(Path(args.execution_replay_orchestrator)),
-                load_data(Path(args.verification_claim_audit)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-smoke-test-plan":
-            report = build_smoke_test_plan(
-                load_data(Path(args.request)),
-                load_data(Path(args.task_catalog)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-completion-evidence":
-            report = build_completion_evidence_audit(
-                load_data(Path(args.request)),
-                load_data(Path(args.requirement_coverage)),
-                load_data(Path(args.agent_rollout_result_judge)),
-                load_data(Path(args.e2e_acceptance)),
-                load_data(Path(args.execution_trace_validation)),
-                load_data(Path(args.execution_replay_orchestrator)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "build-acceptance-handoff":
-            report = build_acceptance_handoff(
-                load_data(Path(args.request)),
-                load_data(Path(args.e2e_acceptance)),
-                load_data(Path(args.agent_rollout_harness)),
-                load_data(Path(args.execution_replay_orchestrator)),
-                load_data(Path(args.completion_evidence_audit)),
-                load_data(Path(args.publish_manifest)) if args.publish_manifest else None,
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            if args.markdown_out:
-                write_text(Path(args.markdown_out), render_acceptance_handoff_markdown(report))
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "judge-agent-rollout-results":
-            report = build_agent_rollout_result_judge(
-                load_data(Path(args.request)),
-                load_data(Path(args.agent_rollout_harness)),
-                load_data(Path(args.eval_leakage_audit)),
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] in {"pass", "not_run"} else 1
-        if args.command == "validate-forward-test-plan":
-            report = validate_forward_test_plan(load_data(Path(args.plan)))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-skill-package":
-            report = audit_skill_package(Path(args.skill))
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-module-inventory":
-            report = audit_module_inventory(
-                Path(args.skill),
-                Path(args.repo_root) if args.repo_root else None,
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-        if args.command == "audit-builder-baseline":
-            report = build_builder_baseline_audit(
-                Path(args.skill),
-                Path(args.repo_root) if args.repo_root else None,
-            )
-            if args.out:
-                write_data(Path(args.out), report)
-            print(json.dumps(report, indent=2, ensure_ascii=False))
-            return 0 if report["status"] == "pass" else 1
-    except BuildError as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        return int(args.handler(args))
+    except Paper2SkillsError as exc:
+        print(f"paper2skills: {exc}", file=sys.stderr)
         return 2
-    return 1
 
 
 if __name__ == "__main__":

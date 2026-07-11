@@ -1,32 +1,9 @@
-# Local Codex/app state
-.agents/
-.codex/
-.vscode/
-.idea/
-
-# Runtime caches and local Python state
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-venv/
-env/
-
-# Local environment files
-.env
-.env.*
-!.env.example
-
-# Generated paper2skills outputs and scratch space
-runs/
-generated/
-child_skill/
-.paper2skills/
-
-# Logs, temp files, and OS metadata
-*.log
-logs/
-tmp/
-temp/
-.DS_Store
-Thumbs.db
+# Paper2Skills v1.0 public release allowlist.
+# Keep local benchmarks, remote-cluster witnesses, tests, and planning records
+# outside the GitHub release while retaining them in the working directory.
+*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/paper2skills/
+!/paper2skills/**

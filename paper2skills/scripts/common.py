@@ -1,194 +1,97 @@
-"""Common IO, serialization, and small utility helpers."""
+"""Shared filesystem, YAML, naming, and event helpers for Paper2Skills."""
 
 from __future__ import annotations
 
-import datetime as _dt
+import hashlib
 import json
+import os
 import re
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
+
+import yaml
 
 
-class BuildError(RuntimeError):
-    """Raised for user-fixable build request errors."""
+REQUEST_SCHEMA = "paper2skills.request.v1"
+SKILLIR_SCHEMA = "paper2skills.skillir.v1"
+PATCH_SCHEMA = "paper2skills.patch.v1"
+STATE_SCHEMA = "paper2skills.state.v1"
+VALIDATION_SCHEMA = "paper2skills.validation.v1"
 
 
-def now_utc() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+class Paper2SkillsError(RuntimeError):
+    """Raised for actionable user-facing builder errors."""
 
 
-def slugify(value: str | None, default: str = "method") -> str:
-    text = (value or default).strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
-    return text or default
+def load_yaml(path: str | Path) -> dict[str, Any]:
+    """Load one YAML mapping and reject missing or non-mapping documents."""
 
-
-def canonical_task_type(value: str | None, default: str = "general_algorithm_use") -> str:
-    """Return the stable snake_case key used for task_type records."""
-    return slugify(value, default).replace("-", "_")
-
-
-def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def public_child_skill_path(child_skill_dir: Path) -> str:
-    """Return a run-relative child-skill path for public run artifacts."""
-    if child_skill_dir.parent.name == "child_skill":
-        return f"child_skill/{child_skill_dir.name}"
-    return child_skill_dir.name
-
-
-def public_existing_skill_path(path_value: Any) -> str | None:
-    """Return a non-local existing-skill reference for public run artifacts."""
-    text = str(path_value or "").strip()
-    if not text:
-        return None
-    name = text.replace("\\", "/").rstrip("/").split("/")[-1]
-    return f"existing_skill/{slugify(name, 'existing-skill')}"
-
-
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-def write_text(path: Path, text: str) -> Path:
-    ensure_dir(path.parent)
-    path.write_text(text, encoding="utf-8", newline="\n")
-    return path
-
-
-def parse_scalar(value: str) -> Any:
-    value = value.strip()
-    if value in {"", "null", "None", "~"}:
-        return None
-    if value in {"true", "True"}:
-        return True
-    if value in {"false", "False"}:
-        return False
-    if value == "[]":
-        return []
-    if value == "{}":
-        return {}
-    if (value.startswith('"') and value.endswith('"')) or (
-        value.startswith("'") and value.endswith("'")
-    ):
-        return value[1:-1]
-    if value.startswith("[") and value.endswith("]"):
-        inner = value[1:-1].strip()
-        if not inner:
-            return []
-        return [parse_scalar(part) for part in inner.split(",")]
-    return value
-
-
-def parse_simple_yaml(text: str) -> dict[str, Any]:
-    """Parse the small build_request.yaml shape without requiring PyYAML."""
-    data: dict[str, Any] = {}
-    current_key: str | None = None
-    for raw_line in text.splitlines():
-        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
-            continue
-        indent = len(raw_line) - len(raw_line.lstrip(" "))
-        line = raw_line.strip()
-        if indent == 0 and ":" in line and not line.startswith("- "):
-            key, value = line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if value == "":
-                data[key] = {}
-                current_key = key
-            else:
-                data[key] = parse_scalar(value)
-                current_key = None
-            continue
-        if indent > 0 and current_key and ":" in line and not line.startswith("- "):
-            key, value = line.split(":", 1)
-            if not isinstance(data.get(current_key), dict):
-                data[current_key] = {}
-            data[current_key][key.strip()] = parse_scalar(value.strip())
-            continue
-        if line.startswith("- ") and current_key:
-            item = parse_scalar(line[2:].strip())
-            if not isinstance(data.get(current_key), list):
-                data[current_key] = []
-            data[current_key].append(item)
+    source = Path(path)
+    if not source.is_file():
+        raise Paper2SkillsError(f"YAML file does not exist: {source}")
+    data = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise Paper2SkillsError(f"Expected a YAML mapping: {source}")
     return data
 
 
-def load_data(path: Path) -> Any:
-    text = read_text(path)
-    if path.suffix.lower() == ".json":
-        return json.loads(text)
+def _atomic_write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
-        import yaml  # type: ignore
-
-        return yaml.safe_load(text) or {}
-    except Exception:
-        return parse_simple_yaml(text)
-
-
-def yaml_scalar(value: Any) -> str:
-    if value is None:
-        return "null"
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    text = str(value)
-    if text == "":
-        return '""'
-    if re.search(r"[:#\[\]\{\},&*!\|>'\"%@`]", text) or text.strip() != text:
-        return json.dumps(text)
-    if text.lower() in {"true", "false", "null", "none"}:
-        return json.dumps(text)
-    return text
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
-def to_yaml(value: Any, indent: int = 0) -> str:
-    pad = " " * indent
-    if isinstance(value, dict):
-        lines: list[str] = []
-        for key, item in value.items():
-            if isinstance(item, (dict, list)):
-                lines.append(f"{pad}{key}:")
-                lines.append(to_yaml(item, indent + 2))
-            else:
-                lines.append(f"{pad}{key}: {yaml_scalar(item)}")
-        return "\n".join(lines)
-    if isinstance(value, list):
-        if not value:
-            return f"{pad}[]"
-        lines = []
-        for item in value:
-            if isinstance(item, dict):
-                lines.append(f"{pad}-")
-                lines.append(to_yaml(item, indent + 2))
-            elif isinstance(item, list):
-                lines.append(f"{pad}-")
-                lines.append(to_yaml(item, indent + 2))
-            else:
-                lines.append(f"{pad}- {yaml_scalar(item)}")
-        return "\n".join(lines)
-    return f"{pad}{yaml_scalar(value)}"
+def dump_yaml(path: str | Path, data: dict[str, Any]) -> None:
+    """Write stable, readable YAML atomically."""
+
+    rendered = yaml.safe_dump(
+        data,
+        sort_keys=False,
+        allow_unicode=True,
+        default_flow_style=False,
+    )
+    _atomic_write(Path(path), rendered)
 
 
-def write_data(path: Path, data: Any) -> Path:
-    if path.suffix.lower() == ".json":
-        return write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-    return write_text(path, to_yaml(data) + "\n")
+def write_text(path: str | Path, content: str) -> None:
+    """Write UTF-8 text atomically with a trailing newline."""
+
+    normalized = content.rstrip() + "\n"
+    _atomic_write(Path(path), normalized)
 
 
-def append_jsonl(path: Path, event: dict[str, Any]) -> None:
-    ensure_dir(path.parent)
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+def slugify(value: str) -> str:
+    """Normalize a name to a Codex-compatible lowercase hyphenated slug."""
+
+    slug = re.sub(r"[^a-z0-9]+", "-", value.strip().lower()).strip("-")
+    if not slug:
+        raise Paper2SkillsError(f"Cannot derive a skill name from {value!r}")
+    if len(slug) > 63:
+        slug = slug[:63].rstrip("-")
+    return slug
+
+
+def stable_id(prefix: str, *parts: object) -> str:
+    """Return a stable evidence/event suffix for the supplied provenance."""
+
+    joined = "\x1f".join(str(part) for part in parts)
+    digest = hashlib.sha256(joined.encode("utf-8")).hexdigest()[:10].upper()
+    return f"{prefix}-{digest}"
 
 
 def as_list(value: Any) -> list[Any]:
+    """Normalize absent or scalar values to a list."""
+
     if value is None:
         return []
     if isinstance(value, list):
@@ -196,16 +99,60 @@ def as_list(value: Any) -> list[Any]:
     return [value]
 
 
-def lower_join(values: list[Any]) -> str:
-    return " ".join(str(item).lower() for item in values if item is not None)
+def unique_strings(values: Iterable[Any]) -> list[str]:
+    """Return non-empty string values in first-seen order."""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw).strip()
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
 
 
-def md_table(headers: list[str], rows: list[list[str]]) -> str:
-    escaped_rows = []
-    for row in rows:
-        escaped_rows.append([str(cell).replace("\n", " ").replace("|", "\\|") for cell in row])
-    lines = ["| " + " | ".join(headers) + " |"]
-    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
-    for row in escaped_rows:
-        lines.append("| " + " | ".join(row) + " |")
-    return "\n".join(lines)
+def resolve_run_dir(path: str | Path) -> Path:
+    """Resolve a run directory without requiring it to exist."""
+
+    return Path(path).expanduser().resolve()
+
+
+def ensure_within(parent: Path, child: Path, label: str) -> Path:
+    """Reject a path that escapes its declared parent directory."""
+
+    parent_resolved = parent.resolve()
+    child_resolved = child.resolve()
+    try:
+        child_resolved.relative_to(parent_resolved)
+    except ValueError as exc:
+        raise Paper2SkillsError(
+            f"{label} must stay inside {parent_resolved}: {child_resolved}"
+        ) from exc
+    return child_resolved
+
+
+def timestamp() -> str:
+    """Return an RFC 3339 UTC timestamp."""
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def append_event(run_dir: Path, event: str, **details: Any) -> None:
+    """Append a compact JSON event to the run-local timeline."""
+
+    record = {"time": timestamp(), "event": event, **details}
+    path = run_dir / "timeline.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+
+
+def require_schema(document: dict[str, Any], expected: str, label: str) -> None:
+    """Require an exact document schema version."""
+
+    actual = document.get("schema_version")
+    if actual != expected:
+        raise Paper2SkillsError(
+            f"{label} schema_version must be {expected!r}; got {actual!r}"
+        )

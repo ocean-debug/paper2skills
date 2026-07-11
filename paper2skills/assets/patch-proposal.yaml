@@ -1,0 +1,7 @@
+schema_version: paper2skills.patch.v1
+rationale: Describe the evidence-backed behavioral improvement.
+operations:
+  - op: replace
+    path: task_types.example_task.refusal_rules
+    value:
+      - Refuse when a required input is missing. Evidence E-TUT-example.
