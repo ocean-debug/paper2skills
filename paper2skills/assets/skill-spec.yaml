@@ -1,0 +1,19 @@
+schema_version: paper2skills.skillir.v1
+package:
+  name: example-package
+  display_name: Example Package
+  description: Use this skill for supported Example Package analysis tasks.
+  source_revision: unresolved
+shared_environment:
+  - Python environment requirements are not yet confirmed.
+package_boundaries:
+  - Refuse tasks not supported by grounded package evidence.
+shared_troubleshooting:
+  - No shared runtime issue has been confirmed.
+task_types: {}
+routing:
+  aliases: {}
+  ambiguity_rules: []
+  disjoint_task_reason: null
+  unsupported_cases:
+    - Refuse requests outside grounded package capabilities.

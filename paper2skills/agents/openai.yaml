@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper2Skills"
+  short_description: "Build evidence-grounded bioinformatics skills"
+  default_prompt: "Use $paper2skills to compile this official bioinformatics repository and its tutorials into one task-routed Codex skill."

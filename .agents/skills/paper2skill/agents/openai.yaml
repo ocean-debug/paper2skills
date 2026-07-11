@@ -1,4 +1,0 @@
-interface:
-  display_name: "Paper2Skill"
-  short_description: "Build child skills from papers"
-  default_prompt: "Use $paper2skill to generate a child skill from this paper, official repository, and tutorial."

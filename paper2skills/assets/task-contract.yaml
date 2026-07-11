@@ -1,0 +1,36 @@
+output_file: task-example-task.md
+intent:
+  - Describe the user-visible analysis goal.
+selection_rules:
+  - Select only when the goal, inputs, and metadata match this task.
+do_not_select:
+  - Refuse or route elsewhere when task-defining requirements do not match.
+accepted_inputs:
+  - Describe the grounded input type and state.
+required_metadata:
+  - Name required fields and their biological semantics.
+preflight_checks:
+  - Check input structure before invoking the package.
+workflow:
+  - Describe one evidence-grounded workflow step.
+api_sequence:
+  - api: package.PublicAPI
+    action: Describe the grounded operation.
+    evidence_ids: [E-SRC-replace]
+parameters:
+  - Record evidence-backed defaults and when to change them.
+expected_outputs:
+  - Describe output objects, files, fields, and shapes.
+refusal_rules:
+  - Refuse when a required input or semantic is missing.
+technical_validation:
+  - Check structure, dimensions, finite values, and required fields.
+biological_boundaries:
+  - Separate technical success from unsupported biological interpretation.
+reuse_contract:
+  - State what can be reused and what must be supplied again.
+troubleshooting:
+  - Record task-specific version, schema, data, or resource failures.
+evidence_ids: [E-SRC-replace]
+verification_status: source_grounded
+execution_evidence: []

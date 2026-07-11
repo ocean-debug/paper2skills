@@ -1,0 +1,16 @@
+schema_version: paper2skills.request.v1
+package_name: example-package
+display_name: Example Package
+repo_url: https://github.com/owner/example-package
+source_revision: unresolved
+source_paths: []
+tutorial_paths: []
+tutorial_urls: []
+documentation_urls: []
+paper_urls: []
+key_apis: []
+target_agent: codex
+language_backend: python
+output_dir: ./runs/example-package
+max_files: 500
+max_file_bytes: 250000
